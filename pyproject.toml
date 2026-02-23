@@ -1,0 +1,46 @@
+[project]
+name = "tempo-ai-v2"
+version = "0.1.0"
+description = "Tempo AI v2 — Postgres+pgvector data plane, FastAPI+MCP API, Codex+Docker sandbox"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.uv]
+managed = true
+
+[tool.uv.workspace]
+members = ["dataplane", "api", "sandbox"]
+
+[tool.uv.sources]
+dataplane = { workspace = true }
+api = { workspace = true }
+sandbox = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dataplane", "api", "sandbox"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["dataplane/tests", "api/tests", "sandbox/tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
