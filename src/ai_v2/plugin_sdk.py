@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass
@@ -58,11 +58,4 @@ def secret(key: str, default: str | None = None) -> str:
     raise KeyError(f"Missing secret '{key}'{ctx_name}")
 
 
-def plugin_tool(*, name: str | None = None):
-    """Decorator to mark an async function as a plugin tool."""
 
-    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        fn.__plugin_tool__ = name or fn.__name__  # type: ignore[attr-defined]
-        return fn
-
-    return decorator

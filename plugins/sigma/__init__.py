@@ -1,0 +1,1 @@
+"""Sigma Computing embeds plugin."""

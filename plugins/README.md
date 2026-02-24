@@ -9,23 +9,27 @@ plugins/
     .env.example     # Document required secrets
     src/ai_v2_plugin_my_plugin/
       __init__.py
-      client.py      # API client
-      tools.py       # async functions decorated with @plugin_tool
+      client.py      # API client class + _client() factory
       cli.py         # typer CLI for standalone use
 ```
 
 ## Writing a plugin
 
 ```python
-# tools.py
-from ai_v2.plugin_sdk import plugin_tool, secret
+# client.py
+from ai_v2.plugin_sdk import secret
 
-@plugin_tool()
-async def my_search(query: str, limit: int = 10) -> dict:
-    """Search something."""
-    token = secret("MY_API_TOKEN")
-    # ... use token, return results ...
-    return {"results": [...]}
+
+class MyClient:
+    def search(self, query: str, limit: int = 10) -> dict:
+        """Search something."""
+        token = secret("MY_API_TOKEN")
+        # ... use token, return results ...
+        return {"results": [...]}
+
+
+def _client() -> MyClient:
+    return MyClient()
 ```
 
 ## Secrets
@@ -45,7 +49,8 @@ Use `secret("KEY")` to access. Never use `os.environ` — plugin secrets are sco
 | linear | Linear issues, projects, cycles | LINEAR_API_KEY |
 | gsuite | Gmail, Calendar, Drive | GOOGLE_CREDENTIALS_JSON, GOOGLE_TOKEN_JSON |
 | notion | Notion pages, databases | NOTION_API_KEY |
-| reshift | Internal DB, Shift notes | RESHIFT_DB_*, SSH config |
+| paradigmdb | Internal PostgreSQL, Shift notes, BigQuery | RESHIFT_DB_*, GCP auth |
+| figma | Figma design system extraction | FIGMA |
 | allium | On-chain analytics, SQL | ALLIUM_API_KEY |
 | coingecko | Crypto market data | COINGECKO_API_KEY |
 | coinmetrics | Crypto market & on-chain analytics | COINMETRICS_API_KEY |

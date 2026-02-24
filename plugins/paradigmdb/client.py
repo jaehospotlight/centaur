@@ -1,0 +1,275 @@
+"""ParadigmDB plugin — Paradigm internal database, Shift notes, and BigQuery."""
+
+
+class ParadigmDBClient:
+    """Client for Paradigm's internal databases and Shift notes."""
+
+    def _ensure_tunnel(self) -> None:
+        from .database import is_tunnel_running, start_persistent_tunnel
+        if not is_tunnel_running():
+            start_persistent_tunnel()
+
+    def db_query(self, query: str, limit: int = 20) -> list[dict]:
+        """Execute a read-only SQL query against Paradigm's internal PostgreSQL database.
+
+        Args:
+            query: SQL query to execute
+            limit: Max rows to return
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        results = db.query(query)
+        return results[:limit] if results else []
+
+    def db_tables(self, schema: str = "public") -> list[str]:
+        """List all tables in the internal database.
+
+        Args:
+            schema: Database schema (default: public)
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        return db.list_tables(schema=schema)
+
+    def db_describe(self, table_name: str, schema: str = "public") -> list[dict]:
+        """Describe columns of a database table.
+
+        Args:
+            table_name: Name of the table to describe
+            schema: Database schema (default: public)
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        return db.describe_table(table_name, schema=schema)
+
+    def db_funds(self, limit: int = 100) -> list[dict]:
+        """Get list of funds.
+
+        Args:
+            limit: Max results
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        return db.get_funds(limit=limit)
+
+    def db_assets(self, limit: int = 100) -> list[dict]:
+        """Get list of assets.
+
+        Args:
+            limit: Max results
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        return db.get_assets(limit=limit)
+
+    def db_asset_by_symbol(self, symbol: str) -> dict | None:
+        """Get asset by ticker symbol.
+
+        Args:
+            symbol: Ticker symbol (e.g. ETH, BTC)
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        return db.get_asset_by_symbol(symbol)
+
+    def db_daily_prices(
+        self, asset_id: int, start_date: str | None = None, end_date: str | None = None
+    ) -> list[dict]:
+        """Get daily prices for an asset.
+
+        Args:
+            asset_id: The asset ID
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        return db.get_daily_prices(asset_id, start_date=start_date, end_date=end_date)
+
+    def db_transactions(self, limit: int = 100) -> list[dict]:
+        """Get recent transactions.
+
+        Args:
+            limit: Max results
+        """
+        self._ensure_tunnel()
+        from .database import get_db
+        db = get_db()
+        return db.get_transactions(limit=limit)
+
+    def bq_query(self, query: str, limit: int = 100) -> list[dict]:
+        """Execute a BigQuery SQL query against custody-dashboard views.
+
+        Args:
+            query: BigQuery SQL query
+            limit: Max rows to return
+        """
+        from .bigquery import query_bigquery
+        return query_bigquery(query, limit=limit)
+
+    def bq_tables(self) -> list[str]:
+        """List all tables/views in the BigQuery shift_prod_public_views dataset."""
+        from .bigquery import list_tables
+        return list_tables()
+
+    def bq_describe(self, table_name: str) -> list[dict]:
+        """Get schema for a BigQuery table/view.
+
+        Args:
+            table_name: Name of the table to describe
+        """
+        from .bigquery import describe_table
+        return describe_table(table_name)
+
+    def bq_transactions(
+        self,
+        ticker: str | None = None,
+        fund: str | None = None,
+        transaction_type: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Query transactions from BigQuery with optional filters.
+
+        Args:
+            ticker: Filter by ticker symbol
+            fund: Filter by fund (PF, P1, P2)
+            transaction_type: Filter by transaction type
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            limit: Max results
+        """
+        from .bigquery import get_transactions
+        return get_transactions(
+            ticker=ticker,
+            fund=fund,
+            transaction_type=transaction_type,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+
+    def notes_search(self, query: str, note_type: str = "", limit: int = 20) -> list[dict]:
+        """Search Shift notes from the investment process.
+
+        Args:
+            query: Search text
+            note_type: Filter by type (OPPORTUNITY, PORTCO_UPDATE, PORTCO_REVIEW, TALENT, GTM, etc.)
+            limit: Max results
+        """
+        self._ensure_tunnel()
+        from .notes import get_notes_client
+        client = get_notes_client()
+        notes = client.search_notes(query, note_type=note_type or None, limit=limit)
+        return [
+            {
+                "id": n.id,
+                "title": n.title,
+                "type": n.note_type,
+                "created_at": n.created_at.isoformat(),
+                "created_by": n.created_by_name,
+                "notes": n.notes[:500],
+            }
+            for n in notes
+        ]
+
+    def notes_read(self, note_id: str) -> dict:
+        """Read a full Shift note by ID.
+
+        Args:
+            note_id: The note ID
+        """
+        self._ensure_tunnel()
+        from .notes import get_notes_client
+        client = get_notes_client()
+        data = client.get_note_with_relations(note_id)
+        if not data:
+            return {"error": f"Note '{note_id}' not found"}
+        note = data["note"]
+        return {
+            "id": note.id,
+            "title": note.title,
+            "type": note.note_type,
+            "source": note.source,
+            "created_at": note.created_at.isoformat(),
+            "created_by": note.created_by_name,
+            "organizations": data["organizations"],
+            "people": data["people"],
+            "notes": note.notes,
+        }
+
+    def notes_list(self, note_type: str = "", limit: int = 20) -> list[dict]:
+        """List recent Shift notes.
+
+        Args:
+            note_type: Filter by type (OPPORTUNITY, PORTCO_UPDATE, PORTCO_REVIEW, TALENT, GTM, etc.)
+            limit: Max results
+        """
+        self._ensure_tunnel()
+        from .notes import get_notes_client
+        client = get_notes_client()
+        notes = client.list_notes(note_type=note_type or None, limit=limit)
+        return [
+            {
+                "id": n.id,
+                "title": n.title,
+                "type": n.note_type,
+                "created_at": n.created_at.isoformat(),
+                "created_by": n.created_by_name,
+                "notes": n.notes[:500],
+            }
+            for n in notes
+        ]
+
+    def notes_stats(self) -> dict:
+        """Get statistics about Shift notes."""
+        self._ensure_tunnel()
+        from .notes import get_notes_client
+        client = get_notes_client()
+        return client.get_stats()
+
+    def notes_for_org(self, org_name: str, limit: int = 20) -> list[dict]:
+        """Get notes related to an organization.
+
+        Args:
+            org_name: Organization name to search for
+            limit: Max results
+        """
+        self._ensure_tunnel()
+        from .notes import get_notes_client
+        client = get_notes_client()
+        notes = client.get_notes_for_organization(org_name, limit=limit)
+        return [
+            {
+                "id": n.id,
+                "title": n.title,
+                "type": n.note_type,
+                "created_at": n.created_at.isoformat(),
+                "created_by": n.created_by_name,
+                "notes": n.notes[:500],
+            }
+            for n in notes
+        ]
+
+    def notes_authors(self, limit: int = 20) -> list[dict]:
+        """Get top Shift note authors.
+
+        Args:
+            limit: Max results
+        """
+        self._ensure_tunnel()
+        from .notes import get_notes_client
+        client = get_notes_client()
+        return client.get_authors(limit=limit)
+
+
+def _client() -> ParadigmDBClient:
+    return ParadigmDBClient()

@@ -162,7 +162,8 @@ def extract_amp_thread_id(messages: list[dict]) -> str | None:
 def extract_cli_mentions(text: str) -> list[str]:
     """Extract CLI names mentioned in text."""
     known_clis = [
-        "reshift",
+        "paradigmdb",
+        "figma",
         "anchorage",
         "coinbase",
         "falconx",

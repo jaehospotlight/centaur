@@ -1,0 +1,21 @@
+[project]
+name = "ai-v2-plugin-nano-banana"
+description = "Nano Banana CLI for Google Gemini image generation"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.0.0",
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+    "httpx>=0.27.0",
+    "Pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[tool.ai-v2-plugin]
+module = "client.py"

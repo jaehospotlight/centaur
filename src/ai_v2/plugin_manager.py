@@ -514,9 +514,8 @@ class PluginManager:
     def _collect_tools(plugin_name: str, module: Any, ctx: PluginContext) -> list[LoadedTool]:
         """Collect tools from a plugin module.
 
-        If the module has a _client() factory, call it once to get a cached
-        instance and expose every public method as a tool.  Falls back to
-        @plugin_tool() decorated functions for plugins that need explicit control.
+        The module must have a _client() factory. Call it once to get a cached
+        instance and expose every public method as a tool.
         """
         tools: list[LoadedTool] = []
         seen: set[str] = set()
@@ -539,15 +538,6 @@ class PluginManager:
                     continue
                 tools.append(LoadedTool(plugin_name, method_name, method, ctx))
                 seen.add(method_name)
-
-        # Fallback: @plugin_tool() decorated functions
-        for attr_name in dir(module):
-            obj = getattr(module, attr_name)
-            if callable(obj) and hasattr(obj, "__plugin_tool__"):
-                tool_name = obj.__plugin_tool__
-                if tool_name not in seen:
-                    tools.append(LoadedTool(plugin_name, tool_name, obj, ctx))
-                    seen.add(tool_name)
 
         return tools
 
