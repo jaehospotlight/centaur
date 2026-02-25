@@ -79,7 +79,7 @@ class _MCPAuthMiddleware:
         if scope["type"] == "http":
             request = Request(scope, receive)
             client_ip = request.client.host if request.client else ""
-            is_docker = client_ip.startswith(_DOCKER_PREFIXES) or client_ip == "127.0.0.1"
+            is_docker = client_ip.startswith(_DOCKER_PREFIXES)
 
             if not is_docker:
                 token: str | None = None
