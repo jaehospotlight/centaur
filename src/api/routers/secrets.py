@@ -6,7 +6,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from ..deps import get_pool, verify_api_key
+from api.deps import get_pool, verify_api_key
 
 router = APIRouter(prefix="/api/secrets", dependencies=[Depends(verify_api_key)])
 

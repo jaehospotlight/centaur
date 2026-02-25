@@ -4,13 +4,26 @@ import asyncio
 import json
 import os
 import shlex
+import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
 import click
 import structlog
+import uvicorn
 
-from .cli_tables import render_text_table
+from etl.config import ETLSettings
+from etl.embeddings import EmbeddingService, hybrid_search
+from etl.pipeline import run_continuous, run_sync
+from shared.cli_tables import render_text_table
+from shared.config import Settings
+from shared.db import close_pool, create_pool, fetch
+from shared.models import EmbeddingRecord
+from shared.plugin_manager import PluginManager
+from shared.sandbox.config import SandboxConfig
+from shared.sandbox.docker_builder import build_sandbox_image
+from shared.sandbox.repo_sync import sync_loop, sync_repos
 
 _LOG_LEVELS = {
     "critical": 50,
@@ -48,10 +61,7 @@ def cli() -> None:
 @click.option("--source", "-s", multiple=True, help="Specific sources to sync")
 def sync(source: tuple[str, ...]) -> None:
     """Run full or per-source sync (extract → transform → embed)."""
-    from .config import Settings
-    from .pipeline import run_sync
-
-    settings = Settings()
+    settings = ETLSettings()
     sources = list(source) if source else None
     results = asyncio.run(run_sync(settings, sources))
     total = sum(r.records_written for r in results)
@@ -67,11 +77,6 @@ def sync(source: tuple[str, ...]) -> None:
 @click.option("--batch-size", default=100, help="Records per embedding batch")
 def embed(source: str | None, batch_size: int) -> None:
     """Generate/refresh embeddings for raw records."""
-    from .config import Settings
-    from .db import close_pool, create_pool, fetch
-    from .embeddings import EmbeddingService
-    from .models import EmbeddingRecord
-
     settings = Settings()
     if not settings.openai_api_key:
         click.echo("Error: OPENAI_API_KEY not set", err=True)
@@ -155,9 +160,6 @@ def embed(source: str | None, batch_size: int) -> None:
 @cli.command()
 def status() -> None:
     """Show sync status (record counts, cursor positions)."""
-    from .config import Settings
-    from .db import close_pool, create_pool, fetch
-
     settings = Settings()
 
     async def _run() -> None:
@@ -215,10 +217,6 @@ def status() -> None:
 @click.option("--source", "-s", default=None, help="Filter by source")
 def search(query: str, limit: int, source: str | None) -> None:
     """Test hybrid search (vector + full-text)."""
-    from .config import Settings
-    from .db import close_pool, create_pool
-    from .embeddings import EmbeddingService, hybrid_search
-
     settings = Settings()
     if not settings.openai_api_key:
         click.echo("Error: OPENAI_API_KEY not set", err=True)
@@ -259,11 +257,6 @@ def search(query: str, limit: int, source: str | None) -> None:
 @click.argument("sqlite_path")
 def migrate_from_sqlite(sqlite_path: str) -> None:
     """Import data from existing metronome SQLite DB."""
-    import sqlite3
-
-    from .config import Settings
-    from .db import close_pool, create_pool
-
     settings = Settings()
     db_path = Path(sqlite_path)
     if not db_path.exists():
@@ -392,10 +385,7 @@ def migrate_from_sqlite(sqlite_path: str) -> None:
 @click.option("--interval", "-i", default=None, type=int, help="Sync interval in seconds")
 def continuous(interval: int | None) -> None:
     """Run continuous sync loop."""
-    from .config import Settings
-    from .pipeline import run_continuous
-
-    settings = Settings()
+    settings = ETLSettings()
     asyncio.run(run_continuous(settings, interval))
 
 
@@ -412,8 +402,6 @@ def plugins_group() -> None:
 @plugins_group.command("list")
 def plugins_list() -> None:
     """List discovered plugins and tools from the plugin manager."""
-    from .plugin_manager import PluginManager
-
     app_root = Path(__file__).resolve().parent.parent.parent
     plugins_dir = Path(app_root / "plugins")
 
@@ -449,8 +437,6 @@ def plugins_list() -> None:
 @click.argument("args", nargs=-1, type=click.UNPROCESSED)
 def plugins_run(tool: str, args: tuple[str, ...]) -> None:
     """Run a plugin CLI by plugin name or script alias."""
-    from .plugin_manager import PluginManager
-
     app_root = Path(__file__).resolve().parent.parent.parent
     plugins_dir = Path(app_root / "plugins")
 
@@ -483,8 +469,6 @@ def plugins_run(tool: str, args: tuple[str, ...]) -> None:
 )
 def plugins_test(cli_args: str) -> None:
     """Run plugin smoke tests across imports, registry, CLIs, and aliases."""
-    from .plugin_manager import PluginManager
-
     app_root = Path(__file__).resolve().parent.parent.parent
     plugins_dir = Path(app_root / "plugins")
 
@@ -552,9 +536,7 @@ def plugins_test(cli_args: str) -> None:
 @click.option("--reload", is_flag=True, help="Enable auto-reload")
 def serve(host: str, port: int, reload: bool) -> None:
     """Run the API server."""
-    import uvicorn
-
-    uvicorn.run("ai_v2.app:app", host=host, port=port, reload=reload)
+    uvicorn.run("api.app:app", host=host, port=port, reload=reload)
 
 
 # ---------------------------------------------------------------------------
@@ -578,8 +560,6 @@ def serve(host: str, port: int, reload: bool) -> None:
 @click.pass_context
 def sandbox(ctx: click.Context, repos_dir: str, api_url: str) -> None:
     """Sandbox — build Docker images preloaded with all Tempo repos."""
-    from ai_v2.sandbox.config import SandboxConfig
-
     ctx.ensure_object(dict)
     ctx.obj["repos_dir"] = repos_dir
     ctx.obj["config"] = SandboxConfig(api_base_url=api_url)
@@ -589,8 +569,6 @@ def sandbox(ctx: click.Context, repos_dir: str, api_url: str) -> None:
 @click.pass_context
 def sync_repos_cmd(ctx: click.Context) -> None:
     """Clone or update all configured repos to the local directory."""
-    from ai_v2.sandbox.repo_sync import sync_repos
-
     config = ctx.obj["config"]
     repos_dir: str = ctx.obj["repos_dir"]
 
@@ -608,8 +586,6 @@ def sync_repos_cmd(ctx: click.Context) -> None:
 @click.pass_context
 def build_cmd(ctx: click.Context, tag: str | None) -> None:
     """Build Docker image with current repos."""
-    from ai_v2.sandbox.docker_builder import build_sandbox_image
-
     config = ctx.obj["config"]
     repos_dir: str = ctx.obj["repos_dir"]
 
@@ -627,9 +603,6 @@ def build_cmd(ctx: click.Context, tag: str | None) -> None:
 @click.pass_context
 def update_cmd(ctx: click.Context, tag: str | None) -> None:
     """Sync repos and rebuild the Docker image."""
-    from ai_v2.sandbox.docker_builder import build_sandbox_image
-    from ai_v2.sandbox.repo_sync import sync_repos
-
     config = ctx.obj["config"]
     repos_dir: str = ctx.obj["repos_dir"]
 
@@ -661,8 +634,6 @@ def update_cmd(ctx: click.Context, tag: str | None) -> None:
 @click.pass_context
 def run_cmd(ctx: click.Context, tag: str, sync_on_start: bool) -> None:
     """Run sandbox container interactively."""
-    import subprocess
-
     config = ctx.obj["config"]
     image = f"{config.sandbox_image_name}:{tag}"
 
@@ -694,8 +665,6 @@ def run_cmd(ctx: click.Context, tag: str, sync_on_start: bool) -> None:
 @click.pass_context
 def cron_cmd(ctx: click.Context) -> None:
     """Run continuous sync loop (for cron/systemd)."""
-    from ai_v2.sandbox.repo_sync import sync_loop
-
     config = ctx.obj["config"]
     repos_dir: str = ctx.obj["repos_dir"]
 

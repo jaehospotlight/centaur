@@ -5,23 +5,23 @@ import time
 
 import structlog
 
-from .config import Settings
-from .cursors import CursorStore
-from .db import close_pool, create_pool
-from .extractors.attio import AttioExtractor
-from .extractors.base import BaseExtractor, ExtractResult
-from .extractors.betterstack import BetterStackExtractor
-from .extractors.github import GitHubExtractor
-from .extractors.google import GoogleExtractor
-from .extractors.granola import GranolaExtractor
-from .extractors.linear import LinearExtractor
-from .extractors.pylon import PylonExtractor
-from .extractors.slack import SlackExtractor
+from etl.config import ETLSettings
+from etl.extractors.attio import AttioExtractor
+from etl.extractors.base import BaseExtractor, ExtractResult
+from etl.extractors.betterstack import BetterStackExtractor
+from etl.extractors.github import GitHubExtractor
+from etl.extractors.google import GoogleExtractor
+from etl.extractors.granola import GranolaExtractor
+from etl.extractors.linear import LinearExtractor
+from etl.extractors.pylon import PylonExtractor
+from etl.extractors.slack import SlackExtractor
+from shared.cursors import CursorStore
+from shared.db import close_pool, create_pool
 
 log = structlog.get_logger()
 
 
-def _build_extractors(settings: Settings) -> list[BaseExtractor]:
+def _build_extractors(settings: ETLSettings) -> list[BaseExtractor]:
     extractors: list[BaseExtractor] = []
 
     if settings.pov_slack_token or settings.pov_slack_user_token:
@@ -69,11 +69,11 @@ def _build_extractors(settings: Settings) -> list[BaseExtractor]:
 
 
 async def run_sync(
-    settings: Settings | None = None,
+    settings: ETLSettings | None = None,
     sources: list[str] | None = None,
 ) -> list[ExtractResult]:
     if settings is None:
-        settings = Settings()
+        settings = ETLSettings()
 
     pool = await create_pool(settings.database_url)
     cursors = CursorStore()
@@ -120,11 +120,11 @@ async def run_sync(
 
 
 async def run_continuous(
-    settings: Settings | None = None,
+    settings: ETLSettings | None = None,
     interval: int | None = None,
 ) -> None:
     if settings is None:
-        settings = Settings()
+        settings = ETLSettings()
     sync_interval = interval or settings.sync_interval_seconds
 
     log.info("continuous_sync_start", interval=sync_interval)

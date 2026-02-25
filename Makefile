@@ -1,4 +1,4 @@
-.PHONY: install lint test migrate sync api sandbox-build sandbox-update-repos fmt clean
+.PHONY: install lint test migrate sync api etl sandbox-build sandbox-update-repos fmt clean
 
 install:
 	uv sync
@@ -22,6 +22,9 @@ sync:
 
 api:
 	uv run ai-v2 serve
+
+etl:
+	uv run ai-v2 continuous
 
 sandbox-build:
 	docker build -t tempo-ai-sandbox:latest sandbox/

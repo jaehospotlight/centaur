@@ -15,8 +15,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..cursors import CursorStore, track_max_timestamp
-from .base import BaseExtractor, ExtractResult, make_record
+from etl.extractors.base import BaseExtractor, ExtractResult, make_record
+from shared.cursors import CursorStore, track_max_timestamp
 
 log = structlog.get_logger()
 

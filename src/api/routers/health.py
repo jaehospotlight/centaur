@@ -5,7 +5,7 @@ from typing import Annotated
 import asyncpg
 from fastapi import APIRouter, Depends
 
-from ..deps import get_pool
+from api.deps import get_pool
 
 router = APIRouter()
 

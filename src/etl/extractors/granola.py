@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -15,8 +15,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..cursors import CursorStore
-from .base import BaseExtractor, ExtractResult, make_record
+from etl.extractors.base import BaseExtractor, ExtractResult, make_record
+from shared.cursors import CursorStore
 
 log = structlog.get_logger()
 
@@ -191,8 +191,6 @@ class GranolaExtractor(BaseExtractor):
 
         # Fetch transcripts for recent meetings
         cutoff_ts = time.time() - MAX_TRANSCRIPT_DAYS * 86400
-        from datetime import datetime
-
         cutoff = datetime.fromtimestamp(cutoff_ts, tz=UTC).isoformat()
 
         recent = [d for d in docs if d.get("created_at") and d["created_at"] >= cutoff][

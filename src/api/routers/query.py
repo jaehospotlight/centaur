@@ -6,7 +6,7 @@ from typing import Annotated
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..deps import get_pool, verify_api_key
+from api.deps import get_pool, verify_api_key
 
 router = APIRouter(prefix="/api/query", dependencies=[Depends(verify_api_key)])
 

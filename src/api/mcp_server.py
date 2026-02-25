@@ -8,8 +8,8 @@ import asyncpg
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .deps import EmbeddingService
-from .plugin_manager import PluginManager
+from api.deps import EmbeddingService
+from shared.plugin_manager import PluginManager
 
 mcp = FastMCP(
     "Tempo AI v2",

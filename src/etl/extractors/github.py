@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import time
 from typing import Any
@@ -14,8 +15,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..cursors import CursorStore
-from .base import BaseExtractor, ExtractResult, make_record
+from etl.extractors.base import BaseExtractor, ExtractResult, make_record
+from shared.cursors import CursorStore
 
 log = structlog.get_logger()
 
@@ -62,8 +63,6 @@ class GitHubExtractor(BaseExtractor):
         if resp.status_code == 429:
             retry_after = int(resp.headers.get("Retry-After", "60"))
             log.warning("github_rate_limited", retry_after=retry_after)
-            import asyncio
-
             await asyncio.sleep(retry_after)
             resp.raise_for_status()
         resp.raise_for_status()

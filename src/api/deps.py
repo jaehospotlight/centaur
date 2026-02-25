@@ -6,7 +6,7 @@ import asyncpg
 from fastapi import Depends, Header, HTTPException, Request
 from openai import AsyncOpenAI
 
-from .config import settings
+from shared.config import settings
 
 
 async def get_pool(request: Request) -> asyncpg.Pool:

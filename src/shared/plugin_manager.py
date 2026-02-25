@@ -10,16 +10,19 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, get_type_hints
 
 import structlog
 from click.testing import CliRunner
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import create_model
+from typer.main import get_command
 
-from .plugin_sdk import PluginContext, reset_plugin_context, set_plugin_context
+from api.deps import verify_api_key
+from shared.plugin_sdk import PluginContext, reset_plugin_context, set_plugin_context
 
 log = structlog.get_logger()
 
@@ -188,7 +191,7 @@ class PluginManager:
         ctx = PluginContext(name=name, secrets=secrets)
 
         # Register the plugin dir as a package so relative imports work
-        pkg_name = f"ai_v2.plugins_runtime.{name}"
+        pkg_name = f"shared.plugins_runtime.{name}"
         init_path = plugin_dir / "__init__.py"
         if init_path.exists():
             pkg_spec = importlib.util.spec_from_file_location(
@@ -202,19 +205,15 @@ class PluginManager:
                 pkg_spec.loader.exec_module(pkg_mod)
         else:
             # Create a virtual package
-            import types
-
             pkg_mod = types.ModuleType(pkg_name)
             pkg_mod.__path__ = [str(plugin_dir)]  # type: ignore[attr-defined]
             sys.modules[pkg_name] = pkg_mod
 
         # Ensure parent namespace exists
-        if "ai_v2.plugins_runtime" not in sys.modules:
-            import types as _t
-
-            ns = _t.ModuleType("ai_v2.plugins_runtime")
+        if "shared.plugins_runtime" not in sys.modules:
+            ns = types.ModuleType("shared.plugins_runtime")
             ns.__path__ = []  # type: ignore[attr-defined]
-            sys.modules["ai_v2.plugins_runtime"] = ns
+            sys.modules["shared.plugins_runtime"] = ns
 
         # Import the plugin module
         module_file = manifest.get("module", "client.py")
@@ -312,7 +311,7 @@ class PluginManager:
                 }
             )
 
-        cli_module_name = f"ai_v2.plugins_runtime.{plugin.name}.{cli_path.stem}"
+        cli_module_name = f"shared.plugins_runtime.{plugin.name}.{cli_path.stem}"
         cli_spec = importlib.util.spec_from_file_location(cli_module_name, cli_path)
         if not cli_spec or not cli_spec.loader:
             return json.dumps(
@@ -323,7 +322,7 @@ class PluginManager:
             )
 
         cli_module = importlib.util.module_from_spec(cli_spec)
-        cli_module.__package__ = f"ai_v2.plugins_runtime.{plugin.name}"  # type: ignore[attr-defined]
+        cli_module.__package__ = f"shared.plugins_runtime.{plugin.name}"  # type: ignore[attr-defined]
         sys.modules[cli_module_name] = cli_module
 
         original_env: dict[str, str | None] = {}
@@ -342,8 +341,6 @@ class PluginManager:
                 )
 
             if hasattr(app, "registered_commands"):
-                from typer.main import get_command
-
                 app = get_command(app)
 
             runner = CliRunner()
@@ -553,11 +550,9 @@ class PluginManager:
 
     def create_rest_router(self) -> APIRouter:
         """Create a FastAPI router with all plugin tools as POST endpoints."""
-        from .deps import verify_api_key
-
         router = APIRouter(
             prefix="/plugins",
-            dependencies=[__import__("fastapi").Depends(verify_api_key)],
+            dependencies=[Depends(verify_api_key)],
         )
 
         for plugin in self.plugins.values():

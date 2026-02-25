@@ -11,11 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from .config import settings
-from .db import close_pool, create_pool
-from .mcp_server import mcp, set_plugin_manager, set_pool
-from .plugin_manager import PluginManager
-from .routers import health, query, search, secrets, sync
+from api.mcp_server import mcp, set_plugin_manager, set_pool
+from api.routers import health, query, search, secrets
+from shared.config import settings
+from shared.db import close_pool, create_pool
+from shared.plugin_manager import PluginManager
 
 log = structlog.get_logger()
 
@@ -51,7 +51,6 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(search.router)
 app.include_router(query.router)
-app.include_router(sync.router)
 app.include_router(secrets.router)
 
 # Load plugins before creating MCP starlette app

@@ -19,7 +19,7 @@ Memory-augmented agent system. Postgres+pgvector data plane, FastAPI+MCP API, 60
 │  ├── On-demand tools: archiver, twitter, allium, etc.  │
 │  └── Indexed sources: slack, linear, gsuite, github    │
 ├─────────────────────────────────────────────────────────┤
-│  ETL Pipeline (src/ai_v2/pipeline.py + extractors/)    │
+│  ETL Pipeline (src/etl/pipeline.py + extractors/)      │
 │  └── Backfill/frontfill into PG from indexed sources   │
 ├─────────────────────────────────────────────────────────┤
 │  Postgres + pgvector                                    │
@@ -32,21 +32,28 @@ Memory-augmented agent system. Postgres+pgvector data plane, FastAPI+MCP API, 60
 
 ## Structure
 
-- `src/ai_v2/` — Core Python package
+- `src/api/` — FastAPI + MCP API service
   - `app.py` — FastAPI application, MCP mount at `/mcp` with Bearer auth
   - `mcp_server.py` — MCP server (search, sql_query, get_timeline, etc.)
-  - `plugin_manager.py` — Plugin discovery, loading, MCP+REST registration
-  - `plugin_sdk.py` — SDK for plugin authors (`secret()`, `PluginContext`)
-  - `config.py` — All settings via pydantic-settings
+  - `deps.py` — FastAPI dependencies (auth, pool, embedding service)
+  - `routers/` — FastAPI route handlers (search, query, sync, secrets, health)
+- `src/etl/` — ETL pipeline service
+  - `config.py` — ETL-specific settings (extractor credentials)
+  - `pipeline.py` — ETL pipeline orchestrator
+  - `embeddings.py` — Embedding generation and hybrid search
+  - `extractors/` — Source extractors (Slack, Linear, GitHub, GCal, Gmail, etc.)
+- `src/shared/` — Shared code used by both api and etl
+  - `config.py` — Base settings via pydantic-settings
   - `db.py` — asyncpg pool, schema bootstrap
   - `cli.py` — Click CLI (`ai-v2 sync`, `ai-v2 serve`, `ai-v2 plugins list`, etc.)
-  - `pipeline.py` — ETL pipeline orchestrator
-  - `extractors/` — Source extractors (Slack, Linear, GitHub, GCal, Gmail, etc.)
-  - `routers/` — FastAPI route handlers (search, query, sync, secrets, health)
+  - `plugin_manager.py` — Plugin discovery, loading, MCP+REST registration
+  - `plugin_sdk.py` — SDK for plugin authors (`secret()`, `PluginContext`)
+  - `models.py` — Shared data models
+  - `cursors.py` — Sync cursor management
+  - `sandbox/` — Docker sandbox image builder and repo sync
 - `plugins/` — 60+ self-contained plugins (see Plugin System below)
 - `migrations/` — Alembic PG migrations
 - `scripts/` — Deployment and migration scripts
-- `sandbox/` — Dockerfile + entrypoint for sandbox images
 
 ## Commands
 
@@ -154,17 +161,19 @@ Resolution order:
 2. Root `.env` (repo root) — centralized secrets
 3. Environment variables — Docker/k8s/sops/1pw
 
-All secrets are loaded by the `PluginManager` and injected into `PluginContext`. Plugin code can use `os.getenv()` or the `secret()` helper from `ai_v2.plugin_sdk`. The `cli.py` files use `load_dotenv()` for standalone execution.
+All secrets are loaded by the `PluginManager` and injected into `PluginContext`. Plugin code can use `os.getenv()` or the `secret()` helper from `shared.plugin_sdk`. The `cli.py` files use `load_dotenv()` for standalone execution.
 
 ### Conventions
 
 - `client.py`: NO `load_dotenv()`. Secrets via `os.getenv()` or `secret()`.
-- `cli.py`: YES `load_dotenv()` at top (standalone support). Use `from ai_v2.cli_tables import Table` for rich tables.
+- `cli.py`: YES `load_dotenv()` at top (standalone support). Use `from shared.cli_tables import Table` for rich tables.
 - Methods starting with `_` or lifecycle methods (`close`, `connect`, `shutdown`) are excluded from tool registration.
 - Stub clients (for CLI-only tools) are acceptable but should have docstrings explaining planned capabilities.
 
 ## Rules
 
+- All imports must be at the top of the file, never inside functions
+- Use absolute package imports everywhere (`from shared.X`, `from api.X`, `from etl.X`), not relative imports (`from .X`, `from ..X`)
 - Python 3.11+, use `uv` for all dependency management — never pip/poetry/pipenv
 - `ruff` for linting and formatting (line-length=100)
 - All secrets via environment variables, never hardcode credentials
@@ -183,7 +192,7 @@ All secrets are loaded by the `PluginManager` and injected into `PluginContext`.
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest
-uv run mypy src/ai_v2
+uv run mypy src/api src/etl src/shared
 ```
 
 ## Running Locally

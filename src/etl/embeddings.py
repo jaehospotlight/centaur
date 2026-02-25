@@ -7,7 +7,7 @@ import asyncpg
 import structlog
 from openai import AsyncOpenAI
 
-from .models import EmbeddingRecord
+from shared.models import EmbeddingRecord
 
 log = structlog.get_logger()
 

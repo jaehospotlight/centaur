@@ -6,7 +6,7 @@ from pathlib import Path
 
 import structlog
 
-from ai_v2.sandbox.config import RepoSpec, SandboxConfig
+from shared.sandbox.config import RepoSpec, SandboxConfig
 
 log = structlog.get_logger()
 

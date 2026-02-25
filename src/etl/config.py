@@ -1,28 +1,15 @@
 from __future__ import annotations
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from shared.config import Settings
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="", env_file=".env", extra="ignore")
-
-    # Database
-    database_url: str = Field(alias="DATABASE_URL")
-
-    # Embeddings
-    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+class ETLSettings(Settings):
+    """Extended settings for the ETL / pipeline service (extractor credentials)."""
 
     # Sync
     sync_interval_seconds: int = 300
-
-    # API
-    api_secret_key: str = Field(default="", alias="API_SECRET_KEY")
-    host: str = "0.0.0.0"
-    port: int = 8000
-    cors_origins: list[str] = ["*"]
 
     # --- Extractor credentials ---
 
@@ -57,6 +44,3 @@ class Settings(BaseSettings):
 
     # BetterStack
     pov_betterstack_api_token: str = Field(default="", alias="POV_BETTERSTACK_API_TOKEN")
-
-
-settings = Settings()

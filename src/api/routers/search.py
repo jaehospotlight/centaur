@@ -7,7 +7,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ..deps import EmbeddingService, get_embedding_service, get_pool, verify_api_key
+from api.deps import EmbeddingService, get_embedding_service, get_pool, verify_api_key
 
 router = APIRouter(prefix="/api/search", dependencies=[Depends(verify_api_key)])
 

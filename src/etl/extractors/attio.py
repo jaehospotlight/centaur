@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -15,8 +15,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..cursors import CursorStore
-from .base import BaseExtractor, ExtractResult, make_record
+from etl.extractors.base import BaseExtractor, ExtractResult, make_record
+from shared.cursors import CursorStore
 
 log = structlog.get_logger()
 
@@ -335,8 +335,6 @@ class AttioExtractor(BaseExtractor):
                     await asyncio.sleep(self._rate_limit_delay)
 
             # 9. Meetings
-            from datetime import datetime, timedelta
-
             cutoff = (datetime.now(UTC) + timedelta(days=14)).isoformat()
             cursor_val = await cursors.get(pool, "attio", "meeting", "start")
             starts_after = CursorStore.apply_overlap(cursor_val) if cursor_val else None

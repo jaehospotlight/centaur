@@ -6,7 +6,7 @@ from pathlib import Path
 
 import structlog
 
-from ai_v2.sandbox.config import SandboxConfig
+from shared.sandbox.config import SandboxConfig
 
 log = structlog.get_logger()
 

@@ -16,8 +16,16 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..cursors import CursorStore, track_max_timestamp
-from .base import BaseExtractor, ExtractResult, make_record
+from etl.extractors.base import BaseExtractor, ExtractResult, make_record
+from shared.cursors import CursorStore, track_max_timestamp
+
+try:
+    from google.auth.transport.requests import Request as GoogleRequest
+    from google.oauth2 import service_account
+
+    _HAS_GOOGLE_AUTH = True
+except ImportError:
+    _HAS_GOOGLE_AUTH = False
 
 log = structlog.get_logger()
 
@@ -88,30 +96,26 @@ class GoogleExtractor(BaseExtractor):
 
     async def _service_account_auth(self, client: httpx.AsyncClient) -> str:
 
-        key_data = json.loads(self._service_account_key)
-        # Use google-auth if available, fall back to manual JWT
-        try:
-            from google.auth.transport.requests import Request as GoogleRequest
-            from google.oauth2 import service_account
-
-            creds = service_account.Credentials.from_service_account_info(
-                key_data,
-                scopes=[
-                    "https://www.googleapis.com/auth/calendar.readonly",
-                    "https://www.googleapis.com/auth/gmail.readonly",
-                    "https://www.googleapis.com/auth/drive.readonly",
-                    "https://www.googleapis.com/auth/documents.readonly",
-                    "https://www.googleapis.com/auth/spreadsheets.readonly",
-                    "https://www.googleapis.com/auth/presentations.readonly",
-                    "https://www.googleapis.com/auth/contacts.other.readonly",
-                    "https://www.googleapis.com/auth/directory.readonly",
-                    "https://www.googleapis.com/auth/drive.activity.readonly",
-                ],
-            )
-            creds.refresh(GoogleRequest())
-            return creds.token
-        except ImportError:
+        if not _HAS_GOOGLE_AUTH:
             raise RuntimeError("google-auth package required for service account auth")
+
+        key_data = json.loads(self._service_account_key)
+        creds = service_account.Credentials.from_service_account_info(
+            key_data,
+            scopes=[
+                "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/documents.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/presentations.readonly",
+                "https://www.googleapis.com/auth/contacts.other.readonly",
+                "https://www.googleapis.com/auth/directory.readonly",
+                "https://www.googleapis.com/auth/drive.activity.readonly",
+            ],
+        )
+        creds.refresh(GoogleRequest())
+        return creds.token
 
     @retry(
         retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException)),

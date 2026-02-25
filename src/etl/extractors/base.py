@@ -10,7 +10,7 @@ from typing import Any
 import asyncpg
 import structlog
 
-from ..cursors import CursorStore
+from shared.cursors import CursorStore
 
 log = structlog.get_logger()
 

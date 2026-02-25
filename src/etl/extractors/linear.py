@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -15,8 +15,8 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..cursors import CursorStore, track_max_timestamp
-from .base import BaseExtractor, ExtractResult, make_record
+from etl.extractors.base import BaseExtractor, ExtractResult, make_record
+from shared.cursors import CursorStore, track_max_timestamp
 
 log = structlog.get_logger()
 
@@ -269,8 +269,6 @@ class LinearExtractor(BaseExtractor):
             since = CursorStore.apply_overlap(cursor_val) if cursor_val else None
 
             cutoff_ts = time.time() - self._issue_age_days * 86400
-            from datetime import datetime
-
             cutoff = datetime.fromtimestamp(cutoff_ts, tz=UTC).isoformat()
             gte = since if since and since > cutoff else cutoff
 

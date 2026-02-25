@@ -27,5 +27,16 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  etl:
+    build: .
+    command: ["uv", "run", "ai-v2", "continuous"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
