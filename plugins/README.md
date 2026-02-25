@@ -106,6 +106,7 @@ Use `secret("KEY")` to access. Never use `os.environ` — plugin secrets are sco
 | transcriber | Local-first voice transcription (Whisper) | (none) |
 | unit410 | Unit 410 staking — validators, rewards, delegations | UNIT410_API_KEY |
 | veo3 | Google Veo 3 video generation | GOOGLE_API_KEY |
+| websearch | Exa web search + Claude deep research synthesis | EXA_API_KEY, ANTHROPIC_API_KEY, DEEP_RESEARCH_MODEL |
 | youtube | YouTube video data | YOUTUBE_API_KEY |
 
 

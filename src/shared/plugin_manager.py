@@ -18,9 +18,9 @@ from typing import Any, get_type_hints
 
 import structlog
 from click.testing import CliRunner
-from toon_format import encode as toon_encode
 from fastapi import APIRouter, Body, Depends
 from pydantic import create_model
+from toon_format import encode as toon_encode
 from typer.main import get_command
 
 from api.deps import verify_api_key
@@ -831,7 +831,7 @@ def _register_rest_endpoint(router: APIRouter, tool: LoadedTool) -> None:
 
     wrapper = _make_wrapper(tool)
 
-    async def endpoint(body=Body(...)) -> dict:  # type: ignore[valid-type]
+    async def endpoint(body=Body(...)) -> dict:  # type: ignore[valid-type]  # noqa: B008
         result = await wrapper(**body.model_dump())
         return {"plugin": tool.plugin_name, "tool": tool.tool_name, "result": result}
 
