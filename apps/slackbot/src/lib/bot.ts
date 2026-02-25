@@ -1,25 +1,21 @@
 /**
  * Chat SDK bot — Slack adapter with Redis state.
  *
- * On @mention, spawns a local agent harness CLI (amp/codex/claude-code),
- * streams JSON events from stdout, and posts text back to Slack via
- * Chat SDK's native streaming.
- *
- * Thread continuity: stores amp thread IDs in Redis (via Chat SDK state)
- * so follow-up messages resume the same agent thread.
+ * On @mention:
+ *   1. spawn() → ensures a Docker container exists for this thread
+ *   2. execute() → runs the message through the harness CLI
+ *   3. thread.post() → posts the result back to Slack
  */
 
 import { Chat } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { createRedisState } from "@chat-adapter/state-redis";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { extractHarness, executeMessage, type Harness } from "./harness";
-
-// Thread ID storage — maps "channel:thread_ts" → { agentThreadId, harness }
-const threadStore = new Map<string, { agentThreadId: string; harness: Harness }>();
+import { extractHarness, spawn, execute } from "./harness";
 
 function createBot() {
-  const hasSlackCreds = process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET;
+  const hasSlackCreds =
+    process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET;
 
   const bot = new Chat({
     userName: "tempo-ai",
@@ -29,46 +25,34 @@ function createBot() {
 
   async function handleMessage(
     thread: Parameters<Parameters<typeof bot.onNewMention>[0]>[0],
-    messageText: string,
-    isNewThread: boolean
+    messageText: string
   ) {
-    // Extract harness directive (e.g. "harness=codex fix the bug")
     const { harness, cleanedText } = extractHarness(messageText);
+    const threadKey = thread.id;
 
-    // Look up existing agent thread ID for continuity
-    const threadId = thread.id;
-    const existing = threadStore.get(threadId);
-    const agentThreadId = existing?.agentThreadId ?? null;
-    const activeHarness = existing?.harness ?? harness;
+    await thread.startTyping("Spawning agent...");
+
+    // Ensure container exists for this thread
+    await spawn(threadKey, harness);
 
     await thread.startTyping("Running...");
 
-    const { textStream, threadIdPromise } = executeMessage(
-      activeHarness,
-      cleanedText,
-      agentThreadId
-    );
+    // Execute message and get final result
+    const result = await execute(threadKey, cleanedText);
 
-    // Post the stream — Chat SDK handles native Slack streaming
-    await thread.post(textStream);
-
-    // Store the agent thread ID for follow-ups
-    const newThreadId = await threadIdPromise;
-    if (newThreadId) {
-      threadStore.set(threadId, { agentThreadId: newThreadId, harness: activeHarness });
-    }
+    await thread.post(result);
   }
 
   // First @mention — subscribe and run
   bot.onNewMention(async (thread, message) => {
     await thread.subscribe();
-    await handleMessage(thread, message.text, true);
+    await handleMessage(thread, message.text);
   });
 
   // Follow-up messages in subscribed threads
   bot.onSubscribedMessage(async (thread, message) => {
     if (!message.isMention) return;
-    await handleMessage(thread, message.text, false);
+    await handleMessage(thread, message.text);
   });
 
   return bot;
