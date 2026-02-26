@@ -13,6 +13,8 @@ import { createRedisState } from "@chat-adapter/state-redis";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { extractHarness, spawn, execute } from "./harness";
 
+const THREAD_VIEWER_URL = process.env.THREAD_VIEWER_URL || "https://svc-ai.paradigm.xyz";
+
 type MarkdownNode = Root | Root["children"][number];
 
 function renderSlackMessage(markdown: string) {
@@ -95,7 +97,14 @@ function createBot() {
     // Execute message and get final result
     const result = await execute(threadKey, message);
 
-    await thread.post(renderSlackMessage(result));
+    // Append thread viewer link on the first reply
+    let finalMessage = result;
+    if (isFirstMessage) {
+      const viewerUrl = `${THREAD_VIEWER_URL}/threads/${encodeURIComponent(threadKey)}`;
+      finalMessage += `\n\n[🔗 Thread Viewer](${viewerUrl})`;
+    }
+
+    await thread.post(renderSlackMessage(finalMessage));
   }
 
   // First @mention — subscribe and run
