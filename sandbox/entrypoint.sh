@@ -2,31 +2,39 @@
 set -e
 
 HOME_DIR="$(eval echo ~)"
+MCP_URL="${AI_V2_API_URL:-http://localhost:8000}/mcp/"
+MCP_KEY="${AI_V2_API_KEY:-}"
 
-# ── CRITICAL PATH: MCP configs (must complete before first exec) ─────────────
-export MCP_URL="${AI_V2_API_URL:-http://localhost:8000}/mcp/"
-export MCP_KEY="${AI_V2_API_KEY:-}"
+# ── Write MCP configs directly (no template files needed) ────────────────────
 if [ -n "$MCP_KEY" ]; then
-    envsubst '${MCP_URL} ${MCP_KEY}' < "$HOME_DIR/.config/amp/settings.json.tmpl" > "$HOME_DIR/.config/amp/settings.json"
-    envsubst '${MCP_URL} ${MCP_KEY}' < "$HOME_DIR/.claude.json.tmpl" > "$HOME_DIR/.claude.json"
-    envsubst '${MCP_URL}'            < "$HOME_DIR/.codex/config.toml.tmpl" > "$HOME_DIR/.codex/config.toml"
+    cat > "$HOME_DIR/.config/amp/settings.json" <<EOF
+{"amp.experimental.compaction":95,"amp.mcpServers":{"tempo-ai":{"url":"${MCP_URL}","headers":{"Authorization":"Bearer ${MCP_KEY}"}}}}
+EOF
+    cat > "$HOME_DIR/.claude.json" <<EOF
+{"mcpServers":{"tempo-ai":{"type":"http","url":"${MCP_URL}","headers":{"Authorization":"Bearer ${MCP_KEY}"}}}}
+EOF
+    cat > "$HOME_DIR/.codex/config.toml" <<EOF
+model_auto_compact_token_limit = 120000
+[mcp_servers.tempo-ai]
+url = "${MCP_URL}"
+EOF
 fi
 
-# ── Writable worktree (must complete before first exec) ──────────────────────
+# ── Writable worktree ────────────────────────────────────────────────────────
 if [ -n "${AGENT_REPO:-}" ] && [ -d "$HOME_DIR/github/$AGENT_REPO/.git" ]; then
     BRANCH="agent-$(date +%s)"
     git -C "$HOME_DIR/github/$AGENT_REPO" worktree add "$HOME_DIR/workspace" -b "$BRANCH" HEAD --quiet
 fi
 [ -f "$HOME_DIR/AGENTS.md" ] && [ -d "$HOME_DIR/workspace" ] && cp "$HOME_DIR/AGENTS.md" "$HOME_DIR/workspace/AGENTS.md" 2>/dev/null || true
 
-# Signal readiness — container is safe for docker exec
+# Signal readiness
 touch "$HOME_DIR/.ready"
 
-# ── NON-CRITICAL: background slow auth tasks ─────────────────────────────────
+# ── Background: slow auth tasks ─────────────────────────────────────────────
 {
     if [ -n "${GITHUB_TOKEN:-}" ]; then
         git config --global credential.helper store
-        echo "https://oauth2:${GITHUB_TOKEN}@github.com" > "$HOME_DIR/.git-credentials"
+        printf 'https://oauth2:%s@github.com\n' "$GITHUB_TOKEN" > "$HOME_DIR/.git-credentials"
         echo "${GITHUB_TOKEN}" | gh auth login --with-token 2>/dev/null || true
         gh auth setup-git 2>/dev/null || true
     fi

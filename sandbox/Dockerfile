@@ -49,15 +49,9 @@ USER agent
 
 # ── Agent workspace setup (rarely changes) ──────────────────────────────────
 RUN mkdir -p ~/.amp/bin ~/.config/amp ~/.codex ~/github ~/workspace \
-    && ln -s ~/.amp/bin/amp ~/.amp/bin/amp 2>/dev/null || true \
     && git config --global init.defaultBranch main \
     && git config --global push.autoSetupRemote true \
     && git config --global --add safe.directory '*'
-
-# ── Config templates (change occasionally) ──────────────────────────────────
-COPY --chown=agent:agent config/amp-settings.json   /home/agent/.config/amp/settings.json.tmpl
-COPY --chown=agent:agent config/claude-settings.json /home/agent/.claude.json.tmpl
-COPY --chown=agent:agent config/codex-config.toml    /home/agent/.codex/config.toml.tmpl
 
 # ── Entrypoint (changes rarely) ─────────────────────────────────────────────
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
