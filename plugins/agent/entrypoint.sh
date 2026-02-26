@@ -3,6 +3,7 @@ set -e
 
 HOME_DIR="$(eval echo ~)"
 GITHUB_DIR="$HOME_DIR/github"
+WORKSPACE_DIR="$HOME_DIR/workspace"
 MCP_URL="${AI_V2_API_URL:-http://localhost:8000}/mcp/"
 MCP_KEY="${AI_V2_API_KEY:-}"
 
@@ -43,18 +44,20 @@ if [ -n "$CODEX_KEY" ]; then
     fi
 fi
 
-# ── Optional repo sync ──────────────────────────────────────────────────────
-if [ "${SYNC_ON_START:-false}" = "true" ]; then
-    for org_dir in "$GITHUB_DIR"/*/; do
-        [ -d "$org_dir" ] || continue
-        for repo_dir in "$org_dir"*/; do
-            if [ -d "$repo_dir/.git" ]; then
-                echo "Updating $(basename "$(dirname "$repo_dir")")/$(basename "$repo_dir")..."
-                git -C "$repo_dir" fetch origin -q 2>/dev/null || true
-                git -C "$repo_dir" reset --hard origin/HEAD -q 2>/dev/null || true
-            fi
-        done
-    done
+# ── Writable worktree from mounted repos ─────────────────────────────────────
+# AGENT_REPO is set by the agent client (e.g. "paradigmxyz/reth").
+# Host ~/github is bind-mounted at ~/github. We create a worktree in ~/workspace
+# so the agent works on a disposable branch without touching the main working tree.
+if [ -n "${AGENT_REPO:-}" ] && [ -d "$GITHUB_DIR/$AGENT_REPO/.git" ]; then
+    echo "Creating worktree for $AGENT_REPO..."
+    BRANCH="agent-$(date +%s)"
+    git -C "$GITHUB_DIR/$AGENT_REPO" worktree add "$WORKSPACE_DIR" -b "$BRANCH" HEAD --quiet
+    echo "Workspace ready at $WORKSPACE_DIR (branch: $BRANCH)"
+fi
+
+# Copy system prompt into workspace
+if [ -f "$HOME_DIR/AGENTS.md" ] && [ -d "$WORKSPACE_DIR" ]; then
+    cp "$HOME_DIR/AGENTS.md" "$WORKSPACE_DIR/AGENTS.md" 2>/dev/null || true
 fi
 
 exec "$@"

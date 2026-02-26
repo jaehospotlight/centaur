@@ -80,17 +80,16 @@ RUN git config --global init.defaultBranch main \
     && git config --global push.autoSetupRemote true \
     && git config --global --add safe.directory '*'
 
-# ── Repositories ─────────────────────────────────────────────────────────────
-# Pre-cloned by clone-repos.sh into repos/{org}/{repo} structure.
-# Mounted at ~/github/{org}/{repo} inside the container.
-RUN mkdir -p ~/github
-COPY --chown=agent:agent repos/ /home/agent/github/
+# ── Workspace ────────────────────────────────────────────────────────────────
+# Host repos are bind-mounted read-only at ~/github by the agent client.
+# Writable worktrees/clones go into ~/workspace.
+RUN mkdir -p ~/github ~/workspace
 
 # ── System prompt ────────────────────────────────────────────────────────────
-COPY --chown=agent:agent SYSTEM_PROMPT.md /home/agent/github/AGENTS.md
+COPY --chown=agent:agent SYSTEM_PROMPT.md /home/agent/AGENTS.md
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
-WORKDIR /home/agent/github
+WORKDIR /home/agent/workspace
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]

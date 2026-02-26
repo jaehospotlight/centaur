@@ -1,0 +1,40 @@
+# Version control
+.git
+
+# Virtual environments
+.venv
+
+# Node
+apps/slackbot/node_modules
+
+# Agent plugin cached repos (4GB+)
+plugins/agent/repos
+
+# Caches
+.ruff_cache
+.pytest_cache
+__pycache__
+
+# Logs
+logs/
+
+# IDE / editor
+.claude
+.cursor
+.vscode
+.idea
+
+# Docker
+.dockerignore
+Dockerfile
+
+# Docs / non-runtime
+docs/
+skills/
+*.md
+!README.md
+
+# Environment (secrets)
+.env
+.env.*
+!.env.example

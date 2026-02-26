@@ -8,6 +8,7 @@ import codecs
 import contextlib
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -120,6 +121,10 @@ def _docker_client() -> docker.DockerClient:
 
 def _image() -> str:
     return os.getenv("AGENT_IMAGE", "agent2:latest")
+
+
+def _repos_host_dir() -> str:
+    return os.getenv("REPOS_HOST_DIR", os.path.expanduser("~/github"))
 
 
 def _container_env() -> list[str]:
@@ -284,7 +289,11 @@ class AgentClient:
                 del _sessions[slack_thread_key]
 
         client = _docker_client()
-        workdir = f"/home/agent/github/{repo}" if repo else "/home/agent/github"
+        workdir = "/home/agent/workspace" if repo else "/home/agent/github"
+
+        env = _container_env()
+        if repo:
+            env.append(f"AGENT_REPO={repo}")
 
         container = client.containers.run(
             _image(),
@@ -294,12 +303,16 @@ class AgentClient:
             network_mode="host",
             mem_limit="4g",
             nano_cpus=int(2 * 1e9),
-            environment=_container_env(),
+            environment=env,
             working_dir=workdir,
+            volumes={
+                _repos_host_dir(): {"bind": "/home/agent/github", "mode": "rw"},
+            },
             labels={
                 "tempo.agent": "true",
                 "tempo.thread": slack_thread_key,
                 "tempo.harness": harness,
+                **({"tempo.repo": repo} if repo else {}),
             },
             name=f"tempo-agent-{slack_thread_key.replace(':', '-')[:40]}",
         )
@@ -491,6 +504,17 @@ class AgentClient:
         client = _docker_client()
         try:
             container = client.containers.get(session["container_id"])
+            # Clean up git worktree before removing the container
+            repo = container.labels.get("tempo.repo", "")
+            if repo:
+                repos_dir = _repos_host_dir()
+                repo_path = os.path.join(repos_dir, repo)
+                if os.path.isdir(repo_path):
+                    subprocess.run(
+                        ["git", "-C", repo_path, "worktree", "prune"],
+                        capture_output=True,
+                        timeout=10,
+                    )
             container.stop(timeout=5)
             container.remove()
         except Exception:
