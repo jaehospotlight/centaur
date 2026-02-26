@@ -67,14 +67,16 @@ export async function spawn(
   };
 }
 
-/** Execute a message and return the final result text. */
+/** Execute a message and return the final result text. Auto-spawns if needed. */
 export async function execute(
   threadKey: string,
-  message: string
+  message: string,
+  harness: Harness = "amp"
 ): Promise<string> {
   const result = await pluginCall("execute", {
     slack_thread_key: threadKey,
     message,
+    harness,
   });
   return (result.result as string) || "No response from agent.";
 }

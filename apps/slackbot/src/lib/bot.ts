@@ -11,7 +11,7 @@ import { Chat, parseMarkdown, type Root } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { createRedisState } from "@chat-adapter/state-redis";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { extractHarness, spawn, execute } from "./harness";
+import { extractHarness, execute } from "./harness";
 
 const THREAD_VIEWER_URL = process.env.THREAD_VIEWER_URL || "https://svc-ai.paradigm.xyz";
 
@@ -82,11 +82,6 @@ function createBot() {
     const { harness, cleanedText } = extractHarness(messageText);
     const threadKey = thread.id;
 
-    await thread.startTyping("Spawning agent...");
-
-    // Ensure container exists for this thread
-    await spawn(threadKey, harness);
-
     await thread.startTyping("Running...");
 
     // Prepend session context on first message
@@ -94,8 +89,8 @@ function createBot() {
       ? buildSessionContext(threadKey) + cleanedText
       : cleanedText;
 
-    // Execute message and get final result
-    const result = await execute(threadKey, message);
+    // Execute message (auto-spawns container if needed)
+    const result = await execute(threadKey, message, harness);
 
     // Append thread viewer link on the first reply
     let finalMessage = result;

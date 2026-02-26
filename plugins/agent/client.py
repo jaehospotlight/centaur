@@ -26,8 +26,15 @@ HARNESSES = ("amp", "claude-code", "codex")
 # Max seconds to wait for a single exec call before killing it
 EXEC_TIMEOUT = int(os.getenv("AGENT_EXEC_TIMEOUT", "600"))
 
+# Number of pre-warmed containers to keep ready
+POOL_SIZE = int(os.getenv("AGENT_POOL_SIZE", "2"))
+
 # In-memory session registry: slack_thread_key → session dict
 _sessions: dict[str, dict[str, Any]] = {}
+
+# Pool of pre-warmed, unclaimed containers (LIFO)
+_pool: list[str] = []  # container IDs
+_pool_lock = __import__("threading").Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +145,78 @@ def _image() -> str:
 
 def _repos_host_dir() -> str:
     return os.getenv("REPOS_HOST_DIR", os.path.expanduser("~/github"))
+
+
+def _create_container(
+    client: Any,
+    name: str | None = None,
+    repo: str | None = None,
+) -> Any:
+    """Create a ready-to-use agent container."""
+    workdir = "/home/agent/workspace" if repo else "/home/agent/github"
+    env = _container_env()
+    if repo:
+        env.append(f"AGENT_REPO={repo}")
+    container = client.containers.run(
+        _image(),
+        detach=True,
+        stdin_open=True,
+        tty=False,
+        network_mode="host",
+        mem_limit="4g",
+        nano_cpus=int(2 * 1e9),
+        environment=env,
+        working_dir=workdir,
+        volumes={
+            _repos_host_dir(): {"bind": "/home/agent/github", "mode": "rw"},
+        },
+        labels={
+            "tempo.agent": "true",
+            **({"tempo.pool": "true"} if not name else {}),
+        },
+        **({"name": name} if name else {}),
+    )
+    _wait_ready(container)
+    return container
+
+
+def _claim_from_pool() -> Any | None:
+    """Try to claim a pre-warmed container from the pool."""
+    with _pool_lock:
+        while _pool:
+            cid = _pool.pop()
+            try:
+                client = _docker_client()
+                container = client.containers.get(cid)
+                if container.status == "running":
+                    # Remove pool label so it won't be reclaimed
+                    return container
+            except Exception:
+                continue
+    return None
+
+
+def _refill_pool() -> None:
+    """Top up the pool in a background thread."""
+    import threading as _threading
+
+    def _fill() -> None:
+        with _pool_lock:
+            needed = POOL_SIZE - len(_pool)
+        if needed <= 0:
+            return
+        client = _docker_client()
+        for _ in range(needed):
+            try:
+                container = _create_container(client)
+                with _pool_lock:
+                    _pool.append(container.id)
+                log.info("pool_container_added", pool_size=len(_pool))
+            except Exception as exc:
+                log.warning("pool_fill_failed", error=str(exc))
+                break
+
+    _threading.Thread(target=_fill, daemon=True).start()
 
 
 def _container_env() -> list[str]:
@@ -301,37 +380,26 @@ class AgentClient:
             except NotFound:
                 del _sessions[slack_thread_key]
 
-        client = _docker_client()
-        workdir = "/home/agent/workspace" if repo else "/home/agent/github"
+        # Try to claim a pre-warmed container from the pool (skip if repo needed)
+        container = None
+        status = "started"
+        if not repo:
+            container = _claim_from_pool()
+            if container:
+                status = "claimed_from_pool"
+                log.info("pool_container_claimed", thread=slack_thread_key)
 
-        env = _container_env()
-        if repo:
-            env.append(f"AGENT_REPO={repo}")
+        # Otherwise create a new one
+        if not container:
+            client = _docker_client()
+            container = _create_container(
+                client,
+                name=f"tempo-agent-{slack_thread_key.replace(':', '-')[:40]}",
+                repo=repo,
+            )
 
-        container = client.containers.run(
-            _image(),
-            detach=True,
-            stdin_open=True,
-            tty=False,
-            network_mode="host",
-            mem_limit="4g",
-            nano_cpus=int(2 * 1e9),
-            environment=env,
-            working_dir=workdir,
-            volumes={
-                _repos_host_dir(): {"bind": "/home/agent/github", "mode": "rw"},
-            },
-            labels={
-                "tempo.agent": "true",
-                "tempo.thread": slack_thread_key,
-                "tempo.harness": harness,
-                **({"tempo.repo": repo} if repo else {}),
-            },
-            name=f"tempo-agent-{slack_thread_key.replace(':', '-')[:40]}",
-        )
-
-        # Wait for entrypoint to finish critical setup (config files, worktree)
-        _wait_ready(container)
+        # Refill pool in background after claiming
+        _refill_pool()
 
         session = {
             "container_id": container.id,
@@ -348,30 +416,45 @@ class AgentClient:
         return {
             "session_id": slack_thread_key,
             "container_id": container.id,
-            "status": "started",
+            "status": status,
             "harness": harness,
         }
+
+    def pool(self) -> dict[str, Any]:
+        """Show pool status and trigger a refill if needed."""
+        with _pool_lock:
+            pool_size = len(_pool)
+        _refill_pool()
+        return {"pool_size": pool_size, "target": POOL_SIZE}
 
     def execute(
         self,
         slack_thread_key: str,
         message: str,
+        harness: str = "amp",
+        repo: str | None = None,
     ) -> dict[str, Any]:
-        """Execute a message in an existing sandbox and return the result.
+        """Execute a message in a sandbox, spawning one if needed.
 
         Runs the harness CLI via docker exec, waits for completion,
         and returns the final result text.
         """
         session = _sessions.get(slack_thread_key)
-        if not session:
-            raise RuntimeError(f"No session for thread '{slack_thread_key}'. Call spawn() first.")
 
-        client = _docker_client()
-        try:
+        # Auto-spawn if no session or container is gone
+        if session:
+            client = _docker_client()
+            try:
+                container = client.containers.get(session["container_id"])
+            except NotFound:
+                del _sessions[slack_thread_key]
+                session = None
+
+        if not session:
+            self.spawn(slack_thread_key, harness, repo)
+            session = _sessions[slack_thread_key]
+            client = _docker_client()
             container = client.containers.get(session["container_id"])
-        except NotFound:
-            del _sessions[slack_thread_key]
-            raise RuntimeError("Container is gone. Call spawn() to create a new one.") from None
 
         cmd = _build_command(session["harness"], message, session["agent_thread_id"])
 
@@ -621,4 +704,8 @@ class AgentClient:
 
 
 def _client() -> AgentClient:
-    return AgentClient()
+    client = AgentClient()
+    # Pre-fill the container pool on startup
+    if POOL_SIZE > 0:
+        _refill_pool()
+    return client
