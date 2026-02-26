@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets as _secrets
+import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,6 +23,24 @@ from api.routers import health, query, search, secrets, threads, ui
 from shared.config import settings
 from shared.db import close_pool, create_pool
 from shared.plugin_manager import PluginManager
+
+# ---------------------------------------------------------------------------
+# Structlog configuration — JSON in prod (non-tty), console in dev
+# ---------------------------------------------------------------------------
+_LOG_LEVELS = {"critical": 50, "error": 40, "warning": 30, "info": 20, "debug": 10}
+_log_level = _LOG_LEVELS.get(os.getenv("AI_V2_LOG_LEVEL", "warning").lower(), 30)
+
+structlog.configure(
+    wrapper_class=structlog.make_filtering_bound_logger(_log_level),
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer()
+        if sys.stderr.isatty()
+        else structlog.processors.JSONRenderer(),
+    ],
+)
 
 log = structlog.get_logger()
 
