@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import json
@@ -710,7 +711,8 @@ class PluginManager:
             if inspect.iscoroutinefunction(tool.fn):
                 result = await tool.fn(**args)
             else:
-                result = tool.fn(**args)
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, lambda: tool.fn(**args))
             if isinstance(result, str):
                 return result
             return _to_toon(result)
@@ -767,7 +769,8 @@ def _make_wrapper(tool: LoadedTool) -> Callable:
             if inspect.iscoroutinefunction(tool.fn):
                 result = await tool.fn(**kwargs)
             else:
-                result = tool.fn(**kwargs)
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, lambda: tool.fn(**kwargs))
             if isinstance(result, str):
                 return result
             return json.dumps(result, default=str)
