@@ -31,6 +31,7 @@ EOF
     # Codex
     mkdir -p "$HOME_DIR/.codex"
     cat > "$HOME_DIR/.codex/config.toml" <<EOF
+model_auto_compact_token_limit = 120000
 [mcp_servers.tempo-ai]
 url = "${MCP_URL}"
 EOF
