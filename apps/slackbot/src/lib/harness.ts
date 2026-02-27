@@ -43,14 +43,14 @@ async function agentCall(
   return data;
 }
 
-export type Harness = "amp" | "claude-code" | "codex";
+export type Harness = "amp" | "claude-code" | "codex" | "pi-mono";
 
 /** Parse "harness=amp" directive from message text. */
 export function extractHarness(text: string): {
   harness: Harness;
   cleanedText: string;
 } {
-  const match = text.match(/\bharness\s*=\s*(amp|claude-code|codex)\b/i);
+  const match = text.match(/\bharness\s*=\s*(amp|claude-code|codex|pi-mono)\b/i);
   if (match) {
     const harness = match[1].toLowerCase() as Harness;
     const cleanedText = (

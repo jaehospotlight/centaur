@@ -41,20 +41,26 @@ RUN curl -L https://foundry.paradigm.xyz | bash \
     && /home/agent/.foundry/bin/foundryup
 ENV PATH="/home/agent/.foundry/bin:${PATH}"
 
-# ── Harness CLIs (amp, claude-code, codex) ───────────────────────────────────
+# ── Harness CLIs (amp, claude-code, codex, pi-mono) ──────────────────────────
 RUN curl -fsSL https://ampcode.com/install.sh | bash
 USER root
-RUN npm install -g @anthropic-ai/claude-code @openai/codex
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @mariozechner/pi-coding-agent
 USER agent
 
 # ── Agent workspace setup (rarely changes) ──────────────────────────────────
-RUN mkdir -p ~/.amp/bin ~/.config/amp ~/.codex ~/github ~/workspace \
+RUN mkdir -p ~/.amp/bin ~/.config/amp ~/.codex ~/.pi/agent ~/github ~/workspace \
     && git config --global init.defaultBranch main \
     && git config --global push.autoSetupRemote true \
     && git config --global --add safe.directory '*'
 
 # ── Entrypoint (changes rarely) ─────────────────────────────────────────────
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
+
+# ── Pi-mono extensions (TODO: wire up pi-plugins/ from repo root) ─────────
+# COPY --chown=agent:agent pi-plugins/system-prompt.ts /home/agent/.pi/agent/extensions/system-prompt.ts
+# COPY --chown=agent:agent pi-plugins/handoff.ts /home/agent/.pi/agent/extensions/handoff.ts
+# COPY --chown=agent:agent pi-plugins/tool-harness.ts /home/agent/.pi/agent/extensions/tool-harness.ts
+# COPY --chown=agent:agent pi-plugins/tools/ /home/agent/.pi/agent/extensions/tools/
 
 # ── System prompt (changes most often — last for best caching) ──────────────
 COPY --chown=agent:agent SYSTEM_PROMPT.md /home/agent/AGENTS.md

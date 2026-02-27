@@ -10,6 +10,17 @@ cat > "$HOME_DIR/.config/amp/settings.json" <<EOF
 {"amp.experimental.compaction":95}
 EOF
 
+# ── Pi-mono settings ─────────────────────────────────────────────────────────
+mkdir -p "$HOME_DIR/.pi/agent/extensions"
+cat > "$HOME_DIR/.pi/agent/settings.json" <<EOF
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "thinkingLevel": "medium",
+  "autoCompaction": true
+}
+EOF
+
 # ── Writable worktree ────────────────────────────────────────────────────────
 if [ -n "${AGENT_REPO:-}" ] && [ -d "$HOME_DIR/github/$AGENT_REPO/.git" ]; then
     BRANCH="agent-$(date +%s)"
