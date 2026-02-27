@@ -32,6 +32,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 background-color: #18181b !important;
               }
 
+              tr.thread-card:hover {
+                border-color: transparent !important;
+                background-color: #111113 !important;
+              }
+
               .nav-link:hover {
                 color: #d4d4d8 !important;
               }
