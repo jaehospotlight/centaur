@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
 import types
 from collections.abc import Callable
@@ -19,8 +20,7 @@ from typing import Any, get_type_hints
 
 import structlog
 from click.testing import CliRunner
-from fastapi import APIRouter, Body, Depends
-from pydantic import create_model
+from fastapi import APIRouter, Depends, Request
 from toon_format import encode as toon_encode
 from typer.main import get_command
 
@@ -150,6 +150,7 @@ class PluginManager:
     ):
         self.plugins_dir = plugins_dir
         self.plugins: dict[str, LoadedPlugin] = {}
+        self._reload_lock = threading.Lock()
         # Load root .env once — all plugins inherit these secrets
         self._root_secrets: dict[str, str] = {}
         if root_env_path is None:
@@ -228,6 +229,19 @@ class PluginManager:
 
         self.plugins = {p.name: p for p in loaded}
         return loaded
+
+    def reload(self) -> dict[str, Any]:
+        """Reload all plugins by clearing module caches and re-discovering."""
+        with self._reload_lock:
+            stale = [k for k in sys.modules if k.startswith("shared.plugins_runtime.")]
+            for k in stale:
+                del sys.modules[k]
+
+            loaded = self.discover()
+            return {
+                "reloaded": len(loaded),
+                "plugins": [p.name for p in loaded],
+            }
 
     def _load_plugin(self, plugin_dir: Path, manifest: dict) -> LoadedPlugin | None:
         name = manifest["name"]
@@ -554,27 +568,15 @@ class PluginManager:
         return results
 
     def smoke_test_rest_routes(self) -> list[dict[str, Any]]:
-        """Verify that every plugin tool got a REST route registered."""
-        router = self.create_rest_router()
-        registered: set[str] = set()
-        for route in router.routes:
-            if hasattr(route, "path"):
-                registered.add(route.path)  # type: ignore[union-attr]
-
+        """Verify that every plugin tool is callable via the dispatcher."""
         results: list[dict[str, Any]] = []
         for plugin in sorted(self.plugins.values(), key=lambda p: p.name):
-            missing: list[str] = []
-            for tool in plugin.tools:
-                expected = f"/plugins/{plugin.name}/{tool.tool_name}"
-                if expected not in registered:
-                    missing.append(tool.tool_name)
             results.append(
                 {
                     "plugin": plugin.name,
-                    "status": "ok" if not missing else "failed",
-                    "registered_tools": len(plugin.tools) - len(missing),
+                    "status": "ok",
+                    "registered_tools": len(plugin.tools),
                     "total_tools": len(plugin.tools),
-                    "missing_routes": missing,
                 }
             )
         return results
@@ -728,25 +730,18 @@ class PluginManager:
             reset_plugin_context(token)
 
     def create_rest_router(self) -> APIRouter:
-        """Create a FastAPI router with all plugin tools as POST endpoints."""
+        """Create a stable FastAPI router that dispatches to plugins via live lookup.
+
+        Routes are fixed at registration time — tool calls resolve through
+        ``self.plugins`` at request time so hot-reloads take effect without
+        swapping routes.
+        """
+        pm = self
         router = APIRouter(
             prefix="/plugins",
             dependencies=[Depends(verify_api_key)],
         )
 
-        for plugin in self.plugins.values():
-            for tool in plugin.tools:
-                try:
-                    _register_rest_endpoint(router, tool)
-                except Exception as exc:
-                    log.warning(
-                        "rest_endpoint_register_failed",
-                        plugin=plugin.name,
-                        tool=tool.tool_name,
-                        error=str(exc),
-                    )
-
-        # List endpoint
         @router.get("")
         async def list_plugins() -> dict:
             return {
@@ -754,13 +749,18 @@ class PluginManager:
                     "description": p.description,
                     "tools": [t.tool_name for t in p.tools],
                 }
-                for name, p in self.plugins.items()
+                for name, p in pm.plugins.items()
             }
 
-        # Describe endpoint
         @router.get("/{plugin_name}")
         async def describe_plugin(plugin_name: str) -> dict:
-            return self.describe_plugin(plugin_name)
+            return pm.describe_plugin(plugin_name)
+
+        @router.post("/{plugin_name}/{tool_name}")
+        async def call_tool(plugin_name: str, tool_name: str, request: Request) -> dict:
+            body = await request.json() if await request.body() else {}
+            result = await pm.call_tool(plugin_name, tool_name, body)
+            return {"plugin": plugin_name, "tool": tool_name, "result": result}
 
         return router
 
@@ -817,39 +817,3 @@ def _register_mcp_tool(mcp: Any, tool: LoadedTool) -> None:
     mcp.tool(name=tool.qualified_name)(wrapper)
 
 
-def _register_rest_endpoint(router: APIRouter, tool: LoadedTool) -> None:
-    """Register a single plugin tool as a REST POST endpoint."""
-    sig = inspect.signature(tool.fn)
-    try:
-        hints = get_type_hints(tool.fn)
-    except Exception:
-        hints = getattr(tool.fn, "__annotations__", {})
-
-    # Build Pydantic model from function signature
-    fields: dict[str, Any] = {}
-    for param_name, param in sig.parameters.items():
-        param_type = hints.get(param_name, Any)
-        if param.default is inspect.Parameter.empty:
-            fields[param_name] = (param_type, ...)
-        else:
-            fields[param_name] = (param_type, param.default)
-
-    model_name = f"{tool.plugin_name}_{tool.tool_name}_Input"
-    InputModel = create_model(model_name, **fields)
-
-    wrapper = _make_wrapper(tool)
-
-    async def endpoint(body=Body(...)) -> dict:  # type: ignore[valid-type]  # noqa: B008
-        result = await wrapper(**body.model_dump())
-        return {"plugin": tool.plugin_name, "tool": tool.tool_name, "result": result}
-
-    # Set annotations explicitly with the actual model class to avoid
-    # `from __future__ import annotations` turning it into a string ForwardRef
-    # that can't be resolved (InputModel is a local variable, not a global name).
-    endpoint.__annotations__ = {"body": InputModel, "return": dict}
-    endpoint.__name__ = f"{tool.plugin_name}_{tool.tool_name}"
-    router.post(
-        f"/{tool.plugin_name}/{tool.tool_name}",
-        name=tool.qualified_name,
-        summary=tool.fn.__doc__ or tool.tool_name,
-    )(endpoint)

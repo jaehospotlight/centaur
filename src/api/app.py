@@ -18,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from api.mcp_server import mcp, set_plugin_manager, set_pool
-from api.routers import agent as agent_router_mod
+from api.routers import admin, agent as agent_router_mod
 from api.routers import health, query, search, secrets, threads, ui
 from shared.config import settings
 from shared.db import close_pool, create_pool
@@ -100,6 +100,7 @@ app.include_router(query.router)
 app.include_router(secrets.router)
 app.include_router(threads.router)
 app.include_router(agent_router_mod.router)
+app.include_router(admin.router)
 app.include_router(ui.router)
 
 # Load plugins before creating MCP starlette app
@@ -109,6 +110,7 @@ _plugins_dir = Path(os.environ.get("PLUGINS_DIR", _app_root / "plugins"))
 plugin_manager = PluginManager(_plugins_dir)
 plugin_manager.discover()
 set_plugin_manager(plugin_manager)
+app.state.plugin_manager = plugin_manager
 app.include_router(plugin_manager.create_rest_router())
 
 _mcp_starlette = mcp.streamable_http_app()

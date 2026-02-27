@@ -1,0 +1,80 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    defaults:
+      run:
+        working-directory: ~/github/paradigmxyz/ai_v2
+
+    steps:
+      - name: Pull latest
+        run: |
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
+
+      - name: Detect changes
+        id: changes
+        run: |
+          DIFF=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || echo "")
+          echo "diff<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$DIFF" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          echo "plugins=false" >> "$GITHUB_OUTPUT"
+          echo "api=false" >> "$GITHUB_OUTPUT"
+          echo "slackbot=false" >> "$GITHUB_OUTPUT"
+          echo "sandbox=false" >> "$GITHUB_OUTPUT"
+          echo "etl=false" >> "$GITHUB_OUTPUT"
+          echo "infra=false" >> "$GITHUB_OUTPUT"
+
+          echo "$DIFF" | grep -q '^plugins/' && echo "plugins=true" >> "$GITHUB_OUTPUT" || true
+          echo "$DIFF" | grep -q '^src/' && echo "api=true" >> "$GITHUB_OUTPUT" || true
+          echo "$DIFF" | grep -q '^apps/slackbot/' && echo "slackbot=true" >> "$GITHUB_OUTPUT" || true
+          echo "$DIFF" | grep -q '^sandbox/' && echo "sandbox=true" >> "$GITHUB_OUTPUT" || true
+          echo "$DIFF" | grep -qE '^(src/etl/|src/shared/)' && echo "etl=true" >> "$GITHUB_OUTPUT" || true
+          echo "$DIFF" | grep -qE '^(Dockerfile|pyproject.toml|uv.lock|docker-compose.yml|migrations/)' && echo "infra=true" >> "$GITHUB_OUTPUT" || true
+
+      # Plugin-only change → zero-downtime reload (no container restart)
+      - name: Reload plugins
+        if: steps.changes.outputs.plugins == 'true' && steps.changes.outputs.api != 'true' && steps.changes.outputs.infra != 'true'
+        run: |
+          API_SECRET_KEY=$(grep -E '^API_SECRET_KEY=' .env | tail -n1 | cut -d= -f2-)
+          curl -sf -X POST http://localhost:8000/admin/reload-plugins \
+            -H "Authorization: Bearer $API_SECRET_KEY"
+
+      # API core or infra change → rebuild container
+      - name: Deploy API
+        if: steps.changes.outputs.api == 'true' || steps.changes.outputs.infra == 'true'
+        run: docker compose up -d --build api
+
+      # ETL change → rebuild container
+      - name: Deploy ETL
+        if: steps.changes.outputs.etl == 'true' || steps.changes.outputs.infra == 'true'
+        run: docker compose up -d --build etl
+
+      # Slackbot change → independent rebuild
+      - name: Deploy slackbot
+        if: steps.changes.outputs.slackbot == 'true'
+        run: docker compose up -d --build slackbot
+
+      # Agent sandbox change → rebuild image
+      - name: Build agent image
+        if: steps.changes.outputs.sandbox == 'true'
+        run: docker build -t agent2:latest sandbox/
+
+      # Health check
+      - name: Health check
+        if: steps.changes.outputs.api == 'true' || steps.changes.outputs.plugins == 'true' || steps.changes.outputs.infra == 'true'
+        run: |
+          sleep 10
+          curl -sf http://localhost:8000/health || exit 1
