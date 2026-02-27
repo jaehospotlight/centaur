@@ -146,7 +146,7 @@ app.include_router(ui.router)
 
 # Load plugins before creating MCP starlette app
 _app_root = Path(__file__).resolve().parent.parent.parent
-_plugins_dir = Path(os.environ.get("PLUGINS_DIR", _app_root / "plugins"))
+_plugins_dir = Path(os.environ.get("PLUGINS_DIR", _app_root / "tools"))
 
 plugin_manager = PluginManager(_plugins_dir)
 plugin_manager.discover()

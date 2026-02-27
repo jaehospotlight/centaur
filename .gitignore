@@ -38,7 +38,7 @@ pgdata/
 
 # Docker
 sandbox/repos/
-plugins/agent/repos/*/
+tools/agent/repos/*/
 
 # OS
 .DS_Store

@@ -44,7 +44,7 @@ services:
       OP_MASTER_PASSWORD: ${OP_MASTER_PASSWORD:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./plugins:/app/plugins
+      - ./tools:/app/tools
     depends_on:
       postgres:
         condition: service_healthy

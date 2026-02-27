@@ -21,7 +21,7 @@ from api.deps import verify_api_key
 from shared.plugin_manager import PluginManager
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
-_PLUGINS_DIR = _APP_ROOT / "plugins"
+_PLUGINS_DIR = _APP_ROOT / "tools"
 
 
 # ---------------------------------------------------------------------------

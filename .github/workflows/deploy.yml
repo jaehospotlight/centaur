@@ -32,14 +32,14 @@ jobs:
           echo "$DIFF" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
-          echo "plugins=false" >> "$GITHUB_OUTPUT"
+          echo "tools=false" >> "$GITHUB_OUTPUT"
           echo "api=false" >> "$GITHUB_OUTPUT"
           echo "slackbot=false" >> "$GITHUB_OUTPUT"
           echo "sandbox=false" >> "$GITHUB_OUTPUT"
           echo "etl=false" >> "$GITHUB_OUTPUT"
           echo "infra=false" >> "$GITHUB_OUTPUT"
 
-          echo "$DIFF" | grep -q '^plugins/' && echo "plugins=true" >> "$GITHUB_OUTPUT" || true
+          echo "$DIFF" | grep -q '^tools/' && echo "tools=true" >> "$GITHUB_OUTPUT" || true
           echo "$DIFF" | grep -q '^src/' && echo "api=true" >> "$GITHUB_OUTPUT" || true
           echo "$DIFF" | grep -q '^apps/slackbot/' && echo "slackbot=true" >> "$GITHUB_OUTPUT" || true
           echo "$DIFF" | grep -q '^sandbox/' && echo "sandbox=true" >> "$GITHUB_OUTPUT" || true
@@ -48,7 +48,7 @@ jobs:
 
       # Plugin-only change → zero-downtime reload (no container restart)
       - name: Reload plugins
-        if: steps.changes.outputs.plugins == 'true' && steps.changes.outputs.api != 'true' && steps.changes.outputs.infra != 'true'
+        if: steps.changes.outputs.tools == 'true' && steps.changes.outputs.api != 'true' && steps.changes.outputs.infra != 'true'
         run: |
           API_SECRET_KEY=$(grep -E '^API_SECRET_KEY=' .env | tail -n1 | cut -d= -f2-)
           curl -sf -X POST http://localhost:8000/admin/reload-plugins \
@@ -76,7 +76,7 @@ jobs:
 
       # Health check
       - name: Health check
-        if: steps.changes.outputs.api == 'true' || steps.changes.outputs.plugins == 'true' || steps.changes.outputs.infra == 'true'
+        if: steps.changes.outputs.api == 'true' || steps.changes.outputs.tools == 'true' || steps.changes.outputs.infra == 'true'
         run: |
           sleep 10
           curl -sf http://localhost:8000/health || exit 1
@@ -94,7 +94,7 @@ jobs:
           [ "${{ steps.changes.outputs.slackbot }}" = "true" ] && COMPONENTS="${COMPONENTS} slackbot"
           [ "${{ steps.changes.outputs.etl }}" = "true" ] && COMPONENTS="${COMPONENTS} etl"
           [ "${{ steps.changes.outputs.sandbox }}" = "true" ] && COMPONENTS="${COMPONENTS} sandbox"
-          [ "${{ steps.changes.outputs.plugins }}" = "true" ] && COMPONENTS="${COMPONENTS} plugins"
+          [ "${{ steps.changes.outputs.tools }}" = "true" ] && COMPONENTS="${COMPONENTS} tools"
           [ "${{ steps.changes.outputs.infra }}" = "true" ] && COMPONENTS="${COMPONENTS} infra"
 
           export OPENAI_API_KEY SLACK_BOT_TOKEN

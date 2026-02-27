@@ -8,7 +8,7 @@
 apps/slackbot/node_modules
 
 # Agent plugin cached repos (4GB+)
-plugins/agent/repos
+tools/agent/repos
 
 # Caches
 .ruff_cache

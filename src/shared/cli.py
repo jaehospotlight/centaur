@@ -491,7 +491,7 @@ def plugins_group() -> None:
 def plugins_list() -> None:
     """List discovered plugins and tools from the plugin manager."""
     app_root = Path(__file__).resolve().parent.parent.parent
-    plugins_dir = Path(app_root / "plugins")
+    plugins_dir = Path(app_root / "tools")
 
     manager = PluginManager(plugins_dir)
     manager.discover()
@@ -526,7 +526,7 @@ def plugins_list() -> None:
 def plugins_run(tool: str, args: tuple[str, ...]) -> None:
     """Run a plugin CLI by plugin name or script alias."""
     app_root = Path(__file__).resolve().parent.parent.parent
-    plugins_dir = Path(app_root / "plugins")
+    plugins_dir = Path(app_root / "tools")
 
     manager = PluginManager(plugins_dir)
     if (plugins_dir / tool).is_dir():
@@ -558,7 +558,7 @@ def plugins_run(tool: str, args: tuple[str, ...]) -> None:
 def plugins_test(cli_args: str) -> None:
     """Run plugin smoke tests across imports, registry, CLIs, REST routes, and schemas."""
     app_root = Path(__file__).resolve().parent.parent.parent
-    plugins_dir = Path(app_root / "plugins")
+    plugins_dir = Path(app_root / "tools")
 
     manager = PluginManager(plugins_dir)
     manager.discover()

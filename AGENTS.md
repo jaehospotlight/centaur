@@ -21,7 +21,7 @@ uv run mypy src/api src/etl src/shared
 
 ## Plugin Conventions
 
-Every plugin: `plugins/<name>/` with `client.py` (class + `_client()` factory), `pyproject.toml` (`[tool.ai-v2-plugin] module = "client.py"`), optional `cli.py`.
+Every plugin: `tools/<name>/` with `client.py` (class + `_client()` factory), `pyproject.toml` (`[tool.ai-v2-plugin] module = "client.py"`), optional `cli.py`.
 
 - `client.py`: NO `load_dotenv()`. Secrets via `os.getenv()` or `secret()`.
 - `cli.py`: YES `load_dotenv()` at top. Thin typer wrapper.
@@ -45,7 +45,7 @@ sandbox/
 Container → API connectivity:
 - Container joins `ai_v2_default` Docker network → API reachable at `http://api:8000`
 - Entrypoint injects `AI_V2_API_URL` and `AI_V2_API_KEY` env vars
-- SYSTEM_PROMPT instructs the harness: `curl -H "Authorization: Bearer $AI_V2_API_KEY" $AI_V2_API_URL/plugins/{plugin}/{tool}`
+- SYSTEM_PROMPT instructs the harness: `curl -H "Authorization: Bearer $AI_V2_API_KEY" $AI_V2_API_URL/tools/{plugin}/{tool}`
 - Agent image MUST be tagged `agent2:latest` (not `agent:latest`)
 
 ## E2E Testing (without Slack)
@@ -73,7 +73,7 @@ curl -s -X POST http://localhost:8000/agent/execute \
   }'
 ```
 
-This spawns a container on the Docker network, runs `amp -x "..."` inside it, and amp uses `curl` to call the API's REST endpoints (search, plugins, query) to answer.
+This spawns a container on the Docker network, runs `amp -x "..."` inside it, and amp uses `curl` to call the API's REST endpoints (search, tools, query) to answer.
 
 ### 3. Follow-up (same container, same session)
 
@@ -124,14 +124,14 @@ All deploys happen automatically via GitHub Actions on merge to `main`. **Never 
 
 | Change | Deploy action |
 |--------|--------------|
-| `plugins/**` only | Zero-downtime hot-reload (file watcher auto-detects, no restart) |
+| `tools/**` only | Zero-downtime hot-reload (file watcher auto-detects, no restart) |
 | `src/**` | `docker compose up -d --build api` |
 | `src/etl/` or `src/shared/` | `docker compose up -d --build etl` |
 | `apps/slackbot/**` | `docker compose up -d --build slackbot` |
 | `sandbox/**` | `docker build -t agent2:latest sandbox/` |
 | `Dockerfile`, `pyproject.toml`, `uv.lock`, `docker-compose.yml`, `migrations/` | Rebuild API + ETL |
 
-**Plugin hot-reload:** The API watches the bind-mounted `plugins/` directory via `watchfiles`. When `git pull` updates plugin files, the API auto-reloads within seconds — no container restart, no curl, no manual step.
+**Plugin hot-reload:** The API watches the bind-mounted `tools/` directory via `watchfiles`. When `git pull` updates plugin files, the API auto-reloads within seconds — no container restart, no curl, no manual step.
 
 **Admin endpoint:** `POST /admin/reload-plugins` is available as a manual fallback if the file watcher misses something.
 

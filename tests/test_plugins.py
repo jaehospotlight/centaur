@@ -21,7 +21,7 @@ from shared.plugin_manager import PluginManager
 # ---------------------------------------------------------------------------
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
-_PLUGINS_DIR = _APP_ROOT / "plugins"
+_PLUGINS_DIR = _APP_ROOT / "tools"
 
 
 @pytest.fixture(scope="session")

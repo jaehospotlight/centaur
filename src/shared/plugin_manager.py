@@ -738,7 +738,7 @@ class PluginManager:
         """
         pm = self
         router = APIRouter(
-            prefix="/plugins",
+            prefix="/tools",
             dependencies=[Depends(verify_api_key)],
         )
 
