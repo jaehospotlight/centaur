@@ -12,7 +12,7 @@ import { Chat, parseMarkdown, type Root } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { createRedisState } from "@chat-adapter/state-redis";
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { extractHarness, execute } from "./harness";
+import { extractHarness, execute, type FileAttachment } from "./harness";
 
 const THREAD_VIEWER_URL = process.env.THREAD_VIEWER_URL || "https://svc-ai.paradigm.xyz";
 
@@ -78,13 +78,19 @@ function createBot() {
   async function handleMessage(
     thread: Parameters<Parameters<typeof bot.onNewMention>[0]>[0],
     messageText: string,
-    isFirstMessage: boolean
+    isFirstMessage: boolean,
+    attachments?: Array<{ url?: string; name?: string }>,
   ) {
     const t0 = performance.now();
     const requestId = crypto.randomUUID().slice(0, 8);
     const { harness, cleanedText } = extractHarness(messageText);
     const threadKey = thread.id;
     const timings: Record<string, number> = {};
+
+    // Collect file attachments
+    const files: FileAttachment[] = (attachments || [])
+      .filter((a): a is { url: string; name: string } => !!a.url && !!a.name)
+      .map((a) => ({ url: a.url, name: a.name }));
 
     // Prepend session context on first message
     const message = isFirstMessage
@@ -94,7 +100,7 @@ function createBot() {
     // Fire execute immediately — it auto-spawns if needed.
     // Run typing indicator + viewer link in parallel (don't block execute).
     const tExec = performance.now();
-    const execPromise = execute(threadKey, message, harness, requestId);
+    const execPromise = execute(threadKey, message, harness, requestId, files.length > 0 ? files : undefined);
 
     if (isFirstMessage) {
       const viewerUrl = `${THREAD_VIEWER_URL}/threads/${encodeURIComponent(threadKey)}`;
@@ -125,13 +131,15 @@ function createBot() {
   // First @mention — subscribe and run
   bot.onNewMention(async (thread, message) => {
     thread.subscribe().catch(() => {});
-    await handleMessage(thread, message.text, true);
+    const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name }));
+    await handleMessage(thread, message.text, true, attachments);
   });
 
   // Follow-up messages in subscribed threads
   bot.onSubscribedMessage(async (thread, message) => {
     if (!message.isMention) return;
-    await handleMessage(thread, message.text, false);
+    const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name }));
+    await handleMessage(thread, message.text, false, attachments);
   });
 
   return bot;

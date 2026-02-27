@@ -6,14 +6,17 @@ claude-code, codex) inside them. Returns the final result text.
 
 import codecs
 import contextlib
+import io
 import json
 import os
 import subprocess
+import tarfile
 import time
 from datetime import UTC, datetime
 from typing import Any
 
 import docker
+import httpx
 import psycopg2
 import psycopg2.extras
 import structlog
@@ -405,6 +408,52 @@ def _extract_result(
     return result_text, agent_thread_id
 
 
+def _download_files_to_container(
+    container: Any,
+    files: list[dict[str, str]],
+) -> list[str]:
+    """Download files and copy them into the container.
+
+    Returns list of in-container paths for successfully copied files.
+    """
+    upload_dir = "/home/agent/uploads"
+    container.exec_run(["mkdir", "-p", upload_dir])
+
+    slack_token = os.getenv("SLACK_BOT_TOKEN", "")
+    paths: list[str] = []
+
+    for f in files:
+        url = f["url"]
+        name = f["name"]
+        headers: dict[str, str] = {}
+        if "slack" in url and slack_token:
+            headers["Authorization"] = f"Bearer {slack_token}"
+
+        try:
+            with httpx.Client(timeout=30, follow_redirects=True) as client:
+                resp = client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.content
+        except Exception as exc:
+            log.warning("file_download_failed", url=url, error=str(exc))
+            continue
+
+        # Build a tar archive in memory and put_archive into container
+        tar_buf = io.BytesIO()
+        with tarfile.open(fileobj=tar_buf, mode="w") as tar:
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        tar_buf.seek(0)
+        container.put_archive(upload_dir, tar_buf)
+
+        dest = f"{upload_dir}/{name}"
+        paths.append(dest)
+        log.info("file_copied", name=name, size=len(data), dest=dest)
+
+    return paths
+
+
 class AgentClient:
     """Manage Docker sandbox containers for agent harness execution."""
 
@@ -519,6 +568,7 @@ class AgentClient:
         harness: str = "amp",
         repo: str | None = None,
         request_id: str | None = None,
+        files: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Execute a message in a sandbox, spawning one if needed.
 
@@ -543,6 +593,13 @@ class AgentClient:
             session = _sessions[slack_thread_key]
             client = _docker_client()
             container = client.containers.get(session["container_id"])
+
+        # Download and copy files into the container
+        if files:
+            file_paths = _download_files_to_container(container, files)
+            if file_paths:
+                listing = "\n".join(f"- {p}" for p in file_paths)
+                message = f"{message}\n\nAttached files (already downloaded to the container):\n{listing}"
 
         cmd = _build_command(session["harness"], message, session["agent_thread_id"])
 

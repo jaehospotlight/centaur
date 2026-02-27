@@ -25,12 +25,18 @@ class SpawnRequest(BaseModel):
     request_id: str | None = None
 
 
+class FileAttachment(BaseModel):
+    url: str
+    name: str
+
+
 class ExecuteRequest(BaseModel):
     slack_thread_key: str
     message: str
     harness: str = "amp"
     repo: str | None = None
     request_id: str | None = None
+    files: list[FileAttachment] = []
 
 
 class StopRequest(BaseModel):
@@ -52,8 +58,10 @@ async def spawn(req: SpawnRequest) -> dict[str, Any]:
 async def execute(req: ExecuteRequest) -> dict[str, Any]:
     """Execute a message in a sandbox. Auto-spawns if needed."""
     agent = get_agent()
+    files = [{"url": f.url, "name": f.name} for f in req.files] if req.files else None
     return await asyncio.to_thread(
         agent.execute, req.slack_thread_key, req.message, req.harness, req.repo, req.request_id,
+        files,
     )
 
 

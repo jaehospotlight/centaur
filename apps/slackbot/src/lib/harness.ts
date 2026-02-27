@@ -80,18 +80,22 @@ export async function spawn(
   };
 }
 
+export type FileAttachment = { url: string; name: string };
+
 /** Execute a message and return the final result text. Auto-spawns if needed. */
 export async function execute(
   threadKey: string,
   message: string,
   harness: Harness = "amp",
-  requestId?: string
+  requestId?: string,
+  files?: FileAttachment[],
 ): Promise<string> {
   const result = await agentCall("execute", {
     slack_thread_key: threadKey,
     message,
     harness,
     ...(requestId ? { request_id: requestId } : {}),
+    ...(files && files.length > 0 ? { files } : {}),
   });
   return (result.result as string) || "No response from agent.";
 }

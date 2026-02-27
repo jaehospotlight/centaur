@@ -9,7 +9,7 @@
  * and replay them through the v2 agent.
  */
 
-import { execute } from "./harness";
+import { execute, type FileAttachment } from "./harness";
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
 const THREAD_VIEWER_URL = process.env.THREAD_VIEWER_URL || "https://svc-ai.paradigm.xyz";
@@ -28,6 +28,7 @@ const AI_V2_CHANNEL = "C0AJ07U8Z1N"; // #ai-v2
 async function runShadow(
   cleanedText: string,
   originTs: string,
+  files?: FileAttachment[],
 ): Promise<string | null> {
   // 1. Post the shadow message to #ai-v2
   const postRes = await fetch("https://slack.com/api/chat.postMessage", {
@@ -68,7 +69,7 @@ async function runShadow(
   });
 
   // 3. Run the message through the v2 agent
-  const result = await execute(shadowThreadKey, cleanedText, "amp");
+  const result = await execute(shadowThreadKey, cleanedText, "amp", undefined, files);
 
   // 4. Post the result as a thread reply in #ai-v2
   await fetch("https://slack.com/api/chat.postMessage", {
@@ -125,17 +126,24 @@ export async function maybeShadow(body: Record<string, unknown>): Promise<void> 
   const cleanedText = text.replace(new RegExp(`<@${V1_BOT_USER_ID}>`, "g"), "").trim();
   if (!cleanedText) return;
 
+  // Extract file attachments
+  const eventFiles = (event.files as Array<{ url_private?: string; name?: string }>) || [];
+  const files: FileAttachment[] = eventFiles
+    .filter((f): f is { url_private: string; name: string } => !!f.url_private && !!f.name)
+    .map((f) => ({ url: f.url_private, name: f.name }));
+
   console.log(
     JSON.stringify({
       event: "shadow_detected",
       channel: AI_AGENT_CHANNEL,
       ts,
       text_length: cleanedText.length,
+      file_count: files.length,
     })
   );
 
   try {
-    await runShadow(cleanedText, ts);
+    await runShadow(cleanedText, ts, files.length > 0 ? files : undefined);
   } catch (err) {
     console.log(
       JSON.stringify({
@@ -202,13 +210,6 @@ export async function backtest(
       continue;
     }
 
-    // Skip messages with file attachments (we can't forward those)
-    if (msg.files && msg.files.length > 0) {
-      console.log(JSON.stringify({ event: "backtest_skip_files", ts: msg.ts }));
-      skipped++;
-      continue;
-    }
-
     const cleanedText = text.replace(new RegExp(`<@${V1_BOT_USER_ID}>`, "g"), "").trim();
     if (!cleanedText) {
       skipped++;
@@ -216,17 +217,22 @@ export async function backtest(
     }
 
     const ts = msg.ts || "";
+    const msgFiles: FileAttachment[] = (msg.files || [])
+      .filter((f): f is { url_private: string; name: string } => !!f.url_private && !!f.name)
+      .map((f) => ({ url: f.url_private, name: f.name }));
+
     console.log(
       JSON.stringify({
         event: "backtest_replaying",
         ts,
         text_preview: cleanedText.slice(0, 80),
+        file_count: msgFiles.length,
         progress: `${replayed + 1}/${limit}`,
       })
     );
 
     try {
-      await runShadow(cleanedText, ts);
+      await runShadow(cleanedText, ts, msgFiles.length > 0 ? msgFiles : undefined);
       replayed++;
     } catch (err) {
       console.log(
