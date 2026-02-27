@@ -45,6 +45,26 @@ structlog.configure(
 log = structlog.get_logger()
 
 
+def _warm_plugin_caches() -> None:
+    """Pre-warm slow plugin caches in background thread."""
+    import threading
+
+    def _warm() -> None:
+        try:
+            slack_plugin = plugin_manager.plugins.get("slack")
+            if not slack_plugin or not slack_plugin.tools:
+                return
+            # Get the client instance from any bound tool method
+            client = slack_plugin.tools[0].fn.__self__
+            client._get_user_cache()
+            client.list_bot_channels()
+            log.info("slack_cache_warmed")
+        except Exception as e:
+            log.warning("slack_cache_warm_failed", error=str(e))
+
+    threading.Thread(target=_warm, daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("connecting to database", url=settings.database_url.split("@")[-1])
@@ -54,6 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("database pool created")
     async with mcp.session_manager.run():
         log.info("mcp session manager started")
+        _warm_plugin_caches()
         yield
     await close_pool(pool)
     log.info("database pool closed")
