@@ -51,20 +51,12 @@ class SlackClient:
 
 
     def _resolve_mentions(self, text: str, user_cache: dict[str, str]) -> str:
-        """Replace <@USER_ID> mentions with @username."""
+        """Replace <@USER_ID> mentions with @username using cached lookups only."""
 
         def replace_mention(match: re.Match) -> str:
             user_id = match.group(1)
-            if user_id in user_cache:
-                return f"@{user_cache[user_id]}"
-            try:
-                info = self._client.users_info(user=user_id)
-                name = info.get("user", {}).get("name", user_id)
-                user_cache[user_id] = name
-                return f"@{name}"
-            except SlackApiError:
-                user_cache[user_id] = user_id
-                return f"@{user_id}"
+            name = user_cache.get(user_id, user_id)
+            return f"@{name}"
 
         return re.sub(r"<@([A-Z0-9]+)>", replace_mention, text)
 
@@ -413,19 +405,7 @@ class SlackClient:
 
     def get_thread_replies(self, channel_id: str, thread_ts: str, limit: int = 100) -> list[dict]:
         """Get all replies in a thread."""
-        client = self._client
         user_cache = self._get_user_cache()
-
-        def get_username(user_id: str) -> str:
-            if user_id in user_cache:
-                return user_cache[user_id]
-            try:
-                info = self._retry_on_ratelimit(self._client.users_info, user=user_id)
-                name = info.get("user", {}).get("name", user_id)
-                user_cache[user_id] = name
-                return name
-            except SlackApiError:
-                return user_id
 
         try:
             response = self._retry_on_ratelimit(
@@ -444,7 +424,7 @@ class SlackClient:
             text = self._resolve_mentions(msg.get("text", ""), user_cache)
             messages.append(
                 {
-                    "user": get_username(user_id),
+                    "user": user_cache.get(user_id, user_id),
                     "text": text,
                     "timestamp": msg.get("ts", ""),
                 }
