@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import structlog
 
@@ -44,6 +45,24 @@ log = structlog.get_logger()
 
 MessageCallback = Callable[[str], Awaitable[None]]
 PhaseCallback = Callable[[Phase, str], Awaitable[None]]
+WaitingCallback = Callable[[bool], Awaitable[None]]
+_REVIEW_DIFF_MAX_CHARS = 80000
+_FEEDBACK_MAX_CHARS = 12000
+_REVIEW_DIFF_EXCLUDED_FILENAMES = {
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "uv.lock",
+    "Cargo.lock",
+    "poetry.lock",
+    "Pipfile.lock",
+}
+BudgetMode = Literal["simple", "auto", "complex"]
+_LANE_LABELS: dict[BudgetMode, str] = {
+    "simple": "fast",
+    "auto": "adaptive",
+    "complex": "deep",
+}
 
 
 async def _noop(_: str) -> None:
@@ -54,8 +73,56 @@ async def _noop_phase(_phase: Phase, _label: str) -> None:
     return
 
 
+async def _noop_waiting(_waiting: bool) -> None:
+    return
+
+
 async def _noop_event(_event: dict[str, Any]) -> None:
     return
+
+
+def _truncate_middle(text: str, max_chars: int, label: str) -> str:
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    return (
+        f"{text[:half]}\n\n"
+        f"... [{label} truncated, total {len(text)} chars] ...\n\n"
+        f"{text[-half:]}"
+    )
+
+
+def _is_excluded_review_file(path: str) -> bool:
+    filename = path.rsplit("/", 1)[-1]
+    return filename in _REVIEW_DIFF_EXCLUDED_FILENAMES
+
+
+def _prepare_review_diff(diff_text: str) -> str:
+    sections = re.split(r"(?=^diff --git )", diff_text, flags=re.MULTILINE)
+    kept_sections: list[str] = []
+    excluded_count = 0
+    for section in sections:
+        chunk = section.strip()
+        if not chunk:
+            continue
+        first_line = chunk.splitlines()[0]
+        match = re.match(r"diff --git a/(.+?) b/(.+)$", first_line)
+        path = match.group(2) if match else ""
+        if path and _is_excluded_review_file(path):
+            excluded_count += 1
+            continue
+        kept_sections.append(chunk)
+
+    prepared = "\n\n".join(kept_sections).strip()
+    if excluded_count:
+        note = (
+            f"# Review note\nExcluded {excluded_count} generated/lockfile diff section(s) "
+            "from review context to keep prompt size bounded.\n\n"
+        )
+        prepared = note + (prepared or "(No non-generated diff sections remain.)")
+    if not prepared:
+        prepared = diff_text
+    return _truncate_middle(prepared, _REVIEW_DIFF_MAX_CHARS, "review diff")
 
 
 class EngineerOrchestrator:
@@ -199,6 +266,52 @@ class EngineerOrchestrator:
             "review": _interp(self.settings.turn_budget_review_floor, self.settings.turn_budget_review_cap),
         }
 
+    @staticmethod
+    def _normalize_budget_mode(value: str | None) -> BudgetMode | None:
+        if not value:
+            return None
+        normalized = value.strip().lower()
+        if normalized in {"simple", "auto", "complex"}:
+            return cast(BudgetMode, normalized)
+        return None
+
+    def _effective_budget_mode(self, session: EngineerSession) -> BudgetMode:
+        direct = self._normalize_budget_mode(session.budget_mode)
+        if direct:
+            return direct
+        source_override = None
+        if session.source == "slack":
+            source_override = self.settings.slack_budget_preset
+        elif session.source == "cli":
+            source_override = self.settings.cli_budget_preset
+        return (
+            self._normalize_budget_mode(source_override)
+            or self._normalize_budget_mode(self.settings.budget_preset)
+            or "auto"
+        )
+
+    def _turn_budgets_for_mode(self, mode: BudgetMode, complexity_score: float) -> dict[str, int]:
+        if mode == "simple":
+            return {
+                "research": min(self.settings.research_max_turns, 6),
+                "plan": 2,
+                "implement": 8,
+                "review": 3,
+            }
+        if mode == "complex":
+            return {
+                "research": min(self.settings.research_max_turns, self.settings.turn_budget_research_cap),
+                "plan": self.settings.turn_budget_plan_cap,
+                "implement": self.settings.turn_budget_implement_cap,
+                "review": self.settings.turn_budget_review_cap,
+            }
+        return self._compute_turn_budgets(complexity_score)
+
+    def _max_iterations_for_mode(self, mode: BudgetMode) -> int:
+        if mode == "simple":
+            return min(self.settings.max_iterations, 2)
+        return self.settings.max_iterations
+
     def _research_branch_count(self, task: str) -> int:
         complexity = self._task_complexity_score(task)
         desired = self.settings.research_parallel_branches_min + (1 if complexity >= 3 else 0)
@@ -209,6 +322,13 @@ class EngineerOrchestrator:
             self.settings.research_parallel_branches_max,
         )
 
+    def _research_branch_count_for_mode(self, mode: BudgetMode, task: str) -> int:
+        if mode == "simple":
+            return 1
+        if mode == "complex":
+            return self.settings.research_parallel_branches_max
+        return self._research_branch_count(task)
+
     def _plan_branch_count(self, task: str) -> int:
         complexity = self._task_complexity_score(task)
         desired = self.settings.plan_parallel_branches_min + (1 if complexity >= 4 else 0)
@@ -218,6 +338,13 @@ class EngineerOrchestrator:
             self.settings.plan_parallel_branches_min,
             self.settings.plan_parallel_branches_max,
         )
+
+    def _plan_branch_count_for_mode(self, mode: BudgetMode, task: str) -> int:
+        if mode == "simple":
+            return 1
+        if mode == "complex":
+            return self.settings.plan_parallel_branches_max
+        return self._plan_branch_count(task)
 
     @staticmethod
     def _research_focus(index: int) -> str:
@@ -271,6 +398,11 @@ class EngineerOrchestrator:
             + (500 if "## Plan" in text else 0)
             + (300 if "## Verification" in text else 0)
         )
+
+    @staticmethod
+    def _is_review_approved(text: str) -> bool:
+        normalized = text.strip().upper()
+        return normalized.startswith("APPROVED") or normalized.startswith("LGTM")
 
     async def _run_parallel_candidates(
         self,
@@ -332,11 +464,13 @@ class EngineerOrchestrator:
         post_message: MessageCallback | None = None,
         on_event: EventCallback | None = None,
         on_phase: PhaseCallback | None = None,
+        on_waiting_for_reply: WaitingCallback | None = None,
     ) -> EngineerResult:
         """Drive the full engineer workflow."""
         send = post_message or _noop
         emit = on_event or _noop_event
         notify_phase = on_phase or _noop_phase
+        notify_waiting = on_waiting_for_reply or _noop_waiting
         repo_guidance = load_repo_guidance(self.repo_root)
         effort = self.settings.anthropic_effort
         max_tokens = self.settings.anthropic_max_tokens
@@ -344,7 +478,9 @@ class EngineerOrchestrator:
         try:
             model = self._effective_model(session)
             use_harness = self._is_harness_model(model)
-            if session.model_preference or self.model_preference:
+            if use_harness:
+                await send(f"Using harness: `{model}`")
+            else:
                 await send(f"Using model: `{model}` (effort: {effort})")
 
             thread_name = (
@@ -355,8 +491,11 @@ class EngineerOrchestrator:
             if thread_name:
                 session.thread_name = thread_name
 
+            budget_mode = self._effective_budget_mode(session)
+            session.budget_mode = budget_mode
+            max_iterations = self._max_iterations_for_mode(budget_mode)
             session.complexity_score = float(self._task_complexity_score(session.task))
-            session.turn_budgets = self._compute_turn_budgets(session.complexity_score)
+            session.turn_budgets = self._turn_budgets_for_mode(budget_mode, session.complexity_score)
 
             branch = (
                 f"{self.settings.branch_prefix}/{session.run_id[:8]}"
@@ -417,13 +556,14 @@ class EngineerOrchestrator:
             session.phase = Phase.RESEARCH
             await notify_phase(Phase.RESEARCH, session.task)
             session.research_branch_count = (
-                1 if use_harness else self._research_branch_count(session.task)
+                1 if use_harness else self._research_branch_count_for_mode(budget_mode, session.task)
             )
             await send(
                 f"Researching the codebase with {session.research_branch_count} parallel branches..."
             )
             await send(
-                "Adaptive turn budgets: "
+                f"Execution lane: {_LANE_LABELS[budget_mode]} (mode: {budget_mode})\n"
+                "Turn budgets: "
                 f"research={session.turn_budgets['research']}, "
                 f"plan={session.turn_budgets['plan']}, "
                 f"implement={session.turn_budgets['implement']}, "
@@ -459,14 +599,16 @@ class EngineerOrchestrator:
             session.complexity_score = float(
                 self._task_complexity_score(session.task, session.research_brief)
             )
-            session.turn_budgets = self._compute_turn_budgets(session.complexity_score)
+            session.turn_budgets = self._turn_budgets_for_mode(budget_mode, session.complexity_score)
             await send(
                 f"Research complete ({research.turns} turns, {research.tool_calls} tool calls)"
             )
 
             session.phase = Phase.PLAN
             await notify_phase(Phase.PLAN, "")
-            session.plan_branch_count = 1 if use_harness else self._plan_branch_count(session.task)
+            session.plan_branch_count = (
+                1 if use_harness else self._plan_branch_count_for_mode(budget_mode, session.task)
+            )
             await send(
                 f"Planning implementation with {session.plan_branch_count} parallel branches..."
             )
@@ -499,7 +641,7 @@ class EngineerOrchestrator:
             session.complexity_score = float(
                 self._task_complexity_score(session.task, session.research_brief, session.plan)
             )
-            session.turn_budgets = self._compute_turn_budgets(session.complexity_score)
+            session.turn_budgets = self._turn_budgets_for_mode(budget_mode, session.complexity_score)
             await send("Plan ready.")
 
             if self.skip_clarify:
@@ -512,24 +654,33 @@ class EngineerOrchestrator:
             else:
                 session.phase = Phase.CLARIFY
                 await notify_phase(Phase.CLARIFY, "")
-                session.spec = await self._clarify_loop(session, repo_guidance, send)
+                session.spec = await self._clarify_loop(
+                    session, repo_guidance, send, notify_waiting
+                )
 
             session.phase = Phase.IMPLEMENT
             feedback = ""
+            no_diff_streak = 0
+            no_diff_exit_after = max(1, self.settings.no_diff_exit_after)
 
-            for iteration in range(self.settings.max_iterations):
+            for iteration in range(max_iterations):
                 session.iteration = iteration + 1
                 await notify_phase(
                     Phase.IMPLEMENT,
                     f"iteration {session.iteration}",
                 )
                 await send(
-                    f"Implementing (iteration {session.iteration}/{self.settings.max_iterations})..."
+                    f"Implementing (iteration {session.iteration}/{max_iterations})..."
+                )
+                feedback_for_prompt = (
+                    _truncate_middle(feedback, _FEEDBACK_MAX_CHARS, "feedback")
+                    if feedback
+                    else ""
                 )
 
                 implement_result = await _run_phase_loop(
                     system_prompt=engineer_prompt(
-                        repo_guidance, session.spec, session.plan, feedback
+                        repo_guidance, session.spec, session.plan, feedback_for_prompt
                     ),
                     user_prompt=f"Implement: {session.task}{self._preference_hint(session)}",
                     tools=ENGINEER_TOOLS,
@@ -549,6 +700,7 @@ class EngineerOrchestrator:
                 )
                 if not report.success:
                     feedback = validation_feedback
+                    no_diff_streak = 0
                     await send(
                         f"Validation failed, iterating...\n```\n{validation_feedback[:1000]}\n```"
                     )
@@ -556,11 +708,48 @@ class EngineerOrchestrator:
 
                 diff_text = await get_diff(session.worktree)
                 if not diff_text.strip():
+                    no_diff_streak += 1
                     feedback = "No code diff found. Apply concrete code changes."
+                    terminal_iteration = iteration >= max_iterations - 1
+                    if no_diff_streak >= no_diff_exit_after or terminal_iteration:
+                        if self.dry_run:
+                            await send(
+                                "No diff produced after repeated attempts. Treating this as a no-op dry run."
+                            )
+                            session.phase = Phase.DONE
+                            return EngineerResult(
+                                run_id=session.run_id,
+                                success=True,
+                                status="completed",
+                                branch_name=session.branch_name,
+                                summary=(
+                                    "No-op dry run completed — no code changes were required "
+                                    "for the requested task."
+                                ),
+                                no_op=True,
+                            )
+                        await send(
+                            "No diff produced after repeated attempts. "
+                            "Task appears already satisfied; ending run without PR."
+                        )
+                        session.phase = Phase.DONE
+                        return EngineerResult(
+                            run_id=session.run_id,
+                            success=True,
+                            status="completed",
+                            branch_name=session.branch_name,
+                            summary=(
+                                "No code changes were required for this task, "
+                                "so no PR was created."
+                            ),
+                            no_op=True,
+                        )
                     await send("No diff produced, iterating...")
                     continue
 
+                no_diff_streak = 0
                 await send(f"Diff: {diff_text.count(chr(10))} lines changed")
+                review_diff = _prepare_review_diff(diff_text)
 
                 session.phase = Phase.REVIEW
                 await notify_phase(Phase.REVIEW, "")
@@ -570,7 +759,7 @@ class EngineerOrchestrator:
                     user_prompt=(
                         f"Review the changes on this branch.\n\n"
                         f"Validation results: {validation_feedback}\n\n"
-                        f"Diff:\n```\n{diff_text}\n```"
+                        f"Diff:\n```\n{review_diff}\n```"
                     ),
                     tools=RESEARCH_TOOLS,
                     execute_tool=executor.execute,
@@ -583,8 +772,14 @@ class EngineerOrchestrator:
                     session.phase_budget_exceeded["review"] = True
 
                 review_text = review.text.strip()
-                if review_text.upper().startswith("APPROVED"):
+                if self._is_review_approved(review_text):
                     await send("Review: APPROVED")
+                    break
+                if not review_text:
+                    await send(
+                        "Review returned no actionable feedback; "
+                        "proceeding because validation passed and diff is present."
+                    )
                     break
                 feedback = f"Reviewer feedback:\n{review_text}"
                 session.phase = Phase.IMPLEMENT
@@ -660,6 +855,7 @@ class EngineerOrchestrator:
                 error=str(exc),
             )
         except Exception as exc:
+            # Keep the run resilient if any phase raises an unexpected exception type.
             log.exception("engineer_run_failed", run_id=session.run_id, error=str(exc))
             session.phase = Phase.FAILED
             session.error = f"{exc.__class__.__name__}: {exc}"
@@ -683,6 +879,7 @@ class EngineerOrchestrator:
         session: EngineerSession,
         repo_guidance: str,
         send: MessageCallback,
+        notify_waiting: WaitingCallback,
     ) -> str:
         """Run the clarification interview loop. Returns the final spec."""
         from anthropic import AsyncAnthropic
@@ -728,12 +925,14 @@ class EngineerOrchestrator:
             messages.append({"role": "assistant", "content": assistant_text})
 
             session.waiting_for_reply = True
+            await notify_waiting(True)
             try:
                 user_reply = await session.wait_for_user_reply(
                     timeout=float(self.settings.max_wall_time_seconds)
                 )
             finally:
                 session.waiting_for_reply = False
+                await notify_waiting(False)
             if user_reply is None:
                 await send("Timed out waiting for reply. Proceeding with current information.")
                 return self._fallback_spec(session, messages)

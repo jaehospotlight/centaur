@@ -22,7 +22,7 @@ def to_assistant_blocks(content_blocks: list[Any]) -> list[dict[str, Any]]:
                     "type": "tool_use",
                     "id": getattr(block, "id", ""),
                     "name": getattr(block, "name", ""),
-                    "input": getattr(block, "input", {}),
+                    "input": getattr(block, "input", None) or {},
                 }
             )
     return blocks
@@ -37,7 +37,7 @@ def extract_tool_uses(content_blocks: list[Any]) -> list[dict[str, Any]]:
             {
                 "id": getattr(block, "id", ""),
                 "name": getattr(block, "name", ""),
-                "input": getattr(block, "input", {}),
+                "input": getattr(block, "input", None) or {},
             }
         )
     return calls

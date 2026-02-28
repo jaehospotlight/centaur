@@ -1,101 +1,37 @@
-/** @jsxImportSource react */
 import Link from "next/link";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
+import "./globals.css";
 
 export const metadata = {
-  title: "Tempo AI",
+  title: "Paradigm AI",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <head>
-        <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
-          rel="stylesheet"
-        />
-        <style
-          dangerouslySetInnerHTML={{
-            __html: `
-              * { box-sizing: border-box; }
-
-              @keyframes pulse-dot {
-                0%, 100% { opacity: 1; }
-                50% { opacity: 0.4; }
-              }
-
-              .state-dot-working {
-                animation: pulse-dot 1.5s ease-in-out infinite;
-              }
-
-              .thread-card:hover {
-                border-color: #3f3f46 !important;
-                background-color: #18181b !important;
-              }
-
-              tr.thread-card:hover {
-                border-color: transparent !important;
-                background-color: #111113 !important;
-              }
-
-              .nav-link:hover {
-                color: #d4d4d8 !important;
-              }
-
-              .refresh-btn:hover {
-                border-color: #52525b !important;
-                color: #e4e4e7 !important;
-              }
-
-              .back-link:hover {
-                color: #a1a1aa !important;
-              }
-
-              .tool-header:hover {
-                background-color: #1c1c1e !important;
-              }
-            `,
-          }}
-        />
-      </head>
-      <body style={{ margin: 0, backgroundColor: "#09090b" }}>
-        <nav
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "1.5rem",
-            padding: "0.75rem 2rem",
-            borderBottom: "1px solid #1c1c1e",
-            backgroundColor: "#09090b",
-            fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-          }}
+    <html lang="en" className={`dark ${GeistSans.variable} ${GeistMono.variable}`}>
+      <body className="m-0 bg-zinc-950 antialiased font-sans">
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:bg-zinc-900 focus:text-zinc-100 focus:px-3 focus:py-2 focus:rounded-md focus:outline-none focus:ring-2 focus:ring-sky-400"
         >
+          Skip to main content
+        </a>
+        <nav className="flex items-center gap-6 px-6 py-2.5 border-b border-zinc-800/50 bg-zinc-950/95 backdrop-blur-sm font-sans z-50 shrink-0">
           <Link
             href="/"
-            style={{
-              color: "#fafafa",
-              textDecoration: "none",
-              fontWeight: 700,
-              fontSize: "0.875rem",
-              letterSpacing: "-0.01em",
-            }}
+            className="text-zinc-50 no-underline font-semibold text-[13px] tracking-tight rounded-sm"
           >
-            Tempo AI
+            Paradigm AI
           </Link>
           <Link
             href="/threads"
-            className="nav-link"
-            style={{
-              color: "#71717a",
-              textDecoration: "none",
-              fontSize: "0.8125rem",
-              fontWeight: 500,
-              transition: "color 0.15s",
-            }}
+            className="text-zinc-500 no-underline text-[13px] font-medium hover:text-zinc-300 transition-colors rounded-sm"
           >
             Threads
           </Link>
         </nav>
-        {children}
+        <main id="main-content">{children}</main>
       </body>
     </html>
   );

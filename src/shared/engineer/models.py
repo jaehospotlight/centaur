@@ -62,3 +62,4 @@ class EngineerResult:
     pr_url: str | None = None
     summary: str = ""
     error: str | None = None
+    no_op: bool = False

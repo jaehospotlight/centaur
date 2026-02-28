@@ -3,8 +3,12 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import structlog
+
 from shared.engineer.models import EngineerResult, Phase
 from shared.engineer.session import EngineerSession
+
+log = structlog.get_logger()
 
 
 def _import_agent_internals() -> tuple[Any, Any, Any, Any]:
@@ -20,7 +24,11 @@ def _import_agent_internals() -> tuple[Any, Any, Any, Any]:
 
 
 class EngineerThreadBridge:
-    """Persist engineer sessions/turns through the shared thread pipeline."""
+    """Adapter that registers engineer sessions in the threads API.
+
+    Maps engineer phases to turns and tool calls to events so that
+    the existing threads SSE stream picks them up automatically.
+    """
 
     def __init__(self, thread_key: str, session: EngineerSession) -> None:
         self.thread_key = thread_key
@@ -54,7 +62,6 @@ class EngineerThreadBridge:
             self._virtual_session["thread_name"] = self.session.thread_name
             _, _, persist_session, _ = _import_agent_internals()
             persist_session(self._virtual_session, self.thread_key)
-
         self._turn_counter += 1
         now = time.time()
         self._current_turn = {
@@ -83,6 +90,12 @@ class EngineerThreadBridge:
     async def send_message(self, text: str) -> None:
         await self.on_event({"type": "raw", "text": text})
 
+    def set_thread_name(self, name: str) -> None:
+        self._virtual_session["thread_name"] = name
+        self._virtual_session["last_activity"] = time.time()
+        _, _, persist_session, _ = _import_agent_internals()
+        persist_session(self._virtual_session, self.thread_key)
+
     def set_state(self, state: str) -> None:
         self._virtual_session["state"] = state
         self._virtual_session["last_activity"] = time.time()
@@ -90,11 +103,15 @@ class EngineerThreadBridge:
         persist_session(self._virtual_session, self.thread_key)
 
     async def on_waiting_for_reply(self, waiting: bool) -> None:
+        """Set state to 'waiting' (True) or 'working' (False) for clarification UI."""
         self.set_state("waiting" if waiting else "working")
 
     def finalize(self, result: EngineerResult) -> None:
+        if self._current_turn is not None:
+            self._current_turn["result"] = result.pr_url or result.summary or result.error or ""
         self._finish_current_turn()
-        self._virtual_session["state"] = "idle" if result.success else "error"
+        state = "idle" if result.success else "error"
+        self._virtual_session["state"] = state
         self._virtual_session["last_activity"] = time.time()
         _, _, persist_session, _ = _import_agent_internals()
         persist_session(self._virtual_session, self.thread_key)

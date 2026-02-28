@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import structlog
@@ -26,7 +26,9 @@ class EngineerSession:
 
     thread_key: str
     task: str
+    source: Literal["cli", "slack", "api"] = "api"
     model_preference: str | None = None
+    budget_mode: Literal["simple", "auto", "complex"] | None = None
     run_id: str = field(default_factory=lambda: str(uuid4()))
     phase: Phase = Phase.RESEARCH
     research_brief: str = ""
@@ -76,8 +78,21 @@ def get_session(thread_key: str) -> EngineerSession | None:
     return _sessions.get(thread_key)
 
 
-def create_session(thread_key: str, task: str) -> EngineerSession:
-    session = EngineerSession(thread_key=thread_key, task=task)
+def create_session(
+    thread_key: str,
+    task: str,
+    *,
+    source: Literal["cli", "slack", "api"] = "api",
+    model_preference: str | None = None,
+    budget_mode: Literal["simple", "auto", "complex"] | None = None,
+) -> EngineerSession:
+    session = EngineerSession(
+        thread_key=thread_key,
+        task=task,
+        source=source,
+        model_preference=model_preference,
+        budget_mode=budget_mode,
+    )
     _sessions[thread_key] = session
     return session
 

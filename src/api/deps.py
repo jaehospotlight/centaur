@@ -53,7 +53,9 @@ async def verify_ui_or_api_key(
     """Accept either a valid UI session cookie or an API key."""
     from api.routers.ui import _check_auth
 
-    if _check_auth(request):
+    # Only honor UI cookie auth when UI password protection is enabled.
+    # If UI password is disabled, require API key for backend API routes.
+    if settings.ui_password and _check_auth(request):
         return "cookie"
     return await verify_api_key(request, x_api_key)
 

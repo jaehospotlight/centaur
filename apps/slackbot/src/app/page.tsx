@@ -1,11 +1,8 @@
-/** @jsxImportSource react */
-
 export default function Home() {
   return (
-    <main style={{ padding: "2rem", fontFamily: "system-ui" }}>
-      <h1>Tempo AI Slackbot</h1>
-      <p>Webhook endpoint: <code>POST /api/webhooks/slack</code></p>
-      <p>Status: Running</p>
+    <main className="p-8 font-sans">
+      <h1 className="text-zinc-200 text-lg font-semibold">Paradigm AI</h1>
+      <p className="text-zinc-500 text-sm mt-2">Status: Running</p>
     </main>
   );
 }

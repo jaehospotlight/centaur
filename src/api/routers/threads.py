@@ -11,10 +11,10 @@ import json
 from typing import Annotated, Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import StreamingResponse
 
-from api.agent import get_session_state
+from api.agent import get_session_state, session_items_snapshot
 from api.deps import get_pool, verify_ui_or_api_key
 
 router = APIRouter(
@@ -35,6 +35,7 @@ def _build_live_detail(key: str, session: dict[str, Any]) -> dict[str, Any]:
         "created_at": session["created_at"],
         "last_activity": session["last_activity"],
         "turns": session.get("turns", []),
+        "thread_name": session.get("thread_name"),
     }
 
 
@@ -51,10 +52,12 @@ async def list_threads(
             s.harness,
             s.agent_thread_id,
             s.state,
+            s.thread_name,
             extract(epoch from s.created_at)    AS created_at,
             extract(epoch from s.last_activity) AS last_activity,
             coalesce(tc.turn_count, 0)          AS turn_count,
-            coalesce(lt.result, '')              AS last_result
+            coalesce(lt.result, '')              AS last_result,
+            coalesce(ft.first_message, '')       AS first_message
         FROM agent_sessions s
         LEFT JOIN LATERAL (
             SELECT count(*) AS turn_count
@@ -66,24 +69,67 @@ async def list_threads(
             WHERE t.slack_thread_key = s.slack_thread_key
             ORDER BY t.turn_id DESC LIMIT 1
         ) lt ON true
+        LEFT JOIN LATERAL (
+            SELECT t.user_message AS first_message
+            FROM agent_turns t
+            WHERE t.slack_thread_key = s.slack_thread_key
+            ORDER BY t.turn_id ASC LIMIT 1
+        ) ft ON true
         ORDER BY s.last_activity DESC
         """
     )
+    pg_keys: set[str] = set()
     threads = []
     for r in rows:
+        key = r["slack_thread_key"]
+        pg_keys.add(key)
+        live = get_session_state(key)
+        live_turns = live.get("turns", []) if live else []
+        live_first_message = ""
+        live_last_result = ""
+        if live_turns:
+            live_first_message = str(live_turns[0].get("user_message") or "")
+            live_last_result = str(live_turns[-1].get("result") or "")
         threads.append(
             {
-                "slack_thread_key": r["slack_thread_key"],
+                "slack_thread_key": key,
                 "container_id": r["container_id"][:12],
-                "harness": r["harness"],
-                "agent_thread_id": r["agent_thread_id"],
-                "state": r["state"],
+                "harness": live["harness"] if live else r["harness"],
+                "agent_thread_id": live.get("agent_thread_id") if live else r["agent_thread_id"],
+                "state": live["state"] if live else r["state"],
                 "created_at": float(r["created_at"]),
-                "last_activity": float(r["last_activity"]),
-                "turn_count": r["turn_count"],
-                "last_result": (r["last_result"] or "")[:200],
+                "last_activity": live["last_activity"] if live else float(r["last_activity"]),
+                "turn_count": len(live_turns) if live else r["turn_count"],
+                "last_result": (live_last_result if live_last_result else (r["last_result"] or ""))[:200],
+                "first_message": (
+                    live_first_message if live_first_message else (r["first_message"] or "")
+                )[:200],
+                "thread_name": live.get("thread_name") if live else r.get("thread_name"),
             }
         )
+    for key, live in session_items_snapshot():
+        if key not in pg_keys:
+            first_msg = ""
+            last_result = ""
+            if live.get("turns"):
+                first_msg = live["turns"][0].get("user_message", "")
+                last_result = live["turns"][-1].get("result", "")
+            threads.append(
+                {
+                    "slack_thread_key": key,
+                    "container_id": live["container_id"][:12],
+                    "harness": live["harness"],
+                    "agent_thread_id": live.get("agent_thread_id"),
+                    "state": live["state"],
+                    "created_at": live["created_at"],
+                    "last_activity": live["last_activity"],
+                    "turn_count": len(live.get("turns", [])),
+                    "last_result": last_result[:200],
+                    "first_message": first_msg[:200],
+                    "thread_name": live.get("thread_name"),
+                }
+            )
+    threads.sort(key=lambda t: t.get("last_activity") or 0, reverse=True)
     return {"threads": threads, "count": len(threads)}
 
 
@@ -97,6 +143,7 @@ async def _fetch_pg_detail(pool: asyncpg.Pool, key: str) -> dict[str, Any]:
             harness,
             agent_thread_id,
             state,
+            thread_name,
             extract(epoch from created_at)    AS created_at,
             extract(epoch from last_activity) AS last_activity
         FROM agent_sessions
@@ -151,6 +198,7 @@ async def _fetch_pg_detail(pool: asyncpg.Pool, key: str) -> dict[str, Any]:
         "harness": row["harness"],
         "agent_thread_id": row["agent_thread_id"],
         "state": row["state"],
+        "thread_name": row.get("thread_name"),
         "created_at": float(row["created_at"]),
         "last_activity": float(row["last_activity"]),
         "turns": turns,
@@ -169,8 +217,13 @@ async def get_thread(
     return await _fetch_pg_detail(pool, key)
 
 
+# SSE comment keepalive sent when no data for this many seconds (prevents proxy timeouts)
+_SSE_KEEPALIVE_INTERVAL_S = 15
+
+
 @router.get("/stream")
 async def stream_thread(
+    request: Request,
     key: str,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> StreamingResponse:
@@ -185,47 +238,48 @@ async def stream_thread(
                 detail = await _fetch_pg_detail(pool, key)
                 yield f"data: {json.dumps(detail, default=str)}\n\n"
             except HTTPException:
-                yield f"event: error\ndata: {json.dumps({'error': 'not_found'})}\n\n"
+                # Emit a normal message event so EventSource.onmessage receives it.
+                yield f"data: {json.dumps({'error': 'not_found'})}\n\n"
             return
 
         last_event_count = -1
-        last_turn_count = -1
         last_state = ""
-        idle_ticks = 0
+        ticks_since_data = 0
 
         while True:
+            if await request.is_disconnected():
+                break
+
             session = get_session_state(key)
             if not session:
                 break
 
-            total_events = sum(
-                len(t.get("events", [])) for t in session.get("turns", [])
-            )
-            turn_count = len(session.get("turns", []))
+            total_events = sum(len(t.get("events", [])) for t in session.get("turns", []))
             state = session.get("state", "")
 
-            if (
-                total_events != last_event_count
-                or turn_count != last_turn_count
-                or state != last_state
-            ):
+            if total_events != last_event_count or state != last_state:
                 detail = _build_live_detail(key, session)
                 yield f"data: {json.dumps(detail, default=str)}\n\n"
                 last_event_count = total_events
-                last_turn_count = turn_count
                 last_state = state
-                idle_ticks = 0
+                ticks_since_data = 0
             else:
-                idle_ticks += 1
+                ticks_since_data += 1
 
-            # Stop streaming after 30s of no changes on an idle thread
-            if state == "idle" and idle_ticks > 100:
-                break
+            # Keep stream open for idle threads so the UI does not churn on reconnect.
+            # Keepalive: send SSE comment when no data for 15s (prevents proxy timeouts)
+            if ticks_since_data * 0.3 >= _SSE_KEEPALIVE_INTERVAL_S:
+                yield ":keepalive\n\n"
+                ticks_since_data = 0
 
             await asyncio.sleep(0.3)
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

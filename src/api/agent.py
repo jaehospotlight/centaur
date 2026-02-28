@@ -24,6 +24,8 @@ import psycopg2.extras
 import structlog
 from docker.errors import NotFound
 
+from shared.engineer.session import has_active_session as has_active_engineer_session
+
 log = structlog.get_logger()
 
 HARNESSES = ("amp", "claude-code", "codex", "pi-mono")
@@ -40,6 +42,7 @@ _sessions_lock = threading.RLock()
 _execute_locks: dict[str, threading.Lock] = {}
 _execute_locks_guard = threading.Lock()
 
+# Active states that prevent engineer from overwriting a non-engineer session
 _ACTIVE_SESSION_STATES = ("working", "idle", "running")
 
 
@@ -72,20 +75,48 @@ def get_execute_lock(thread_key: str) -> threading.Lock:
         return lock
 
 
+def _normalize_thread_key(thread_key: str) -> str:
+    raw = thread_key.strip()
+    parts = raw.split(":")
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return f"{parts[0]}:{parts[1]}"
+    if len(parts) == 3 and parts[0].lower() == "slack" and parts[1] and parts[2]:
+        return f"{parts[1]}:{parts[2]}"
+    return raw
+
+
+def _thread_key_aliases(thread_key: str) -> list[str]:
+    aliases: list[str] = []
+    raw = thread_key.strip()
+    canonical = _normalize_thread_key(raw)
+    for key in (raw, canonical):
+        if key and key not in aliases:
+            aliases.append(key)
+    if canonical:
+        channel, _, thread_ts = canonical.partition(":")
+        if channel and thread_ts:
+            slack_key = f"slack:{channel}:{thread_ts}"
+            if slack_key not in aliases:
+                aliases.append(slack_key)
+    return aliases
+
+
 def has_active_non_engineer_session(thread_key: str) -> tuple[bool, str | None]:
     """Return (True, harness) if an active non-engineer session would be overwritten."""
-    session = get_session_state(thread_key)
-    if not session:
-        return (False, None)
-    harness = session.get("harness")
-    if harness == "engineer":
-        return (False, None)
-    if harness not in HARNESSES:
-        return (False, None)
-    state = session.get("state", "")
-    if state not in _ACTIVE_SESSION_STATES:
-        return (False, None)
-    return (True, harness)
+    for candidate in _thread_key_aliases(thread_key):
+        session = get_session_state(candidate)
+        if not session:
+            continue
+        harness = session.get("harness")
+        if harness == "engineer":
+            continue
+        if harness not in HARNESSES:
+            continue
+        state = session.get("state", "")
+        if state not in _ACTIVE_SESSION_STATES:
+            continue
+        return (True, harness)
+    return (False, None)
 
 
 # Pool of pre-warmed, unclaimed containers (LIFO)
@@ -146,14 +177,15 @@ def _persist_session(session: dict[str, Any], key: str) -> None:
         """
         INSERT INTO agent_sessions
             (slack_thread_key, container_id, harness, agent_thread_id,
-             state, created_at, last_activity)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+             state, created_at, last_activity, thread_name)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (slack_thread_key) DO UPDATE SET
             container_id    = EXCLUDED.container_id,
             harness         = EXCLUDED.harness,
             agent_thread_id = EXCLUDED.agent_thread_id,
             state           = EXCLUDED.state,
-            last_activity   = EXCLUDED.last_activity
+            last_activity   = EXCLUDED.last_activity,
+            thread_name     = EXCLUDED.thread_name
         """,
         (
             key,
@@ -163,6 +195,7 @@ def _persist_session(session: dict[str, Any], key: str) -> None:
             session["state"],
             _ts(session["created_at"]),
             _ts(session["last_activity"]),
+            session.get("thread_name"),
         ),
     )
 
@@ -542,6 +575,13 @@ class AgentClient:
         # Reuse existing container if alive
         existing = get_session_state(slack_thread_key)
         if existing:
+            if existing.get("harness") == "engineer":
+                return {
+                    "session_id": slack_thread_key,
+                    "container_id": existing["container_id"],
+                    "status": "already_running",
+                    "harness": existing["harness"],
+                }
             try:
                 client = _docker_client()
                 container = client.containers.get(existing["container_id"])
@@ -607,6 +647,7 @@ class AgentClient:
             "created_at": time.time(),
             "last_activity": time.time(),
             "turns": [],
+            "thread_name": None,
         }
         set_session_state(slack_thread_key, session)
         _persist_session(session, slack_thread_key)
@@ -651,6 +692,13 @@ class AgentClient:
             }
 
         try:
+            if has_active_engineer_session(slack_thread_key):
+                return {
+                    "error": (
+                        "Active engineer session in progress for this thread. "
+                        "Complete or stop it before running harness execution."
+                    )
+                }
             session = get_session_state(slack_thread_key)
             if session and session.get("harness") == "engineer":
                 return {
@@ -674,6 +722,14 @@ class AgentClient:
                     session = None
 
             if not session:
+                # Re-check right before spawn to avoid racing engineer startup.
+                if has_active_engineer_session(slack_thread_key):
+                    return {
+                        "error": (
+                            "Active engineer session in progress for this thread. "
+                            "Complete or stop it before running harness execution."
+                        )
+                    }
                 log.info("exec_auto_spawn", request_id=rid, thread=slack_thread_key)
                 _emit({"type": "status", "stage": "container.creating"})
                 self.spawn(slack_thread_key, harness, repo, request_id)
@@ -872,6 +928,14 @@ class AgentClient:
         session = get_session_state(slack_thread_key)
         if not session:
             return {"error": f"No session for '{slack_thread_key}'"}
+        if session.get("harness") == "engineer":
+            # Engineer runs are in-process asyncio tasks, not Docker containers. @todo: move it.
+            from shared.engineer.session import remove_session
+
+            remove_session(slack_thread_key)
+            pop_session_state(slack_thread_key)
+            _delete_session(slack_thread_key)
+            return {"session_id": slack_thread_key, "status": "stopped"}
 
         client = _docker_client()
         try:
@@ -953,6 +1017,7 @@ class AgentClient:
             harness = row.get("harness", "amp")
             if harness == "engineer":
                 # Engineer sessions use run_id as container_id, not a Docker container.
+                # They cannot be resumed; leave PG state as-is (idle/error).
                 continue
 
             container_id = row["container_id"]
@@ -1009,6 +1074,7 @@ class AgentClient:
                 "created_at": created.timestamp() if created else time.time(),
                 "last_activity": last_act.timestamp() if last_act else time.time(),
                 "turns": turns,
+                "thread_name": row.get("thread_name"),
             }
             set_session_state(key, recovered_session)
             recovered += 1
@@ -1028,6 +1094,7 @@ class AgentClient:
                         "created_at": time.time(),
                         "last_activity": time.time(),
                         "turns": [],
+                        "thread_name": None,
                     }
                     set_session_state(key, recovered_session)
                     _persist_session(recovered_session, key)
@@ -1044,6 +1111,14 @@ class AgentClient:
         session = get_session_state(slack_thread_key)
         if not session:
             return {"error": f"No session for '{slack_thread_key}'"}
+        if session.get("harness") == "engineer":
+            # Engineer has no signal-based interrupt; best-effort cancel equals stop.
+            from shared.engineer.session import remove_session
+
+            remove_session(slack_thread_key)
+            pop_session_state(slack_thread_key)
+            _delete_session(slack_thread_key)
+            return {"session_id": slack_thread_key, "status": "interrupted"}
 
         client = _docker_client()
         try:

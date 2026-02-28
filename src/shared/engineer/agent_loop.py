@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -33,6 +34,9 @@ SAFE_PARALLEL_TOOL_NAMES = {
     "grep_search",
     "run_validation",
 }
+_MAX_TOOL_RESULT_CHARS = 12000
+_MAX_HISTORY_CHARS = 500000
+_COMPACT_KEEP_RECENT_MESSAGES = 12
 
 
 def _extract_text(content_blocks: list[Any]) -> str:
@@ -43,7 +47,27 @@ def _extract_text(content_blocks: list[Any]) -> str:
     return "".join(parts).strip()
 
 
-def _truncate(text: str, max_chars: int = 30000) -> str:
+def _last_user_message_is_continuation(messages: list[dict[str, Any]]) -> bool:
+    """True if the last user message is a continuation prompt (avoids infinite retries)."""
+    if not messages:
+        return False
+    last = messages[-1]
+    if last.get("role") != "user":
+        return False
+    content = last.get("content")
+    if isinstance(content, str):
+        return content.strip().lower() in ("please continue", "please continue.")
+    if isinstance(content, list):
+        for block in content:
+            if block.get("type") == "text":
+                return block.get("text", "").strip().lower() in (
+                    "please continue",
+                    "please continue.",
+                )
+    return False
+
+
+def _truncate(text: str, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str:
     if len(text) <= max_chars:
         return text
     half = max_chars // 2
@@ -60,6 +84,7 @@ def _is_unsupported_output_config_error(exc: Exception) -> bool:
 def _is_retryable_request_error(exc: Exception) -> bool:
     if isinstance(exc, TimeoutError):
         return True
+    # Anthropic SDK/network errors can vary by version; rely on stable type names.
     retryable_type_names = {
         "APITimeoutError",
         "APIConnectionError",
@@ -67,6 +92,48 @@ def _is_retryable_request_error(exc: Exception) -> bool:
         "InternalServerError",
     }
     return exc.__class__.__name__ in retryable_type_names
+
+
+def _is_context_overflow_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    if not any(marker in text for marker in ("invalid_request_error", "badrequesterror", "400")):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "prompt is too long",
+            "context",
+            "tokens >",
+            "maximum",
+            "too many tokens",
+            "exceed",
+        )
+    )
+
+
+def _estimate_messages_chars(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        try:
+            total += len(json.dumps(message, ensure_ascii=False, default=str))
+        except TypeError:
+            total += len(str(message))
+    return total
+
+
+def _compact_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(messages) <= _COMPACT_KEEP_RECENT_MESSAGES + 1:
+        return messages
+    head = messages[0]
+    tail = messages[-_COMPACT_KEEP_RECENT_MESSAGES:]
+    marker = {
+        "role": "user",
+        "content": (
+            "Context window guard: earlier turns were omitted to fit model limits. "
+            "Continue from the latest context and rerun tools if older details are needed."
+        ),
+    }
+    return [head, marker, *tail]
 
 
 def _format_request_error(exc: Exception, request_timeout_seconds: int) -> str:
@@ -208,6 +275,9 @@ async def run_agent_loop(
                 )
             raise AgentLoopError(str(exc)) from exc
 
+        if _estimate_messages_chars(messages) > _MAX_HISTORY_CHARS:
+            messages = _compact_messages(messages)
+
         response = None
         max_attempts = 2
         for attempt in range(1, max_attempts + 1):
@@ -223,6 +293,15 @@ async def run_agent_loop(
                 if "output_config" in create_kwargs and _is_unsupported_output_config_error(exc):
                     create_kwargs.pop("output_config", None)
                     break
+                if _is_context_overflow_error(exc) and attempt < max_attempts:
+                    messages = _compact_messages(messages)
+                    await asyncio.sleep(0.5)
+                    continue
+                if _is_context_overflow_error(exc):
+                    raise AgentLoopError(
+                        "Model request exceeded context window after compaction. "
+                        "Reduce prompt/diff size and retry."
+                    ) from exc
                 if _is_retryable_request_error(exc) and attempt < max_attempts:
                     await asyncio.sleep(1.0)
                     continue
@@ -288,6 +367,18 @@ async def run_agent_loop(
             continue
 
         text = candidate_text
+        # Continuation handling per Anthropic best practices
+        if not _last_user_message_is_continuation(messages):
+            if not text and last_stop_reason == "end_turn":
+                # Empty response: send continuation prompt (do not retry same request)
+                messages.append({"role": "user", "content": "Please continue."})
+                continue
+            if last_stop_reason == "max_tokens":
+                # Truncated: append partial assistant, then continuation prompt
+                messages.append({"role": "assistant", "content": assistant_blocks})
+                messages.append({"role": "user", "content": "Please continue."})
+                continue
+
         return AgentLoopResult(
             text=text,
             turns=guard_state.turns,

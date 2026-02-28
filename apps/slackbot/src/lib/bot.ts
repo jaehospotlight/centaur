@@ -4,20 +4,27 @@ import { createSlackAdapter } from "@chat-adapter/slack";
 import { createRedisState } from "@chat-adapter/state-redis";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import {
-  executeStream,
+  execute,
   extractRunOptions,
+  normalizeThreadKey,
   replyEngineerFlow,
+  spawn,
   startEngineerFlow,
   type AgentMode,
+  type BudgetMode,
   type FileAttachment,
-  type ProgressEvent,
 } from "./harness";
+import { truncateSlackText } from "./slack-text";
 
 const THREAD_VIEWER_URL = process.env.THREAD_VIEWER_URL || "https://svc-ai.paradigm.xyz";
 const MAX_TRACKED_THREAD_MODES = 500;
 
 type MarkdownNode = Root | Root["children"][number];
-type ThreadModeConfig = { mode: AgentMode; modelPreference: string | null };
+type ThreadModeConfig = {
+  mode: AgentMode;
+  modelPreference: string | null;
+  budgetMode: BudgetMode | null;
+};
 
 function renderSlackMessage(markdown: string) {
   const ast = parseMarkdown(markdown);
@@ -44,18 +51,25 @@ function renderSlackMessage(markdown: string) {
   return { ast };
 }
 
+function toSlackMessage(markdown: string) {
+  return renderSlackMessage(truncateSlackText(markdown));
+}
+
 function createBot() {
   const hasSlackCreds =
     process.env.SLACK_BOT_TOKEN && process.env.SLACK_SIGNING_SECRET;
 
   const bot = new Chat({
-    userName: "ai",
+    userName: "tempo-ai",
     adapters: hasSlackCreds ? { slack: createSlackAdapter() } : {},
     state: process.env.REDIS_URL ? createRedisState() : createMemoryState(),
   });
   const threadModes = new Map<string, ThreadModeConfig>();
 
   function setThreadMode(threadKey: string, config: ThreadModeConfig): void {
+    if (threadModes.has(threadKey)) {
+      threadModes.delete(threadKey);
+    }
     if (!threadModes.has(threadKey) && threadModes.size >= MAX_TRACKED_THREAD_MODES) {
       const oldestKey = threadModes.keys().next().value as string | undefined;
       if (oldestKey) threadModes.delete(oldestKey);
@@ -72,12 +86,12 @@ function createBot() {
       `- **Thread ID**: ${threadId}`,
       `- **Platform**: Slack`,
       "",
-      "## Formatting Rules",
+      "## Slack Formatting Rules",
       "",
-      "- Use standard markdown: **bold**, _italic_, `code`, [text](url)",
-      "- Do NOT use Slack-specific `<URL|text>` link format — use `[text](url)` instead",
       "- Preserve Slack user mentions (`<@UXXXXXXX>`) exactly as-is",
-      "- Keep responses under 4,000 characters — split long responses or summarize",
+      "- Use `<URL|Display Text>` format for hyperlinks — never put URLs adjacent to `*` or `_`",
+      "- Slack enforces a 4,000 character limit per message — split long responses across multiple messages or summarize",
+      "- Use Slack Block Kit formatting for tables, not markdown or ASCII",
       "- After completing a long task, tag the requester with `@username`",
       "",
       "---",
@@ -99,180 +113,238 @@ function createBot() {
       .filter((a): a is { url: string; name: string } => !!a.url && !!a.name)
       .map((a) => ({ url: a.url, name: a.name }));
 
+    const ampEngRequested =
+      parsed.mode === "eng" &&
+      (parsed.modelPreference === "amp" || parsed.harness === "amp");
+    const requestedMode: AgentMode = ampEngRequested ? "default" : parsed.mode;
     const mode: AgentMode = isFirstMessage
-      ? parsed.mode
-      : (previous?.mode ?? parsed.mode);
+      ? requestedMode
+      : (previous?.mode ?? requestedMode);
 
     if (
       !isFirstMessage &&
       previous &&
       parsed.modeExplicit &&
-      parsed.mode !== previous.mode
+      requestedMode !== previous.mode
     ) {
       await thread.post(
-        renderSlackMessage(
+        toSlackMessage(
           "This thread is already running in a different mode. Start a new thread to switch modes."
         )
       );
       return;
     }
 
+    if (ampEngRequested && isFirstMessage) {
+      await thread.post(
+        toSlackMessage(
+          "Routing `--eng --amp` through standard `--amp` mode for reliability."
+        )
+      );
+    }
+
     if (!parsed.cleanedText) {
       await thread.post(
-        renderSlackMessage(
+        toSlackMessage(
           "Please provide a prompt after flags. Example: `@tempo-ai --eng --claude implement retry logic`"
         )
       );
       return;
     }
 
+    // Recovery path: after bot restarts we may lose in-memory mode state,
+    // so probe the API for an active engineer session before default routing.
+    if (
+      !isFirstMessage &&
+      !previous &&
+      !parsed.modeExplicit &&
+      !parsed.harnessExplicit &&
+      !parsed.budgetExplicit
+    ) {
+      try {
+        const reply = await replyEngineerFlow(threadKey, parsed.cleanedText);
+        if (reply.status === "accepted") {
+          setThreadMode(threadKey, {
+            mode: "eng",
+            modelPreference: null,
+            budgetMode: null,
+          });
+          return;
+        }
+      } catch (error) {
+        console.warn("engineer_recovery_probe_failed", {
+          thread: threadKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await thread.post(
+          toSlackMessage(
+            "Couldn't verify the existing engineer session right now. Please retry in this thread."
+          )
+        );
+        return;
+      }
+    }
+
     if (mode === "eng") {
       const modelPreference =
         parsed.modelPreference ?? parsed.harness ?? previous?.modelPreference ?? null;
-      setThreadMode(threadKey, { mode: "eng", modelPreference });
+      const budgetMode = parsed.budgetMode ?? previous?.budgetMode ?? null;
 
-      if (isFirstMessage) {
-        try {
+      try {
+        if (isFirstMessage) {
           await thread.startTyping("Starting engineer flow...");
           const result = await startEngineerFlow(
             threadKey,
             parsed.cleanedText,
             modelPreference,
+            budgetMode,
             files.length > 0 ? files : undefined
           );
-          const viewerUrl = `${THREAD_VIEWER_URL}/threads/${encodeURIComponent(threadKey)}`;
+          const viewerUrl = `${THREAD_VIEWER_URL}/threads/${encodeURIComponent(normalizeThreadKey(threadKey))}`;
           const preferenceLine = modelPreference
             ? `\nModel preference: \`${modelPreference}\``
             : "";
-          const statusLine =
-            result.status === "already_running"
-              ? "Engineer flow is already running for this thread."
-              : result.status === "rejected"
-                ? (result.error ??
-                  "Engineer flow could not start because another harness session is active in this thread.")
-                : "Engineer flow started.";
+          const modeLine = budgetMode ? `\nMode: \`${budgetMode}\`` : "";
+          const statusLine = (() => {
+            if (result.status === "already_running") {
+              setThreadMode(threadKey, { mode: "eng", modelPreference, budgetMode });
+              return "Engineer flow is already running for this thread.";
+            }
+            if (result.status === "rejected") {
+              return (
+                result.error ??
+                "Engineer flow could not start because another harness session is active in this thread."
+              );
+            }
+            setThreadMode(threadKey, { mode: "eng", modelPreference, budgetMode });
+            return "Engineer flow started.";
+          })();
           await thread.post(
-            renderSlackMessage(
-              `${statusLine}${preferenceLine}\n\n[🔗 Thread Viewer](${viewerUrl})`
+            toSlackMessage(
+              `${statusLine}${preferenceLine}${modeLine}\n\n<${viewerUrl}|Thread Viewer>`
             )
           );
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : "unknown error";
-          await thread.post(
-            renderSlackMessage(`Failed to start engineer flow: ${msg}`)
-          );
+          return;
         }
-        return;
-      }
 
-      try {
         const reply = await replyEngineerFlow(
           threadKey,
           parsed.cleanedText,
           files.length > 0 ? files : undefined
         );
         if (reply.status === "no_active_session") {
+          threadModes.delete(threadKey);
           await thread.post(
-            renderSlackMessage(
+            toSlackMessage(
               "No active engineer session for this thread. Start a new run with `--eng`."
             )
           );
+        } else if (reply.status === "not_waiting_for_reply") {
+          await thread.post(
+            toSlackMessage("Engineer is not currently waiting for a reply.")
+          );
+        } else if (reply.status === "accepted") {
+          setThreadMode(threadKey, { mode: "eng", modelPreference, budgetMode });
         }
+        return;
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "unknown error";
         await thread.post(
-          renderSlackMessage(`Failed to send engineer reply: ${msg}`)
+          toSlackMessage(
+            `Engineer flow request failed: ${
+              error instanceof Error ? error.message : "unknown error"
+            }`
+          )
         );
+        return;
       }
-      return;
     }
 
-    setThreadMode(threadKey, { mode: "default", modelPreference: null });
+    setThreadMode(threadKey, { mode: "default", modelPreference: null, budgetMode: null });
     const harness = parsed.harness ?? "amp";
-    const viewerUrl = `${THREAD_VIEWER_URL}/threads/${encodeURIComponent(threadKey)}`;
+    try {
+      await thread.startTyping("Spawning agent...");
+      await spawn(threadKey, harness, undefined, requestId);
 
-    // Post thread viewer link instantly, start native typing indicator
-    const statusMsg = await thread.post(
-      renderSlackMessage(`[🔗 Thread Viewer](${viewerUrl})`)
-    );
-    await thread.startTyping("Thinking...");
+      await thread.startTyping("Running...");
+      const message = isFirstMessage
+        ? buildSessionContext(threadKey) + parsed.cleanedText
+        : parsed.cleanedText;
+      const result = await execute(
+        threadKey,
+        message,
+        harness,
+        requestId,
+        files.length > 0 ? files : undefined
+      );
 
-    let activeTools: string[] = [];
-    let editQueued = false;
-
-    function queueEdit() {
-      if (editQueued) return;
-      editQueued = true;
-      setTimeout(() => {
-        editQueued = false;
-        const toolLines = activeTools.map((t) => `  🔧 ${t}`).join("\n");
-        const text = toolLines
-          ? `${toolLines}\n\n[🔗 Thread Viewer](${viewerUrl})`
-          : `[🔗 Thread Viewer](${viewerUrl})`;
-        statusMsg.edit(renderSlackMessage(text)).catch(() => {});
-      }, 300);
+      let finalMessage = result;
+      if (isFirstMessage) {
+        const viewerUrl = `${THREAD_VIEWER_URL}/threads/${encodeURIComponent(normalizeThreadKey(threadKey))}`;
+        finalMessage += `\n\n<${viewerUrl}|Thread Viewer>`;
+      }
+      await thread.post(toSlackMessage(finalMessage));
+    } catch (error) {
+      await thread.post(
+        toSlackMessage(
+          `Agent request failed: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`
+        )
+      );
     }
-
-    const message = isFirstMessage
-      ? buildSessionContext(threadKey) + parsed.cleanedText
-      : parsed.cleanedText;
-
-    const result = await executeStream(
-      threadKey,
-      message,
-      harness,
-      requestId,
-      files.length > 0 ? files : undefined,
-      (event) => {
-        // Amp streams assistant events with tool_use in message.content[]
-        if (event.type === "assistant") {
-          const content = (event.message as unknown as Record<string, unknown>)?.content;
-          if (Array.isArray(content)) {
-            for (const part of content) {
-              if (part?.type === "tool_use" && part?.name) {
-                const name = part.name as string;
-                if (!activeTools.includes(name)) {
-                  activeTools.push(name);
-                  if (activeTools.length > 5) activeTools.shift();
-                }
-              }
-            }
-            if (activeTools.length > 0) {
-              const status = activeTools.map((t) => `🔧 ${t}`).join("  ");
-              thread.startTyping(status).catch(() => {});
-              queueEdit();
-            }
-          }
-        }
-        // Tool results come as "user" events — clear all active tools
-        if (event.type === "user") {
-          const content = (event.message as unknown as Record<string, unknown>)?.content;
-          if (Array.isArray(content) && content.some((p: Record<string, unknown>) => p?.type === "tool_result")) {
-            activeTools = [];
-            thread.startTyping("Thinking...").catch(() => {});
-            queueEdit();
-          }
-        }
-      },
-    );
-
-    // Edit status message to just the thread viewer link, post result as new message
-    // (posting auto-clears the typing indicator)
-    await statusMsg.edit(renderSlackMessage(`[🔗 Thread Viewer](${viewerUrl})`)).catch(() => {});
-    await thread.post(renderSlackMessage(result));
   }
 
   bot.onNewMention(async (thread, message) => {
     if (message.author.isMe) return;
-    thread.subscribe().catch(() => {});
+    if (message.author.isBot) return;
+    await thread.subscribe();
     const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name }));
     await handleMessage(thread, message.text, true, attachments);
   });
 
   bot.onSubscribedMessage(async (thread, message) => {
     if (message.author.isMe) return;
-    if (!message.isMention) return;
+    if (message.author.isBot) return;
     const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name }));
+    if (!message.isMention) {
+      // Allow plain thread replies to resume engineer clarification when session is active
+      const text = (message.text || "").trim();
+      if (!text) return;
+      const knownMode = threadModes.get(thread.id)?.mode;
+      try {
+        const files: FileAttachment[] = (attachments || [])
+          .filter((a): a is { url: string; name: string } => !!a.url && !!a.name)
+          .map((a) => ({ url: a.url, name: a.name }));
+        const reply = await replyEngineerFlow(thread.id, text, files.length > 0 ? files : undefined);
+        if (reply.status === "accepted") return;
+        if (reply.status === "not_waiting_for_reply") {
+          if (knownMode === "eng") {
+            await thread.post(
+              toSlackMessage("Engineer is not currently waiting for a reply.")
+            );
+          }
+          return;
+        }
+        if (reply.status === "no_active_session" && knownMode === "eng") {
+          threadModes.delete(thread.id);
+          await thread.post(
+            toSlackMessage("No active engineer session for this thread. Start a new run with `--eng`.")
+          );
+          return;
+        }
+      } catch (error) {
+        console.warn("engineer_plain_reply_failed", {
+          thread: thread.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (knownMode === "eng") {
+          await thread.post(
+            toSlackMessage("Could not deliver your reply to engineer right now. Please retry.")
+          );
+        }
+      }
+      return;
+    }
     await handleMessage(thread, message.text, false, attachments);
   });
 

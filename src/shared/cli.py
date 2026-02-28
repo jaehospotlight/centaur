@@ -5,11 +5,11 @@ import json
 import os
 import shlex
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import Literal, cast
 
 import click
 import structlog
@@ -422,19 +422,39 @@ def engineer_group() -> None:
     default=None,
     help="Explicit model id (e.g. claude-opus-4-6, claude-sonnet-4-6). Overrides --engine.",
 )
+@click.option(
+    "--mode",
+    "budget_mode",
+    type=click.Choice(["simple", "auto", "complex"], case_sensitive=False),
+    default=None,
+    help="Budget mode: simple (fast lane), auto (adaptive), or complex (deep lane).",
+)
 def engineer_run(
     task: str,
     dry_run: bool,
     skip_clarify: bool,
     engine: str | None,
     model: str | None,
+    budget_mode: str | None,
 ) -> None:
     """Run engineer workflow from CLI."""
 
     model_preference = (model or engine or "").strip() or None
+    selected_budget_mode = (budget_mode or "").strip().lower() or None
+    if selected_budget_mode not in {None, "simple", "auto", "complex"}:
+        raise click.BadParameter(f"Invalid mode: {selected_budget_mode}")
+    normalized_budget_mode = cast(
+        Literal["simple", "auto", "complex"] | None, selected_budget_mode
+    )
 
     async def _run() -> None:
-        session = EngineerSession(thread_key="cli", task=task, model_preference=model_preference)
+        session = EngineerSession(
+            thread_key="cli",
+            task=task,
+            source="cli",
+            model_preference=model_preference,
+            budget_mode=normalized_budget_mode,
+        )
         orchestrator = EngineerOrchestrator(
             settings=engineer_settings,
             dry_run=dry_run,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,11 +27,15 @@ class EngineerSettings(BaseSettings):
     authorized_user_ids: str = ""
 
     branch_prefix: str = "agent"
+    budget_preset: Literal["simple", "auto", "complex"] = "auto"
+    slack_budget_preset: Literal["simple", "auto", "complex"] | None = None
+    cli_budget_preset: Literal["simple", "auto", "complex"] | None = None
     max_iterations: int = 6
     max_turns_per_phase: int = 60
     max_tool_calls_total: int = 200
     max_wall_time_seconds: int = 1800
     max_consecutive_tool_failures: int = 5
+    no_diff_exit_after: int = 2
 
     max_parallel_tool_calls: int = 4
     tool_call_timeout_seconds: int = 180

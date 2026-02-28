@@ -159,6 +159,9 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
             """
         )
         await conn.execute(
+            "ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS thread_name TEXT"
+        )
+        await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS agent_turns (
                 id               BIGSERIAL PRIMARY KEY,

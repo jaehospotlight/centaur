@@ -2,6 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
+_MAX_REPO_GUIDANCE_CHARS = 30000
+_MAX_RESEARCH_BRIEF_CHARS = 40000
+_MAX_SPEC_CHARS = 50000
+_MAX_PLAN_CHARS = 30000
+_MAX_FEEDBACK_CHARS = 12000
+
+
+def _cap(text: str, max_chars: int, label: str) -> str:
+    safe = (text or "").strip()
+    if len(safe) <= max_chars:
+        return safe
+    half = max_chars // 2
+    return (
+        f"{safe[:half]}\n\n"
+        f"... [{label} truncated, total {len(safe)} chars] ...\n\n"
+        f"{safe[-half:]}"
+    )
+
 
 def load_repo_guidance(repo_root: Path) -> str:
     guidance_path = repo_root / "AGENTS.md"
@@ -11,6 +29,9 @@ def load_repo_guidance(repo_root: Path) -> str:
 
 
 def researcher_prompt(repo_guidance: str) -> str:
+    repo_guidance = _cap(
+        repo_guidance, _MAX_REPO_GUIDANCE_CHARS, "repository guidance"
+    )
     return f"""\
 You are a senior engineer performing a pre-implementation code audit. You have
 read-only access to the codebase. Your output will be consumed by a planning
@@ -85,6 +106,9 @@ document and stop. Do not make additional tool calls after you start writing it.
 
 
 def planner_prompt(repo_guidance: str) -> str:
+    repo_guidance = _cap(
+        repo_guidance, _MAX_REPO_GUIDANCE_CHARS, "repository guidance"
+    )
     return f"""\
 You are a technical architect. Given research findings about a codebase, produce
 a concrete, ordered implementation plan that an engineer agent will follow exactly.
@@ -128,6 +152,12 @@ What we are explicitly NOT doing.
 
 
 def clarifier_prompt(repo_guidance: str, research_brief: str) -> str:
+    repo_guidance = _cap(
+        repo_guidance, _MAX_REPO_GUIDANCE_CHARS, "repository guidance"
+    )
+    research_brief = _cap(
+        research_brief, _MAX_RESEARCH_BRIEF_CHARS, "research brief"
+    )
     return f"""\
 You are a specification agent. A research agent has produced findings and identified
 open questions. Your job is to interview the user in Slack to resolve ambiguities,
@@ -181,6 +211,13 @@ How to verify the implementation is correct.
 
 
 def engineer_prompt(repo_guidance: str, spec: str, plan: str, feedback: str) -> str:
+    repo_guidance = _cap(
+        repo_guidance, _MAX_REPO_GUIDANCE_CHARS, "repository guidance"
+    )
+    spec = _cap(spec, _MAX_SPEC_CHARS, "specification")
+    plan = _cap(plan, _MAX_PLAN_CHARS, "plan")
+    feedback_text = feedback or "None — first iteration."
+    feedback_text = _cap(feedback_text, _MAX_FEEDBACK_CHARS, "feedback")
     return f"""\
 You are a senior engineer implementing a specific plan. Follow the plan precisely.
 If you discover the plan is wrong, use the think tool to reason about why, then
@@ -220,7 +257,7 @@ If run_validation fails:
 </plan>
 
 <feedback>
-{feedback or "None — first iteration."}
+{feedback_text}
 </feedback>
 
 <repository_guidance>
@@ -229,6 +266,11 @@ If run_validation fails:
 
 
 def reviewer_prompt(repo_guidance: str, spec: str, plan: str) -> str:
+    repo_guidance = _cap(
+        repo_guidance, _MAX_REPO_GUIDANCE_CHARS, "repository guidance"
+    )
+    spec = _cap(spec, _MAX_SPEC_CHARS, "specification")
+    plan = _cap(plan, _MAX_PLAN_CHARS, "plan")
     return f"""\
 You are a staff engineer reviewing a pull request. You have read-only tool access
 to inspect the codebase beyond the diff. Review with high standards but be specific

@@ -36,15 +36,18 @@ async function agentCall(
 
 export type Harness = "amp" | "claude-code" | "codex" | "pi-mono";
 export type AgentMode = "default" | "eng";
+export type BudgetMode = "simple" | "auto" | "complex";
 export type FileAttachment = { url: string; name: string };
 
 export type RunOptions = {
   mode: AgentMode;
   harness: Harness | null;
   modelPreference: string | null;
+  budgetMode: BudgetMode | null;
   cleanedText: string;
   modeExplicit: boolean;
   harnessExplicit: boolean;
+  budgetExplicit: boolean;
 };
 
 export function extractRunOptions(text: string): RunOptions {
@@ -52,14 +55,16 @@ export function extractRunOptions(text: string): RunOptions {
   let mode: AgentMode = "default";
   let harness: Harness | null = null;
   let modelPreference: string | null = null;
+  let budgetMode: BudgetMode | null = null;
   let modeExplicit = false;
   let harnessExplicit = false;
+  let budgetExplicit = false;
 
-  const modeRegex = /(^|\s)--eng(?=\s|$)/gi;
+  const modeRegex = /(^|\s)--eng(?=\s|$)/i;
   if (modeRegex.test(cleaned)) {
     mode = "eng";
     modeExplicit = true;
-    cleaned = cleaned.replace(modeRegex, " ");
+    cleaned = cleaned.replace(/(^|\s)--eng(?=\s|$)/gi, " ");
   }
 
   const kvMatch = cleaned.match(/\bharness\s*=\s*(amp|claude-code|codex|pi-mono)\b/i);
@@ -81,11 +86,14 @@ export function extractRunOptions(text: string): RunOptions {
     { regex: /(^|\s)--pi-mono(?=\s|$)/gi, value: "pi-mono" },
   ];
   for (const { regex, value } of harnessFlags) {
-    if (regex.test(cleaned)) {
+    const matched = regex.test(cleaned);
+    regex.lastIndex = 0;
+    if (matched) {
       harness = value;
       modelPreference = value;
       harnessExplicit = true;
       cleaned = cleaned.replace(regex, " ");
+      regex.lastIndex = 0;
     }
   }
 
@@ -114,23 +122,45 @@ export function extractRunOptions(text: string): RunOptions {
     cleaned = cleaned.replace(modelFlagMatch[0], " ");
   }
 
+  const modeEqMatch = cleaned.match(/\bmode\s*=\s*(simple|auto|complex)\b/i);
+  if (modeEqMatch) {
+    budgetMode = modeEqMatch[1].toLowerCase() as BudgetMode;
+    budgetExplicit = true;
+    cleaned = (
+      cleaned.slice(0, modeEqMatch.index) + cleaned.slice(modeEqMatch.index! + modeEqMatch[0].length)
+    ).trim();
+  }
+
+  const budgetFlags: Array<{ regex: RegExp; value: BudgetMode }> = [
+    { regex: /(^|\s)--simple(?=\s|$)/gi, value: "simple" },
+    { regex: /(^|\s)--fast(?=\s|$)/gi, value: "simple" },
+    { regex: /(^|\s)--auto(?=\s|$)/gi, value: "auto" },
+    { regex: /(^|\s)--balanced(?=\s|$)/gi, value: "auto" },
+    { regex: /(^|\s)--complex(?=\s|$)/gi, value: "complex" },
+    { regex: /(^|\s)--deep(?=\s|$)/gi, value: "complex" },
+  ];
+  for (const { regex, value } of budgetFlags) {
+    const matched = regex.test(cleaned);
+    regex.lastIndex = 0;
+    if (matched) {
+      budgetMode = value;
+      budgetExplicit = true;
+      cleaned = cleaned.replace(regex, " ");
+      regex.lastIndex = 0;
+    }
+  }
+
   cleaned = cleaned.replace(/\s+/g, " ").trim();
   return {
     mode,
     harness,
     modelPreference,
+    budgetMode,
     cleanedText: cleaned,
     modeExplicit,
     harnessExplicit,
+    budgetExplicit,
   };
-}
-
-export function extractHarness(text: string): {
-  harness: Harness;
-  cleanedText: string;
-} {
-  const parsed = extractRunOptions(text);
-  return { harness: parsed.harness ?? "amp", cleanedText: parsed.cleanedText };
 }
 
 export async function spawn(
@@ -168,91 +198,6 @@ export async function execute(
   return (result.result as string) || "No response from agent.";
 }
 
-export type ProgressEvent = {
-  type: string;
-  stage?: string;
-  harness?: string;
-  result?: string;
-  message?: string;
-  [key: string]: unknown;
-};
-
-export async function executeStream(
-  threadKey: string,
-  message: string,
-  harness: Harness = "amp",
-  requestId?: string,
-  files?: FileAttachment[],
-  onEvent?: (event: ProgressEvent) => void,
-): Promise<string> {
-  const res = await fetch(`${API_URL}/agent/execute_stream`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      slack_thread_key: threadKey,
-      message,
-      harness,
-      ...(requestId ? { request_id: requestId } : {}),
-      ...(files && files.length > 0 ? { files } : {}),
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`agent/execute_stream failed (${res.status}): ${text}`);
-  }
-
-  let finalResult = "No response from agent.";
-  const reader = res.body?.getReader();
-  if (!reader) return finalResult;
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-
-    // Parse SSE frames
-    while (buffer.includes("\n\n")) {
-      const idx = buffer.indexOf("\n\n");
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("data: ")) {
-          try {
-            const event: ProgressEvent = JSON.parse(line.slice(6));
-            if (event.type === "final") {
-              finalResult = (event.result as string) || finalResult;
-            } else if (event.type === "error") {
-              finalResult = `❌ ${event.message || "Unknown error"}`;
-            }
-            onEvent?.(event);
-          } catch {
-            // skip malformed JSON
-          }
-        }
-      }
-    }
-  }
-
-  return finalResult;
-}
-
-export async function stop(threadKey: string): Promise<void> {
-  await agentCall("stop", { slack_thread_key: threadKey });
-}
-
-export async function interrupt(threadKey: string): Promise<void> {
-  await agentCall("interrupt", { slack_thread_key: threadKey });
-}
-
 async function apiCall(
   path: string,
   payload: Record<string, unknown>
@@ -273,39 +218,31 @@ async function apiCall(
 }
 
 function splitThreadKey(threadKey: string): { channel: string; threadTs: string } {
-  const parts = threadKey.split(":");
-
-  // Current Slack adapter format: slack:<channel_id>:<thread_ts>.
-  if (parts.length === 3 && parts[0] === "slack" && parts[1] && parts[2]) {
-    return {
-      channel: parts[1],
-      threadTs: parts[2],
-    };
-  }
-
-  // Keep support for plain "<channel_id>:<thread_ts>" keys.
+  const parts = threadKey.trim().split(":");
+  // Canonical format used by backend APIs.
   if (parts.length === 2 && parts[0] && parts[1]) {
-    return {
-      channel: parts[0],
-      threadTs: parts[1],
-    };
+    return { channel: parts[0], threadTs: parts[1] };
   }
-
-  throw new Error(`Invalid thread key: ${threadKey}`);
+  // Chat SDK Slack adapter format.
+  if (parts.length === 3 && parts[1] && parts[2]) {
+    return { channel: parts[1], threadTs: parts[2] };
+  }
+  throw new Error(`Invalid thread key format (expected <channel>:<thread_ts>): ${threadKey}`);
 }
 
-function canonicalizeThreadKey(threadKey: string): string {
+export function normalizeThreadKey(threadKey: string): string {
   const { channel, threadTs } = splitThreadKey(threadKey);
-  return `slack:${channel}:${threadTs}`;
+  return `${channel}:${threadTs}`;
 }
 
 export async function startEngineerFlow(
   threadKey: string,
   task: string,
   modelPreference?: string | null,
+  budgetMode?: BudgetMode | null,
   attachments?: FileAttachment[]
 ): Promise<{ status: string; runId?: string; error?: string }> {
-  const normalizedThreadKey = canonicalizeThreadKey(threadKey);
+  const normalizedThreadKey = normalizeThreadKey(threadKey);
   const { channel, threadTs } = splitThreadKey(normalizedThreadKey);
   const result = await apiCall("/slack/start", {
     thread_key: normalizedThreadKey,
@@ -313,6 +250,7 @@ export async function startEngineerFlow(
     thread_ts: threadTs,
     task,
     model_preference: modelPreference ?? null,
+    budget_mode: budgetMode ?? null,
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
   });
   return {
@@ -327,7 +265,7 @@ export async function replyEngineerFlow(
   reply: string,
   attachments?: FileAttachment[]
 ): Promise<{ status: string }> {
-  const normalizedThreadKey = canonicalizeThreadKey(threadKey);
+  const normalizedThreadKey = normalizeThreadKey(threadKey);
   const result = await apiCall("/slack/reply", {
     thread_key: normalizedThreadKey,
     reply,

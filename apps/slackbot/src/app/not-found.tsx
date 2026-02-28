@@ -1,11 +1,7 @@
-/** @jsxImportSource react */
-
 export default function NotFound() {
   return (
-    <html lang="en">
-      <body>
-        <p>Not found</p>
-      </body>
-    </html>
+    <div className="flex items-center justify-center min-h-[60vh]">
+      <p className="text-zinc-600 text-sm">Not found</p>
+    </div>
   );
 }
