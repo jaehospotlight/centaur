@@ -24,8 +24,91 @@ router = APIRouter(
 )
 
 
+def _build_participants_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+    for turn in turns:
+        user_id = str(turn.get("user_id") or "").strip()
+        if not user_id:
+            events = turn.get("events")
+            if isinstance(events, list):
+                user_id = _extract_turn_user_id(events) or ""
+        if not user_id:
+            continue
+        if user_id not in seen:
+            seen[user_id] = {"id": user_id, "name": user_id, "avatar_url": None}
+    return list(seen.values())
+
+
+async def _enrich_participants(
+    pool: asyncpg.Pool,
+    participants: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not participants:
+        return []
+    ids = [str(p.get("id") or "").strip() for p in participants]
+    ids = [item for item in ids if item]
+    if not ids:
+        return participants
+
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (external_id)
+            external_id,
+            data
+        FROM raw_records
+        WHERE source = 'slack'
+          AND kind = 'user'
+          AND external_id = ANY($1::text[])
+        ORDER BY external_id, fetched_at DESC
+        """,
+        ids,
+    )
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        data = row["data"] if isinstance(row["data"], dict) else {}
+        profile = data.get("profile") if isinstance(data.get("profile"), dict) else {}
+        display_name = (
+            profile.get("display_name")
+            or profile.get("real_name")
+            or data.get("real_name")
+            or data.get("name")
+            or row["external_id"]
+        )
+        avatar_url = profile.get("image_48") or profile.get("image_72") or profile.get("image_24")
+        by_id[str(row["external_id"])] = {
+            "name": str(display_name),
+            "avatar_url": str(avatar_url) if avatar_url else None,
+        }
+
+    enriched: list[dict[str, Any]] = []
+    for participant in participants:
+        pid = str(participant.get("id") or "").strip()
+        details = by_id.get(pid)
+        if not details:
+            enriched.append(participant)
+            continue
+        enriched.append({**participant, "name": details["name"], "avatar_url": details["avatar_url"]})
+    return enriched
+
+
+def _extract_turn_user_id(events: list[dict[str, Any]]) -> str | None:
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "thread.user":
+            continue
+        user_id = str(event.get("user_id") or "").strip()
+        if user_id:
+            return user_id
+    return None
+
+
 def _build_live_detail(key: str, session: dict[str, Any]) -> dict[str, Any]:
     """Build thread detail from an in-memory session."""
+    turns = session.get("turns", [])
+    participants = session.get("participants")
+    if not isinstance(participants, list) or len(participants) == 0:
+        participants = _build_participants_from_turns(turns)
     return {
         "slack_thread_key": key,
         "container_id": session["container_id"][:12],
@@ -34,8 +117,9 @@ def _build_live_detail(key: str, session: dict[str, Any]) -> dict[str, Any]:
         "state": session["state"],
         "created_at": session["created_at"],
         "last_activity": session["last_activity"],
-        "turns": session.get("turns", []),
+        "turns": turns,
         "thread_name": session.get("thread_name"),
+        "participants": participants,
     }
 
 
@@ -57,7 +141,8 @@ async def list_threads(
             extract(epoch from s.last_activity) AS last_activity,
             coalesce(tc.turn_count, 0)          AS turn_count,
             coalesce(lt.result, '')              AS last_result,
-            coalesce(ft.first_message, '')       AS first_message
+            coalesce(ft.first_message, '')       AS first_message,
+            coalesce(lm.last_user_message, '')   AS last_user_message
         FROM agent_sessions s
         LEFT JOIN LATERAL (
             SELECT count(*) AS turn_count
@@ -75,11 +160,18 @@ async def list_threads(
             WHERE t.slack_thread_key = s.slack_thread_key
             ORDER BY t.turn_id ASC LIMIT 1
         ) ft ON true
+        LEFT JOIN LATERAL (
+            SELECT t.user_message AS last_user_message
+            FROM agent_turns t
+            WHERE t.slack_thread_key = s.slack_thread_key
+            ORDER BY t.turn_id DESC LIMIT 1
+        ) lm ON true
         ORDER BY s.last_activity DESC
         """
     )
     pg_keys: set[str] = set()
     threads = []
+    participants_cache: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         key = r["slack_thread_key"]
         pg_keys.add(key)
@@ -87,9 +179,19 @@ async def list_threads(
         live_turns = live.get("turns", []) if live else []
         live_first_message = ""
         live_last_result = ""
+        live_last_user_message = ""
         if live_turns:
             live_first_message = str(live_turns[0].get("user_message") or "")
             live_last_result = str(live_turns[-1].get("result") or "")
+            live_last_user_message = str(live_turns[-1].get("user_message") or "")
+        if key not in participants_cache:
+            if live:
+                participants_cache[key] = live.get("participants") or _build_participants_from_turns(
+                    live_turns
+                )
+            else:
+                participants_cache[key] = await _fetch_pg_participants(pool, key)
+            participants_cache[key] = await _enrich_participants(pool, participants_cache[key])
         threads.append(
             {
                 "slack_thread_key": key,
@@ -104,16 +206,22 @@ async def list_threads(
                 "first_message": (
                     live_first_message if live_first_message else (r["first_message"] or "")
                 )[:200],
+                "last_user_message": (
+                    live_last_user_message if live_last_user_message else (r["last_user_message"] or "")
+                )[:200],
                 "thread_name": live.get("thread_name") if live else r.get("thread_name"),
+                "participants": participants_cache[key],
             }
         )
     for key, live in session_items_snapshot():
         if key not in pg_keys:
             first_msg = ""
             last_result = ""
+            last_user_message = ""
             if live.get("turns"):
                 first_msg = live["turns"][0].get("user_message", "")
                 last_result = live["turns"][-1].get("result", "")
+                last_user_message = live["turns"][-1].get("user_message", "")
             threads.append(
                 {
                     "slack_thread_key": key,
@@ -126,7 +234,12 @@ async def list_threads(
                     "turn_count": len(live.get("turns", [])),
                     "last_result": last_result[:200],
                     "first_message": first_msg[:200],
+                    "last_user_message": last_user_message[:200],
                     "thread_name": live.get("thread_name"),
+                    "participants": await _enrich_participants(
+                        pool,
+                        live.get("participants") or _build_participants_from_turns(live.get("turns", [])),
+                    ),
                 }
             )
     threads.sort(key=lambda t: t.get("last_activity") or 0, reverse=True)
@@ -184,6 +297,7 @@ async def _fetch_pg_detail(pool: asyncpg.Pool, key: str) -> dict[str, Any]:
                 "user_message": t["user_message"],
                 "events": events_raw,
                 "result": t["result"],
+                "user_id": _extract_turn_user_id(events_raw),
                 "started_at": float(t["started_at"]) if t["started_at"] else None,
                 "finished_at": float(t["finished_at"]) if t["finished_at"] else None,
                 "exit_code": t["exit_code"],
@@ -202,7 +316,27 @@ async def _fetch_pg_detail(pool: asyncpg.Pool, key: str) -> dict[str, Any]:
         "created_at": float(row["created_at"]),
         "last_activity": float(row["last_activity"]),
         "turns": turns,
+        "participants": _build_participants_from_turns(turns),
     }
+
+
+async def _fetch_pg_participants(pool: asyncpg.Pool, key: str) -> list[dict[str, Any]]:
+    turn_rows = await pool.fetch(
+        """
+        SELECT events
+        FROM agent_turns
+        WHERE slack_thread_key = $1
+        ORDER BY turn_id
+        """,
+        key,
+    )
+    turns: list[dict[str, Any]] = []
+    for row in turn_rows:
+        events_raw = row["events"]
+        if isinstance(events_raw, str):
+            events_raw = json.loads(events_raw)
+        turns.append({"user_id": _extract_turn_user_id(events_raw)})
+    return _build_participants_from_turns(turns)
 
 
 @router.get("/detail")
@@ -218,14 +352,20 @@ async def get_thread(
             key = f"slack:{key}"
 
     if session:
-        return _build_live_detail(key, session)
+        detail = _build_live_detail(key, session)
+        detail["participants"] = await _enrich_participants(pool, detail.get("participants"))
+        return detail
 
     try:
-        return await _fetch_pg_detail(pool, key)
+        detail = await _fetch_pg_detail(pool, key)
+        detail["participants"] = await _enrich_participants(pool, detail.get("participants"))
+        return detail
     except HTTPException:
         if not key.startswith("slack:"):
             try:
-                return await _fetch_pg_detail(pool, f"slack:{key}")
+                detail = await _fetch_pg_detail(pool, f"slack:{key}")
+                detail["participants"] = await _enrich_participants(pool, detail.get("participants"))
+                return detail
             except HTTPException:
                 pass
         raise
@@ -235,66 +375,331 @@ async def get_thread(
 _SSE_KEEPALIVE_INTERVAL_S = 15
 
 
-@router.get("/stream")
-async def stream_thread(
+def _parse_phase_label(user_message: str) -> str | None:
+    if not user_message.startswith("["):
+        return None
+    closing = user_message.find("]")
+    if closing <= 1:
+        return None
+    return user_message[1:closing].strip().lower() or None
+
+
+def _extract_numeric_usage(value: Any) -> dict[str, int]:
+    usage = {"input_tokens": 0, "output_tokens": 0}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, raw in node.items():
+                key_l = str(key).lower()
+                if isinstance(raw, (int, float)) and raw >= 0:
+                    n = int(raw)
+                    if key_l in {
+                        "input_tokens",
+                        "prompt_tokens",
+                        "tokens_in",
+                        "cached_input_tokens",
+                        "cache_read_input_tokens",
+                        "cache_creation_input_tokens",
+                    }:
+                        usage["input_tokens"] = max(usage["input_tokens"], n)
+                    elif key_l in {"output_tokens", "completion_tokens", "tokens_out"}:
+                        usage["output_tokens"] = max(usage["output_tokens"], n)
+                    elif key_l in {"total_tokens", "tokens_total"} and n > 0:
+                        # Split unknown total conservatively when only total is present.
+                        usage["input_tokens"] = max(usage["input_tokens"], n // 2)
+                        usage["output_tokens"] = max(usage["output_tokens"], n - (n // 2))
+                walk(raw)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(value)
+    return usage
+
+
+def _has_usage(usage: dict[str, int]) -> bool:
+    return usage["input_tokens"] > 0 or usage["output_tokens"] > 0
+
+
+def _is_authoritative_usage_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("type") or "")
+    if event_type == "turn.completed":
+        return True
+    return event_type == "result" and isinstance(event.get("usage"), dict)
+
+
+def _extract_usage_model(event: dict[str, Any]) -> str | None:
+    message = event.get("message")
+    if isinstance(message, dict):
+        message_model = str(message.get("model") or "").strip()
+        if message_model:
+            return message_model
+    model = str(event.get("model") or "").strip()
+    return model or None
+
+
+def _ui_stream_chunks_for_event(turn_id: int, event_index: int, event: dict[str, Any]) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    event_type = event.get("type")
+
+    if event_type == "assistant":
+        content = ((event.get("message") or {}).get("content") or [])
+        for content_index, block in enumerate(content):
+            block_type = block.get("type")
+            if block_type == "text" and (block.get("text") or "").strip():
+                text_id = f"turn-{turn_id}-text-{event_index}-{content_index}"
+                chunks.append({"type": "text-start", "id": text_id})
+                chunks.append({"type": "text-delta", "id": text_id, "delta": str(block.get("text") or "")})
+                chunks.append({"type": "text-end", "id": text_id})
+            elif block_type == "thinking" and (block.get("thinking") or "").strip():
+                reasoning_id = f"turn-{turn_id}-reasoning-{event_index}-{content_index}"
+                chunks.append({"type": "reasoning-start", "id": reasoning_id})
+                chunks.append(
+                    {"type": "reasoning-delta", "id": reasoning_id, "delta": str(block.get("thinking") or "")}
+                )
+                chunks.append({"type": "reasoning-end", "id": reasoning_id})
+            elif block_type == "tool_use":
+                tool_call_id = str(block.get("id") or "").strip() or (
+                    f"turn-{turn_id}-tool-{event_index}-{content_index}"
+                )
+                chunks.append(
+                    {
+                        "type": "tool-input-available",
+                        "toolCallId": tool_call_id,
+                        "toolName": str(block.get("name") or "tool"),
+                        "input": block.get("input") or {},
+                    }
+                )
+    elif event_type == "tool":
+        for block in event.get("content") or []:
+            tool_call_id = str(block.get("tool_use_id") or "").strip()
+            if not tool_call_id:
+                continue
+            chunks.append(
+                {
+                    "type": "tool-output-available",
+                    "toolCallId": tool_call_id,
+                    "output": block.get("content"),
+                }
+            )
+    elif event_type == "reasoning":
+        reasoning_id = f"turn-{turn_id}-reasoning-{event_index}"
+        chunks.append({"type": "reasoning-start", "id": reasoning_id})
+        chunks.append({"type": "reasoning-delta", "id": reasoning_id, "delta": str(event.get("text") or "")})
+        chunks.append({"type": "reasoning-end", "id": reasoning_id})
+    elif event_type == "file_change":
+        chunks.append(
+            {
+                "type": "data-file-changes",
+                "id": f"turn-{turn_id}-file-change-{event_index}",
+                "data": {"changes": event.get("changes") or []},
+            }
+        )
+    elif event_type == "command_execution":
+        chunks.append(
+            {
+                "type": "data-shell-command",
+                "id": f"turn-{turn_id}-command-{event_index}",
+                "data": {
+                    "command": event.get("command") or "",
+                    "output": event.get("aggregated_output") or "",
+                    "exitCode": event.get("exit_code"),
+                    "status": event.get("status"),
+                },
+            }
+        )
+    elif event_type == "error":
+        chunks.append({"type": "error", "errorText": str(event.get("error") or event.get("message") or "")})
+    elif event_type == "result":
+        text = str(event.get("result") or "")
+        if text:
+            text_id = f"turn-{turn_id}-result-{event_index}"
+            chunks.append({"type": "text-start", "id": text_id})
+            chunks.append({"type": "text-delta", "id": text_id, "delta": text})
+            chunks.append({"type": "text-end", "id": text_id})
+    elif event_type == "item.completed":
+        text = str((event.get("item") or {}).get("text") or "")
+        if text:
+            text_id = f"turn-{turn_id}-item-result-{event_index}"
+            chunks.append({"type": "text-start", "id": text_id})
+            chunks.append({"type": "text-delta", "id": text_id, "delta": text})
+            chunks.append({"type": "text-end", "id": text_id})
+
+    return chunks
+
+
+@router.get("/stream-ui")
+async def stream_thread_ui(
     request: Request,
     key: str,
     pool: Annotated[asyncpg.Pool, Depends(get_pool)],
 ) -> StreamingResponse:
-    """SSE stream of thread updates. Live sessions stream from memory;
-    historical threads send a single snapshot from Postgres."""
+    """SSE UIMessageStream endpoint for ai SDK compatible thread streaming."""
+    live_only = request.query_params.get("live_only", "").strip().lower() in {"1", "true", "yes"}
 
     async def generate():
         nonlocal key
-        # If not in memory, send PG snapshot immediately and close
         session = get_session_state(key)
         if not session and not key.startswith("slack:"):
             session = get_session_state(f"slack:{key}")
             if session:
                 key = f"slack:{key}"
-
-        if not session:
-            try:
-                detail = await _fetch_pg_detail(pool, key)
-                yield f"data: {json.dumps(detail, default=str)}\n\n"
-            except HTTPException:
-                if not key.startswith("slack:"):
-                    try:
-                        detail = await _fetch_pg_detail(pool, f"slack:{key}")
-                        yield f"data: {json.dumps(detail, default=str)}\n\n"
-                        return
-                    except HTTPException:
-                        pass
-                # Emit a normal message event so EventSource.onmessage receives it.
-                yield f"data: {json.dumps({'error': 'not_found'})}\n\n"
-            return
-
-        last_event_count = -1
-        last_state = ""
+        yield f"data: {json.dumps({'type': 'start', 'messageId': f'thread-{key}'})}\n\n"
+        last_event_indices: dict[int, int] = {}
+        emitted_finish_for_snapshot = False
         ticks_since_data = 0
+        last_state = ""
+        usage_by_turn: dict[int, dict[str, int]] = {}
+        usage_authoritative_turns: set[int] = set()
+        last_usage_total = -1
+        last_phase_by_turn: dict[int, str] = {}
+        usage_seen = False
+        usage_model: str | None = None
+        initialized_live_cursor = False
+        turns_with_stream_chunks: set[int] = set()
 
         while True:
             if await request.is_disconnected():
                 break
 
             session = get_session_state(key)
-            if not session:
-                break
-
-            total_events = sum(len(t.get("events", [])) for t in session.get("turns", []))
-            state = session.get("state", "")
-
-            if total_events != last_event_count or state != last_state:
+            detail: dict[str, Any] | None
+            if session:
                 detail = _build_live_detail(key, session)
-                yield f"data: {json.dumps(detail, default=str)}\n\n"
-                last_event_count = total_events
+            else:
+                if emitted_finish_for_snapshot:
+                    break
+                try:
+                    detail = await _fetch_pg_detail(pool, key)
+                except HTTPException:
+                    if not key.startswith("slack:"):
+                        try:
+                            detail = await _fetch_pg_detail(pool, f"slack:{key}")
+                            key = f"slack:{key}"
+                        except HTTPException:
+                            detail = None
+                    else:
+                        detail = None
+                if detail is None:
+                    yield f"data: {json.dumps({'type': 'error', 'errorText': 'not_found'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'finish'})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+            any_new_data = False
+            turns = detail.get("turns") or []
+            if live_only and not initialized_live_cursor:
+                for turn in turns:
+                    turn_id = int(turn.get("turn_id") or 0)
+                    if turn_id <= 0:
+                        continue
+                    events = turn.get("events") or []
+                    last_event_indices[turn_id] = len(events)
+                    if turn.get("result"):
+                        last_event_indices[-turn_id] = 1
+                    phase = _parse_phase_label(str(turn.get("user_message") or ""))
+                    if phase:
+                        last_phase_by_turn[turn_id] = phase
+                initialized_live_cursor = True
+            state = str(detail.get("state") or "")
+            if state != last_state:
                 last_state = state
+                any_new_data = True
+                yield f"data: {json.dumps({'type': 'data-agent-status', 'data': {'text': state.capitalize() if state else 'Working...'}, 'transient': True})}\n\n"
+            for turn in turns:
+                turn_id = int(turn.get("turn_id") or 0)
+                phase = _parse_phase_label(str(turn.get("user_message") or ""))
+                if phase and last_phase_by_turn.get(turn_id) != phase:
+                    last_phase_by_turn[turn_id] = phase
+                    any_new_data = True
+                    yield f"data: {json.dumps({'type': 'data-phase-progress', 'id': f'turn-{turn_id}-phase', 'data': {'phase': phase, 'turn_id': turn_id}})}\n\n"
+                events = turn.get("events") or []
+                start_index = last_event_indices.get(turn_id, 0)
+                turn_had_chunks = False
+                if start_index < len(events):
+                    for index in range(start_index, len(events)):
+                        event = events[index]
+                        if isinstance(event, dict):
+                            message_model = _extract_usage_model(event)
+                            if message_model:
+                                usage_model = message_model
+                            explicit_usage = _extract_numeric_usage(event)
+                            if _has_usage(explicit_usage):
+                                usage_seen = True
+                                if _is_authoritative_usage_event(event):
+                                    usage_by_turn[turn_id] = explicit_usage
+                                    usage_authoritative_turns.add(turn_id)
+                                elif turn_id not in usage_authoritative_turns:
+                                    previous = usage_by_turn.get(
+                                        turn_id,
+                                        {"input_tokens": 0, "output_tokens": 0},
+                                    )
+                                    usage_by_turn[turn_id] = {
+                                        "input_tokens": previous["input_tokens"]
+                                        + explicit_usage["input_tokens"],
+                                        "output_tokens": previous["output_tokens"]
+                                        + explicit_usage["output_tokens"],
+                                    }
+                        chunks = _ui_stream_chunks_for_event(turn_id, index, event)
+                        if not chunks:
+                            continue
+                        turn_had_chunks = True
+                        turns_with_stream_chunks.add(turn_id)
+                        any_new_data = True
+                        yield f"data: {json.dumps({'type': 'start-step'})}\n\n"
+                        for chunk in chunks:
+                            any_new_data = True
+                            yield f"data: {json.dumps(chunk, default=str)}\n\n"
+                            chunk_type = str(chunk.get("type") or "")
+                            if chunk_type in {"reasoning-start", "reasoning-delta"}:
+                                yield f"data: {json.dumps({'type': 'data-agent-status', 'data': {'text': 'Thinking...'}, 'transient': True})}\n\n"
+                            elif chunk_type == "tool-input-available":
+                                tool_name = str(chunk.get("toolName") or "tool")
+                                yield f"data: {json.dumps({'type': 'data-agent-status', 'data': {'text': f'Running {tool_name}...'}, 'transient': True})}\n\n"
+                            elif chunk_type in {"text-start", "text-delta"}:
+                                yield f"data: {json.dumps({'type': 'data-agent-status', 'data': {'text': 'Writing response...'}, 'transient': True})}\n\n"
+                        yield f"data: {json.dumps({'type': 'finish-step'})}\n\n"
+                last_event_indices[turn_id] = len(events)
+
+                if (
+                    turn.get("result")
+                    and not turn_had_chunks
+                    and turn_id not in turns_with_stream_chunks
+                ):
+                    result_id = f"turn-{turn_id}-turn-result"
+                    if last_event_indices.get(-turn_id) != 1:
+                        any_new_data = True
+                        yield f"data: {json.dumps({'type': 'start-step'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'text-start', 'id': result_id})}\n\n"
+                        yield f"data: {json.dumps({'type': 'text-delta', 'id': result_id, 'delta': turn.get('result')})}\n\n"
+                        yield f"data: {json.dumps({'type': 'text-end', 'id': result_id})}\n\n"
+                        yield f"data: {json.dumps({'type': 'finish-step'})}\n\n"
+                        turns_with_stream_chunks.add(turn_id)
+                        last_event_indices[-turn_id] = 1
+
+            total_input_tokens = sum(item["input_tokens"] for item in usage_by_turn.values())
+            total_output_tokens = sum(item["output_tokens"] for item in usage_by_turn.values())
+            usage_total = total_input_tokens + total_output_tokens
+            if usage_seen and usage_total != last_usage_total:
+                last_usage_total = usage_total
+                any_new_data = True
+                authoritative_usage = bool(usage_by_turn) and all(
+                    turn_id in usage_authoritative_turns for turn_id in usage_by_turn
+                )
+                yield f"data: {json.dumps({'type': 'data-token-usage', 'id': 'thread-token-usage', 'data': {'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'total_tokens': usage_total, 'cost_usd': None, 'estimated': not authoritative_usage, 'authoritative': authoritative_usage, 'model': usage_model}})}\n\n"
+
+            if any_new_data:
                 ticks_since_data = 0
             else:
                 ticks_since_data += 1
 
-            # Keep stream open for idle threads so the UI does not churn on reconnect.
-            # Keepalive: send SSE comment when no data for 15s (prevents proxy timeouts)
+            if not session:
+                emitted_finish_for_snapshot = True
+                yield f"data: {json.dumps({'type': 'data-agent-status', 'data': {'text': ''}, 'transient': True})}\n\n"
+                yield f"data: {json.dumps({'type': 'finish'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
             if ticks_since_data * 0.3 >= _SSE_KEEPALIVE_INTERVAL_S:
                 yield ":keepalive\n\n"
                 ticks_since_data = 0
@@ -305,8 +710,9 @@ async def stream_thread(
         generate(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "x-vercel-ai-ui-message-stream": "v1",
         },
     )

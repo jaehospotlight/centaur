@@ -27,6 +27,8 @@ const AI_V2_CHANNEL = "C0AJ07U8Z1N"; // #ai-v2
 // Redis key prefix for shadow thread mappings
 const SHADOW_MAP_PREFIX = "shadow_thread:";
 const SHADOW_MAP_TTL = 60 * 60 * 24 * 7; // 7 days
+const SLACK_RETRY_ATTEMPTS = 3;
+const DEFAULT_SLACK_RETRY_MS = 1000;
 
 // In-memory fallback when Redis is unavailable
 const shadowThreadMapFallback = new Map<string, string>();
@@ -35,23 +37,45 @@ let _redis: RedisClientType | null = null;
 
 type SlackPostResponse = { ok: boolean; ts?: string; error?: string };
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryAfterMs(response: Response): number {
+  const retryAfter = response.headers.get("Retry-After");
+  const parsed = Number(retryAfter);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SLACK_RETRY_MS;
+  return Math.max(DEFAULT_SLACK_RETRY_MS, Math.min(parsed * 1000, 30_000));
+}
+
 async function postSlackMessage(payload: Record<string, unknown>): Promise<SlackPostResponse> {
-  const res = await fetch("https://slack.com/api/chat.postMessage", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(`chat.postMessage failed (${res.status})`);
-  }
-  const data = (await res.json()) as SlackPostResponse;
-  if (!data.ok) {
+  for (let attempt = 0; attempt < SLACK_RETRY_ATTEMPTS; attempt += 1) {
+    const res = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SLACK_BOT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 429 && attempt + 1 < SLACK_RETRY_ATTEMPTS) {
+      await sleep(retryAfterMs(res));
+      continue;
+    }
+    if (!res.ok) {
+      throw new Error(`chat.postMessage failed (${res.status})`);
+    }
+    const data = (await res.json()) as SlackPostResponse;
+    if (data.ok === true) {
+      return data;
+    }
+    if (data.error === "ratelimited" && attempt + 1 < SLACK_RETRY_ATTEMPTS) {
+      await sleep(retryAfterMs(res));
+      continue;
+    }
     throw new Error(`chat.postMessage failed: ${data.error ?? "unknown_error"}`);
   }
-  return data;
+  throw new Error(`chat.postMessage failed after ${SLACK_RETRY_ATTEMPTS} attempts`);
 }
 
 async function getRedis(): Promise<RedisClientType | null> {
@@ -179,6 +203,7 @@ async function runShadow(
  * from #ai-agent into #ai-v2.
  */
 export async function maybeShadow(body: Record<string, unknown>): Promise<void> {
+  if (!V1_BOT_USER_ID) return;
   if (body.type !== "event_callback") return;
 
   const event = body.event as Record<string, unknown> | undefined;
@@ -254,6 +279,10 @@ export async function backtest(
   limit: number = 10,
   before?: string,
 ): Promise<{ replayed: number; skipped: number; errors: number }> {
+  if (!V1_BOT_USER_ID) {
+    console.log(JSON.stringify({ event: "backtest_skipped", reason: "missing_shadow_v1_bot_user_id" }));
+    return { replayed: 0, skipped: 0, errors: 0 };
+  }
   // Fetch recent messages from #ai-agent (up to 200 to find enough v1 mentions)
   const params = new URLSearchParams({
     channel: AI_AGENT_CHANNEL,

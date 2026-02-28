@@ -1,0 +1,64 @@
+/** Proxy POST /api/slack/reply -> FastAPI /slack/reply */
+
+const API_URL = process.env.AI_V2_API_URL || "http://api:8000";
+const API_KEY = process.env.AI_V2_API_KEY || "";
+
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+
+type ReplyAttachment = { url: string; name: string };
+
+function normalizeAttachments(value: unknown): ReplyAttachment[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      const raw = item as { url?: unknown; name?: unknown };
+      const url = typeof raw.url === "string" ? raw.url.trim() : "";
+      const name = typeof raw.name === "string" ? raw.name.trim() : "";
+      return { url, name };
+    })
+    .filter((item) => item.url && item.name);
+}
+
+export async function POST(request: Request) {
+  const body = await request.json().catch(() => ({}));
+  const threadKey = String(body.thread_key ?? "").trim();
+  const reply = String(body.reply ?? "").trim();
+  const attachments = normalizeAttachments((body as { attachments?: unknown }).attachments);
+
+  if (!threadKey || !reply) {
+    return Response.json(
+      { error: "Missing thread_key or reply" },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  const upstream = await fetch(`${API_URL}/slack/reply`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      thread_key: threadKey,
+      reply,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    }),
+    cache: "no-store",
+    signal: request.signal,
+  });
+
+  const text = await upstream.text();
+  if (!upstream.ok) {
+    return Response.json(
+      { error: `Reply failed: ${upstream.status}`, detail: text.slice(0, 500) },
+      { status: upstream.status, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  try {
+    return Response.json(JSON.parse(text), { headers: { "Cache-Control": "no-store" } });
+  } catch {
+    return Response.json({ status: "ok" }, { headers: { "Cache-Control": "no-store" } });
+  }
+}

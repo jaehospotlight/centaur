@@ -1,16 +1,18 @@
 import { cn } from "@/lib/utils";
-import { STATE_DOT_COLORS } from "@/lib/constants";
+import { Circle, CirclePause, CircleStop, CircleX, LoaderCircle } from "lucide-react";
 
 export function StateDot({ state, className }: { state: string; className?: string }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        "size-[6px] rounded-full shrink-0 transition-colors duration-200",
-        STATE_DOT_COLORS[state] ?? "bg-zinc-600",
-        state === "working" && "animate-pulse-dot",
-        className
-      )}
-    />
-  );
+  if (state === "running" || state === "working") {
+    return <LoaderCircle aria-hidden="true" className={cn("size-3 text-primary animate-spin", className)} />;
+  }
+  if (state === "waiting") {
+    return <CirclePause aria-hidden="true" className={cn("size-3 text-violet-400 animate-pulse", className)} />;
+  }
+  if (state === "error") {
+    return <CircleX aria-hidden="true" className={cn("size-3 text-destructive", className)} />;
+  }
+  if (state === "stopped") {
+    return <CircleStop aria-hidden="true" className={cn("size-3 text-muted-foreground", className)} />;
+  }
+  return <Circle aria-hidden="true" className={cn("size-3 text-muted-foreground", className)} />;
 }

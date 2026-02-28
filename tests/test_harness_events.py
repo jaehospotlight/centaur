@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from api.harness_events import normalize_harness_event
+
+
+def test_codex_fallback_tool_call_id_is_stable_across_started_completed() -> None:
+    started = {
+        "type": "item.started",
+        "item": {
+            "type": "mcp_tool_call",
+            "tool": "read_file",
+            "arguments": {"path": "src/api/agent.py"},
+        },
+    }
+    completed = {
+        "type": "item.completed",
+        "item": {
+            "type": "mcp_tool_call",
+            "tool": "read_file",
+            "arguments": {"path": "src/api/agent.py"},
+            "result": "ok",
+        },
+    }
+
+    started_events = normalize_harness_event("codex", started)
+    completed_events = normalize_harness_event("codex", completed)
+
+    started_id = started_events[0]["message"]["content"][0]["id"]
+    completed_id = completed_events[0]["content"][0]["tool_use_id"]
+    assert started_id
+    assert started_id == completed_id
+
+
+def test_amp_tool_result_without_linkage_is_dropped() -> None:
+    raw_event = {
+        "type": "user",
+        "message": {"content": [{"type": "tool_result", "content": "ok"}]},
+    }
+    assert normalize_harness_event("amp", raw_event) == []
+
+
+def test_pi_tool_execution_start_without_id_gets_stable_fallback() -> None:
+    raw_event = {
+        "type": "tool_execution_start",
+        "toolName": "search",
+        "args": {"query": "status"},
+    }
+    events = normalize_harness_event("pi-mono", raw_event)
+    tool_id = events[0]["message"]["content"][0]["id"]
+    assert tool_id.startswith("tool-call-")
+
+
+def test_pi_tool_result_without_linkage_is_dropped() -> None:
+    raw_event = {
+        "type": "tool_execution_end",
+        "result": {"content": [{"type": "text", "text": "ok"}]},
+        "isError": False,
+    }
+    assert normalize_harness_event("pi-mono", raw_event) == []

@@ -5,6 +5,7 @@ from typing import Any
 
 import structlog
 
+from api.harness_events import normalize_harness_event
 from shared.engineer.models import EngineerResult, Phase
 from shared.engineer.session import EngineerSession
 
@@ -84,7 +85,12 @@ class EngineerThreadBridge:
     async def on_event(self, event: dict[str, Any]) -> None:
         if self._current_turn is None:
             return
-        self._current_turn["events"].append(event)
+        harness = self._harness_for_event(event)
+        normalized = normalize_harness_event(harness, event)
+        if normalized:
+            self._current_turn["events"].extend(normalized)
+        else:
+            self._current_turn["events"].append(event)
         self._virtual_session["last_activity"] = time.time()
 
     async def send_message(self, text: str) -> None:
@@ -132,3 +138,25 @@ class EngineerThreadBridge:
         turn["duration_s"] = round(now - turn["started_at"], 1)
         _, _, _, persist_turn = _import_agent_internals()
         persist_turn(self.thread_key, turn)
+
+    def _harness_for_event(self, event: dict[str, Any]) -> str:
+        preferred = (self.session.model_preference or "").strip().lower()
+        if preferred in {"amp", "codex", "pi-mono"}:
+            return preferred
+
+        event_type = str(event.get("type") or "")
+        if event_type.startswith("item.") or event_type.startswith("turn.") or event_type == "thread.started":
+            return "codex"
+        if event_type in {
+            "session",
+            "agent_start",
+            "agent_end",
+            "message_start",
+            "message_update",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_update",
+            "tool_execution_end",
+        }:
+            return "pi-mono"
+        return "amp"

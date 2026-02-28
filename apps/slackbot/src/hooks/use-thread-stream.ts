@@ -1,12 +1,80 @@
-import { useState, useCallback, useRef, useEffect, startTransition } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useChat } from "@ai-sdk/react";
+import { z } from "zod";
 import type { ThreadDetail } from "@/lib/types";
 import { BASE } from "@/lib/constants";
+import { AgentThreadTransport } from "@/lib/agent-transport";
+import { stepsFromUiMessages } from "@/lib/chat-steps";
+
+type TokenUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number | null;
+  estimated: boolean;
+  authoritative: boolean;
+  model: string | null;
+};
 
 export function useThreadStream(threadKey: string) {
   const [thread, setThread] = useState<ThreadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isReconnecting, setIsReconnecting] = useState(false);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [isPolling, setIsPolling] = useState(false);
+  const [agentStatus, setAgentStatus] = useState<string | null>(null);
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
+  const transport = useMemo(() => new AgentThreadTransport(threadKey), [threadKey]);
+  const chat = useChat({
+    id: `thread-${threadKey}`,
+    transport,
+    resume: true,
+    experimental_throttle: 50,
+    dataPartSchemas: {
+      "agent-status": z.object({ text: z.string() }),
+      "phase-progress": z.object({ phase: z.string(), turn_id: z.number() }),
+      "file-changes": z.object({ changes: z.array(z.object({ path: z.string(), kind: z.string() })) }),
+      "token-usage": z.object({
+        input_tokens: z.number(),
+        output_tokens: z.number(),
+        total_tokens: z.number(),
+        cost_usd: z.number().nullable().optional(),
+        estimated: z.boolean().optional(),
+        authoritative: z.boolean().optional(),
+        model: z.string().nullable().optional(),
+      }),
+    },
+    onData: (part) => {
+      if (part.type === "data-agent-status") {
+        const data = part.data as { text?: string };
+        const text = String(data.text ?? "").trim();
+        setAgentStatus(text || null);
+      } else if (part.type === "data-token-usage") {
+        const payload = part.data as {
+          input_tokens?: number;
+          output_tokens?: number;
+          total_tokens?: number;
+          cost_usd?: number | null;
+          estimated?: boolean;
+          authoritative?: boolean;
+          model?: string | null;
+        };
+        setTokenUsage({
+          input_tokens: Number(payload.input_tokens ?? 0),
+          output_tokens: Number(payload.output_tokens ?? 0),
+          total_tokens: Number(payload.total_tokens ?? 0),
+          cost_usd:
+            payload.cost_usd === null || payload.cost_usd === undefined
+              ? null
+              : Number(payload.cost_usd),
+          estimated: Boolean(payload.estimated),
+          authoritative: Boolean(payload.authoritative),
+          model: payload.model ? String(payload.model) : null,
+        });
+      }
+    },
+    onFinish: () => {
+      setAgentStatus(null);
+    },
+  });
 
   const fetchThread = useCallback(async () => {
     try {
@@ -14,131 +82,60 @@ export function useThreadStream(threadKey: string) {
         `${BASE}/api/threads/detail?key=${encodeURIComponent(threadKey)}`
       );
       if (!res.ok) {
-        startTransition(() => {
-          setThread(null);
-          setError(`Thread not found: ${threadKey}`);
-        });
+        setThread(null);
+        setError(`Thread not found: ${threadKey}`);
         return;
       }
       const data = await res.json();
       if (data.error) {
-        startTransition(() => {
-          setThread(null);
-          setError(data.error);
-        });
+        setThread(null);
+        setError(String(data.error));
         return;
       }
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-      startTransition(() => {
-        setIsReconnecting(false);
-        setThread(data);
-        setError(null);
-      });
+      setThread(data as ThreadDetail);
+      setError(null);
     } catch {
-      startTransition(() => {
-        setThread(null);
-        setError("Failed to fetch thread");
-      });
+      setThread(null);
+      setError("Failed to fetch thread");
     }
   }, [threadKey]);
 
   useEffect(() => {
     setThread(null);
     setError(null);
-    setIsReconnecting(false);
-    fetchThread();
-
-    const url = `${BASE}/api/threads/stream?key=${encodeURIComponent(threadKey)}`;
-    let es: EventSource | null = null;
-    let retryCount = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let stopped = false;
-
-    function scheduleReconnect() {
-      const delay = Math.min(1000 * 2 ** retryCount, 10000);
-      retryCount++;
-      retryTimer = setTimeout(connect, delay);
-    }
-
-    function connect() {
-      if (stopped) return;
-      es = new EventSource(url);
-      let connected = false;
-
-      es.onmessage = (event) => {
-        connected = true;
-        retryCount = 0;
-        try {
-          const data = JSON.parse(event.data);
-          if (data.error) {
-            es?.close();
-            startTransition(() => {
-              setThread(null);
-              setError(
-                data.error === "not_found"
-                  ? `Thread not found: ${threadKey}`
-                  : String(data.error)
-              );
-            });
-            if (!pollingRef.current) {
-              pollingRef.current = setInterval(fetchThread, 3000);
-            }
-            return;
-          }
-          if (pollingRef.current) {
-            clearInterval(pollingRef.current);
-            pollingRef.current = null;
-          }
-          startTransition(() => {
-            setIsReconnecting(false);
-            setThread(data);
-            setError(null);
-          });
-        } catch {
-          startTransition(() => {
-            setThread(null);
-            setError("Malformed stream payload");
-          });
-        }
-      };
-
-      es.onerror = () => {
-        es?.close();
-        if (stopped) return;
-        if (!connected) {
-          startTransition(() => {
-            setIsReconnecting(true);
-            setError("Connection lost. Falling back to polling...");
-          });
-          if (!pollingRef.current) {
-            pollingRef.current = setInterval(fetchThread, 3000);
-          }
-          scheduleReconnect();
-          return;
-        }
-        startTransition(() => {
-          setIsReconnecting(true);
-          setError("Stream disconnected. Reconnecting...");
-        });
-        scheduleReconnect();
-      };
-    }
-
-    connect();
+    setIsPolling(false);
+    setAgentStatus(null);
+    setTokenUsage(null);
+    void fetchThread();
+    const poll = setInterval(() => {
+      setIsPolling(true);
+      void fetchThread().finally(() => setIsPolling(false));
+    }, 5000);
 
     return () => {
-      stopped = true;
-      es?.close();
-      if (retryTimer) clearTimeout(retryTimer);
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
+      clearInterval(poll);
     };
   }, [threadKey, fetchThread]);
 
-  return { thread, error, fetchThread, isReconnecting };
+  const sendReply = useCallback(
+    async (message: string) => {
+      const text = message.trim();
+      if (!text) return;
+      await chat.sendMessage({ text }, { body: { route: "reply" } });
+    },
+    [chat],
+  );
+  const liveSteps = useMemo(() => stepsFromUiMessages(chat.messages), [chat.messages]);
+
+  return {
+    thread,
+    error,
+    fetchThread,
+    isReconnecting: isPolling || chat.status === "error",
+    agentStatus,
+    tokenUsage,
+    chatStatus: chat.status,
+    sendReply,
+    liveSteps,
+  };
 }

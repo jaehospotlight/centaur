@@ -24,6 +24,7 @@ import psycopg2.extras
 import structlog
 from docker.errors import NotFound
 
+from api.harness_events import normalize_harness_event
 from shared.engineer.session import has_active_session as has_active_engineer_session
 
 log = structlog.get_logger()
@@ -35,6 +36,11 @@ EXEC_TIMEOUT = int(os.getenv("AGENT_EXEC_TIMEOUT", "600"))
 
 # Number of pre-warmed containers to keep ready
 POOL_SIZE = int(os.getenv("AGENT_POOL_SIZE", "0"))
+
+_SLACK_POST_TIMEOUT_S = 20.0
+_MAX_SLACK_MESSAGE_CHARS = 3800
+_SLACK_TRUNCATED_SUFFIX = "\n\n... (truncated)"
+_SLACK_POST_RETRY_ATTEMPTS = 3
 
 # In-memory session registry: slack_thread_key → session dict
 _sessions: dict[str, dict[str, Any]] = {}
@@ -99,6 +105,138 @@ def _thread_key_aliases(thread_key: str) -> list[str]:
             if slack_key not in aliases:
                 aliases.append(slack_key)
     return aliases
+
+
+def _slack_thread_parts(thread_key: str) -> tuple[str, str] | None:
+    canonical = _normalize_thread_key(thread_key)
+    channel, sep, thread_ts = canonical.partition(":")
+    if not sep or not channel or not thread_ts:
+        return None
+    if channel[:1] not in {"C", "D", "G"}:
+        return None
+    if "." not in thread_ts:
+        return None
+    return channel, thread_ts
+
+
+def _truncate_slack_message(text: str) -> str:
+    safe_text = text.strip()
+    if not safe_text:
+        return ""
+    if len(safe_text) <= _MAX_SLACK_MESSAGE_CHARS:
+        return safe_text
+    budget = _MAX_SLACK_MESSAGE_CHARS - len(_SLACK_TRUNCATED_SUFFIX)
+    if budget <= 0:
+        return _SLACK_TRUNCATED_SUFFIX[:_MAX_SLACK_MESSAGE_CHARS]
+    return safe_text[:budget].rstrip() + _SLACK_TRUNCATED_SUFFIX
+
+
+def _slack_retry_after_s(response: httpx.Response) -> float:
+    retry_after = response.headers.get("Retry-After", "").strip()
+    try:
+        parsed = float(retry_after)
+    except ValueError:
+        return 1.0
+    return max(1.0, min(parsed, 30.0))
+
+
+def _post_to_slack(
+    thread_key: str,
+    text: str,
+    *,
+    event_prefix: str,
+    warn_on_error: bool,
+) -> None:
+    token = os.getenv("SLACK_BOT_TOKEN", "").strip()
+    if not token:
+        return
+    parts = _slack_thread_parts(thread_key)
+    if parts is None:
+        return
+    channel, thread_ts = parts
+    safe_text = _truncate_slack_message(text)
+    if not safe_text:
+        return
+    logger = log.warning if warn_on_error else log.debug
+    try:
+        with httpx.Client(timeout=_SLACK_POST_TIMEOUT_S) as client:
+            for attempt in range(_SLACK_POST_RETRY_ATTEMPTS):
+                resp = client.post(
+                    "https://slack.com/api/chat.postMessage",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"channel": channel, "thread_ts": thread_ts, "text": safe_text},
+                )
+
+                if resp.status_code == 429 and attempt + 1 < _SLACK_POST_RETRY_ATTEMPTS:
+                    time.sleep(_slack_retry_after_s(resp))
+                    continue
+
+                if resp.status_code >= 300:
+                    logger(
+                        f"{event_prefix}_failed",
+                        thread=thread_key,
+                        status=resp.status_code,
+                        body=resp.text[:200],
+                    )
+                    return
+
+                try:
+                    data = resp.json()
+                except Exception:
+                    logger(
+                        f"{event_prefix}_invalid_json",
+                        thread=thread_key,
+                        body=resp.text[:200],
+                    )
+                    return
+
+                if data.get("ok"):
+                    return
+
+                error = str(data.get("error") or "unknown_error")
+                if error == "ratelimited" and attempt + 1 < _SLACK_POST_RETRY_ATTEMPTS:
+                    time.sleep(_slack_retry_after_s(resp))
+                    continue
+
+                logger(
+                    f"{event_prefix}_rejected",
+                    thread=thread_key,
+                    error=error,
+                )
+                return
+    except Exception as exc:
+        logger(f"{event_prefix}_exception", thread=thread_key, error=str(exc))
+
+
+def _post_slack_thread_message(thread_key: str, text: str) -> None:
+    _post_to_slack(
+        thread_key=thread_key,
+        text=text,
+        event_prefix="slack_mirror",
+        warn_on_error=True,
+    )
+
+
+def _post_to_slack_sync(thread_key: str, text: str) -> None:
+    """Post a message to a Slack thread. Best-effort, never raises."""
+    _post_to_slack(
+        thread_key=thread_key,
+        text=text,
+        event_prefix="slack_post",
+        warn_on_error=False,
+    )
+
+
+def _extract_turn_user_id(events: list[dict[str, Any]]) -> str | None:
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "thread.user":
+            continue
+        user_id = str(event.get("user_id") or "").strip()
+        if user_id:
+            return user_id
+    return None
 
 
 def has_active_non_engineer_session(thread_key: str) -> tuple[bool, str | None]:
@@ -233,33 +371,6 @@ def _persist_turn(key: str, turn: dict[str, Any]) -> None:
 
 def _delete_session(key: str) -> None:
     _pg_write("DELETE FROM agent_sessions WHERE slack_thread_key = %s", (key,))
-
-
-def _post_to_slack_sync(thread_key: str, text: str) -> None:
-    """Post a message to a Slack thread. Best-effort, never raises."""
-    token = os.getenv("SLACK_BOT_TOKEN", "")
-    if not token or not text.strip():
-        return
-    try:
-        parts = thread_key.split(":")
-        if len(parts) < 2:
-            return
-        channel, thread_ts = parts[0], parts[-1]
-        safe_text = text.strip()
-        if len(safe_text) > 3900:
-            safe_text = safe_text[:3882].rstrip() + "\n\n... (truncated)"
-        with httpx.Client(timeout=20) as client:
-            resp = client.post(
-                "https://slack.com/api/chat.postMessage",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"channel": channel, "thread_ts": thread_ts, "text": safe_text},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if not data.get("ok"):
-                    log.debug("slack_post_failed", error=data.get("error"))
-    except Exception as exc:
-        log.debug("slack_post_failed", error=str(exc))
 
 
 def _docker_client() -> docker.DockerClient:
@@ -699,10 +810,12 @@ class AgentClient:
         slack_thread_key: str,
         message: str,
         harness: str = "amp",
+        source: str | None = None,
         repo: str | None = None,
         request_id: str | None = None,
         files: list[dict[str, str]] | None = None,
         emit: Callable[[dict[str, Any]], None] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a message in a sandbox, spawning one if needed.
 
@@ -712,6 +825,8 @@ class AgentClient:
         """
         _emit = emit or (lambda _: None)
         rid = request_id or ""
+        source_tag = str(source or "api").strip().lower()
+        mirror_to_slack = source_tag in {"thread_ui", "thread-view", "ui"}
         execute_lock = get_execute_lock(slack_thread_key)
         if not execute_lock.acquire(blocking=False):
             return {
@@ -738,6 +853,12 @@ class AgentClient:
                 return {
                     "error": "A run is already in progress for this thread. Wait for it to finish first."
                 }
+
+            if mirror_to_slack:
+                _post_slack_thread_message(
+                    slack_thread_key,
+                    "[Thread Viewer] New instruction:\n" + message,
+                )
 
             # Auto-spawn if no session or container is gone
             if session:
@@ -796,12 +917,17 @@ class AgentClient:
                 "user_message": message,
                 "events": [],
                 "result": "",
+                "user_id": user_id,
                 "started_at": started_ts,
                 "finished_at": None,
                 "exit_code": None,
                 "timed_out": False,
                 "duration_s": 0,
             }
+            if user_id:
+                # Persist lightweight user metadata in the turn event stream so historical
+                # thread views can reconstruct participants without a DB schema change.
+                live_turn["events"].append({"type": "thread.user", "user_id": user_id})
             with _sessions_lock:
                 session.setdefault("turns", []).append(live_turn)
 
@@ -855,10 +981,12 @@ class AgentClient:
                             elapsed = round(time.monotonic() - started, 3)
                             try:
                                 evt = json.loads(stripped)
-                                evt["received_at"] = now
-                                evt["elapsed_s"] = elapsed
-                                live_turn["events"].append(evt)
-                                _emit(evt)
+                                normalized_events = normalize_harness_event(session["harness"], evt)
+                                for normalized in normalized_events:
+                                    normalized["received_at"] = now
+                                    normalized["elapsed_s"] = elapsed
+                                    live_turn["events"].append(normalized)
+                                    _emit(normalized)
                             except json.JSONDecodeError:
                                 live_turn["events"].append(
                                     {"type": "raw", "text": stripped, "received_at": now, "elapsed_s": elapsed}
@@ -878,9 +1006,12 @@ class AgentClient:
                 elapsed = round(time.monotonic() - started, 3)
                 try:
                     evt = json.loads(stripped)
-                    evt["received_at"] = now
-                    evt["elapsed_s"] = elapsed
-                    live_turn["events"].append(evt)
+                    normalized_events = normalize_harness_event(session["harness"], evt)
+                    for normalized in normalized_events:
+                        normalized["received_at"] = now
+                        normalized["elapsed_s"] = elapsed
+                        live_turn["events"].append(normalized)
+                        _emit(normalized)
                 except json.JSONDecodeError:
                     live_turn["events"].append(
                         {"type": "raw", "text": stripped, "received_at": now, "elapsed_s": elapsed}
@@ -929,13 +1060,23 @@ class AgentClient:
             total_input_tokens = 0
             total_output_tokens = 0
             for evt in live_turn["events"]:
-                usage = evt.get("message", {}).get("usage") if isinstance(evt, dict) else None
+                usage = None
+                if isinstance(evt, dict):
+                    message = evt.get("message")
+                    if isinstance(message, dict):
+                        usage = message.get("usage")
+                    if usage is None:
+                        usage = evt.get("usage")
                 if usage:
+                    usage_dict = usage if isinstance(usage, dict) else {}
                     llm_calls += 1
-                    total_input_tokens += usage.get("input_tokens", 0) + usage.get(
-                        "cache_read_input_tokens", 0
-                    ) + usage.get("cache_creation_input_tokens", 0)
-                    total_output_tokens += usage.get("output_tokens", 0)
+                    total_input_tokens += (
+                        int(usage_dict.get("input_tokens", 0))
+                        + int(usage_dict.get("cached_input_tokens", 0))
+                        + int(usage_dict.get("cache_read_input_tokens", 0))
+                        + int(usage_dict.get("cache_creation_input_tokens", 0))
+                    )
+                    total_output_tokens += int(usage_dict.get("output_tokens", 0))
             log.info(
                 "exec_done",
                 request_id=rid,
@@ -957,6 +1098,11 @@ class AgentClient:
                 "agent_thread_id": session["agent_thread_id"],
                 "harness": session["harness"],
             }
+            if mirror_to_slack and result_text:
+                _post_slack_thread_message(
+                    slack_thread_key,
+                    "[Thread Viewer] Agent update:\n" + result_text,
+                )
             _emit({"type": "final", **result})
             return result
         finally:
@@ -1112,6 +1258,7 @@ class AgentClient:
                         "user_message": tr["user_message"],
                         "events": events,
                         "result": tr.get("result", ""),
+                        "user_id": _extract_turn_user_id(events),
                         "started_at": started.timestamp() if started else time.time(),
                         "finished_at": finished.timestamp() if finished else None,
                         "exit_code": tr.get("exit_code"),

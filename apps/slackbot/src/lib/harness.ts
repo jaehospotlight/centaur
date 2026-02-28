@@ -38,6 +38,7 @@ export type Harness = "amp" | "claude-code" | "codex" | "pi-mono";
 export type AgentMode = "default" | "eng";
 export type BudgetMode = "simple" | "auto" | "complex";
 export type FileAttachment = { url: string; name: string };
+export type ExecuteSource = "slack" | "thread_ui" | "api";
 
 export type RunOptions = {
   mode: AgentMode;
@@ -187,6 +188,8 @@ export async function execute(
   harness: Harness = "amp",
   requestId?: string,
   files?: FileAttachment[],
+  userId?: string,
+  source: ExecuteSource = "slack",
 ): Promise<string> {
   const result = await agentCall("execute", {
     slack_thread_key: threadKey,
@@ -194,8 +197,30 @@ export async function execute(
     harness,
     ...(requestId ? { request_id: requestId } : {}),
     ...(files && files.length > 0 ? { files } : {}),
+    ...(userId ? { user_id: userId } : {}),
+    source,
   });
+  if (typeof result.error === "string" && result.error.trim()) {
+    throw new Error(result.error);
+  }
   return (result.result as string) || "No response from agent.";
+}
+
+export async function interrupt(
+  threadKey: string,
+  requestId?: string
+): Promise<{ sessionId: string; status: string }> {
+  const result = await agentCall("interrupt", {
+    slack_thread_key: threadKey,
+    ...(requestId ? { request_id: requestId } : {}),
+  });
+  if (typeof result.error === "string" && result.error.trim()) {
+    throw new Error(result.error);
+  }
+  return {
+    sessionId: String(result.session_id ?? threadKey),
+    status: String(result.status ?? "interrupted"),
+  };
 }
 
 async function apiCall(

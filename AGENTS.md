@@ -3,6 +3,7 @@
 ## Code Conventions
 
 - Python 3.11+, `uv` for deps, `ruff` for lint/format (line-length=100)
+- `apps/slackbot` uses `pnpm` only (single lockfile: `pnpm-lock.yaml`)
 - All imports at top of file, never inside functions
 - Absolute imports only: `from shared.X`, `from api.X`, `from etl.X` — no relative imports
 - All secrets via env vars, never hardcode

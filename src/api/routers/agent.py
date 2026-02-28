@@ -38,8 +38,10 @@ class ExecuteRequest(BaseModel):
     slack_thread_key: str
     message: str
     harness: str = "amp"
+    source: str | None = None
     repo: str | None = None
     request_id: str | None = None
+    user_id: str | None = None
     files: list[FileAttachment] = []
 
 
@@ -64,8 +66,16 @@ async def execute(req: ExecuteRequest) -> dict[str, Any]:
     agent = get_agent()
     files = [{"url": f.url, "name": f.name} for f in req.files] if req.files else None
     return await asyncio.to_thread(
-        agent.execute, req.slack_thread_key, req.message, req.harness, req.repo, req.request_id,
+        agent.execute,
+        req.slack_thread_key,
+        req.message,
+        req.harness,
+        req.source,
+        req.repo,
+        req.request_id,
         files,
+        None,
+        req.user_id,
     )
 
 
@@ -82,10 +92,12 @@ async def execute_stream(req: ExecuteRequest) -> StreamingResponse:
                 req.slack_thread_key,
                 req.message,
                 req.harness,
+                req.source,
                 req.repo,
                 req.request_id,
                 files,
                 emit=q.put,
+                user_id=req.user_id,
             )
         except Exception as e:
             q.put({"type": "error", "message": str(e)})
@@ -100,7 +112,7 @@ async def execute_stream(req: ExecuteRequest) -> StreamingResponse:
                 item = await asyncio.wait_for(
                     asyncio.to_thread(q.get, timeout=30), timeout=35
                 )
-            except (asyncio.TimeoutError, Exception):
+            except (TimeoutError, Exception):
                 yield ": keep-alive\n\n"
                 continue
 
