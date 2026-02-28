@@ -179,28 +179,37 @@ function createBot() {
       renderSlackMessage(`⏳ Starting...\n\n[🔗 Thread Viewer](${viewerUrl})`)
     );
 
-    // Throttle status edits to avoid Slack rate limits
-    let lastEditTime = 0;
-    let lastStatusText = "";
-    const MIN_EDIT_INTERVAL_MS = 1500;
+    // Thinking animation: "Thinking." → "Thinking.." → "Thinking..."
+    let dotCount = 1;
+    let thinkingStarted = false;
+    let activeTools: string[] = [];
+    let editQueued = false;
 
-    function progressToText(event: ProgressEvent): string | null {
-      if (event.type === "status") {
-        switch (event.stage) {
-          case "container.creating": return "⏳ Creating container...";
-          case "container.ready": return "⚡ Container ready";
-          case "files.downloading": return "📎 Downloading files...";
-          case "exec.start": return `⚡ Running ${event.harness || harness}...`;
-          default: return null;
-        }
+    function buildStatusText(): string {
+      const dots = ".".repeat(dotCount);
+      const lines = [`Thinking${dots}`];
+      for (const tool of activeTools) {
+        lines.push(`  🔧 ${tool}`);
       }
-      // Agent tool calls (amp emits these as JSON events)
-      if (event.type === "tool_use" || event.type === "tool_call") {
-        const name = (event.name || event.tool || "") as string;
-        if (name) return `🔧 ${name}...`;
-      }
-      return null;
+      return lines.join("\n");
     }
+
+    function queueEdit() {
+      if (editQueued) return;
+      editQueued = true;
+      setTimeout(() => {
+        editQueued = false;
+        const text = `${buildStatusText()}\n\n[🔗 Thread Viewer](${viewerUrl})`;
+        statusMsg.edit(renderSlackMessage(text)).catch(() => {});
+      }, 200);
+    }
+
+    // Rotate dots every 1s once thinking starts
+    const dotTimer = setInterval(() => {
+      if (!thinkingStarted) return;
+      dotCount = (dotCount % 3) + 1;
+      queueEdit();
+    }, 1000);
 
     const message = isFirstMessage
       ? buildSessionContext(threadKey) + parsed.cleanedText
@@ -213,17 +222,30 @@ function createBot() {
       requestId,
       files.length > 0 ? files : undefined,
       (event) => {
-        const text = progressToText(event);
-        if (!text || text === lastStatusText) return;
-        const now = Date.now();
-        if (now - lastEditTime < MIN_EDIT_INTERVAL_MS) return;
-        lastEditTime = now;
-        lastStatusText = text;
-        statusMsg
-          .edit(renderSlackMessage(`${text}\n\n[🔗 Thread Viewer](${viewerUrl})`))
-          .catch(() => {});
+        if (event.type === "status" && event.stage === "exec.start") {
+          thinkingStarted = true;
+          queueEdit();
+          return;
+        }
+        // Track active tools / subagents
+        if (event.type === "tool_use" || event.type === "tool_call") {
+          const name = (event.name || event.tool || "") as string;
+          if (name && !activeTools.includes(name)) {
+            activeTools.push(name);
+            if (activeTools.length > 5) activeTools.shift();
+            queueEdit();
+          }
+        }
+        // Tool finished — remove from active list
+        if (event.type === "tool_result" || event.type === "tool_output") {
+          const name = (event.name || event.tool || "") as string;
+          activeTools = activeTools.filter((t) => t !== name);
+          queueEdit();
+        }
       },
     );
+
+    clearInterval(dotTimer);
 
     // Edit the status message in-place with the final result
     const finalText = isFirstMessage
