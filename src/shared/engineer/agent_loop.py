@@ -321,7 +321,23 @@ async def run_agent_loop(
         await emit(
             {
                 "type": "assistant",
-                "message": {"role": "assistant", "content": assistant_blocks},
+                "message": {
+                    "role": "assistant",
+                    "content": assistant_blocks,
+                    "model": getattr(response, "model", None),
+                    "usage": {
+                        "input_tokens": getattr(response.usage, "input_tokens", 0),
+                        "output_tokens": getattr(response.usage, "output_tokens", 0),
+                        "cache_read_input_tokens": getattr(
+                            response.usage, "cache_read_input_tokens", 0
+                        ),
+                        "cache_creation_input_tokens": getattr(
+                            response.usage, "cache_creation_input_tokens", 0
+                        ),
+                    }
+                    if hasattr(response, "usage") and response.usage
+                    else None,
+                },
             }
         )
 

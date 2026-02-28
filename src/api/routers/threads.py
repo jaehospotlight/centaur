@@ -87,7 +87,9 @@ async def _enrich_participants(
         if not details:
             enriched.append(participant)
             continue
-        enriched.append({**participant, "name": details["name"], "avatar_url": details["avatar_url"]})
+        enriched.append(
+            {**participant, "name": details["name"], "avatar_url": details["avatar_url"]}
+        )
     return enriched
 
 
@@ -186,9 +188,9 @@ async def list_threads(
             live_last_user_message = str(live_turns[-1].get("user_message") or "")
         if key not in participants_cache:
             if live:
-                participants_cache[key] = live.get("participants") or _build_participants_from_turns(
-                    live_turns
-                )
+                participants_cache[key] = live.get(
+                    "participants"
+                ) or _build_participants_from_turns(live_turns)
             else:
                 participants_cache[key] = await _fetch_pg_participants(pool, key)
             participants_cache[key] = await _enrich_participants(pool, participants_cache[key])
@@ -202,12 +204,16 @@ async def list_threads(
                 "created_at": float(r["created_at"]),
                 "last_activity": live["last_activity"] if live else float(r["last_activity"]),
                 "turn_count": len(live_turns) if live else r["turn_count"],
-                "last_result": (live_last_result if live_last_result else (r["last_result"] or ""))[:200],
+                "last_result": (live_last_result if live_last_result else (r["last_result"] or ""))[
+                    :200
+                ],
                 "first_message": (
                     live_first_message if live_first_message else (r["first_message"] or "")
                 )[:200],
                 "last_user_message": (
-                    live_last_user_message if live_last_user_message else (r["last_user_message"] or "")
+                    live_last_user_message
+                    if live_last_user_message
+                    else (r["last_user_message"] or "")
                 )[:200],
                 "thread_name": live.get("thread_name") if live else r.get("thread_name"),
                 "participants": participants_cache[key],
@@ -238,7 +244,8 @@ async def list_threads(
                     "thread_name": live.get("thread_name"),
                     "participants": await _enrich_participants(
                         pool,
-                        live.get("participants") or _build_participants_from_turns(live.get("turns", [])),
+                        live.get("participants")
+                        or _build_participants_from_turns(live.get("turns", [])),
                     ),
                 }
             )
@@ -364,11 +371,50 @@ async def get_thread(
         if not key.startswith("slack:"):
             try:
                 detail = await _fetch_pg_detail(pool, f"slack:{key}")
-                detail["participants"] = await _enrich_participants(pool, detail.get("participants"))
+                detail["participants"] = await _enrich_participants(
+                    pool, detail.get("participants")
+                )
                 return detail
             except HTTPException:
                 pass
         raise
+
+
+# Per-1M token pricing (as of early 2026)
+_MODEL_COST_PER_M: dict[str, tuple[float, float]] = {
+    # (input_cost_per_M, output_cost_per_M)
+    "claude-sonnet-4-20250514": (3.0, 15.0),
+    "claude-3-7-sonnet-20250219": (3.0, 15.0),
+    "claude-3-5-sonnet-20241022": (3.0, 15.0),
+    "claude-3-5-haiku-20241022": (0.80, 4.0),
+    "claude-3-opus-20240229": (15.0, 75.0),
+}
+
+
+def _estimate_cost_usd(model: str | None, input_tokens: int, output_tokens: int) -> float | None:
+    if not model or (input_tokens == 0 and output_tokens == 0):
+        return None
+    model_lower = model.lower()
+    # Try exact match first, then prefix match
+    costs = _MODEL_COST_PER_M.get(model_lower)
+    if not costs:
+        for key, val in _MODEL_COST_PER_M.items():
+            if model_lower.startswith(key.rsplit("-", 1)[0]):
+                costs = val
+                break
+    if not costs:
+        # Default to sonnet pricing as a reasonable fallback
+        if "opus" in model_lower:
+            costs = (15.0, 75.0)
+        elif "haiku" in model_lower:
+            costs = (0.80, 4.0)
+        elif "sonnet" in model_lower:
+            costs = (3.0, 15.0)
+        else:
+            return None
+    input_cost = (input_tokens / 1_000_000) * costs[0]
+    output_cost = (output_tokens / 1_000_000) * costs[1]
+    return round(input_cost + output_cost, 6)
 
 
 # SSE comment keepalive sent when no data for this many seconds (prevents proxy timeouts)
@@ -438,24 +484,32 @@ def _extract_usage_model(event: dict[str, Any]) -> str | None:
     return model or None
 
 
-def _ui_stream_chunks_for_event(turn_id: int, event_index: int, event: dict[str, Any]) -> list[dict[str, Any]]:
+def _ui_stream_chunks_for_event(
+    turn_id: int, event_index: int, event: dict[str, Any]
+) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     event_type = event.get("type")
 
     if event_type == "assistant":
-        content = ((event.get("message") or {}).get("content") or [])
+        content = (event.get("message") or {}).get("content") or []
         for content_index, block in enumerate(content):
             block_type = block.get("type")
             if block_type == "text" and (block.get("text") or "").strip():
                 text_id = f"turn-{turn_id}-text-{event_index}-{content_index}"
                 chunks.append({"type": "text-start", "id": text_id})
-                chunks.append({"type": "text-delta", "id": text_id, "delta": str(block.get("text") or "")})
+                chunks.append(
+                    {"type": "text-delta", "id": text_id, "delta": str(block.get("text") or "")}
+                )
                 chunks.append({"type": "text-end", "id": text_id})
             elif block_type == "thinking" and (block.get("thinking") or "").strip():
                 reasoning_id = f"turn-{turn_id}-reasoning-{event_index}-{content_index}"
                 chunks.append({"type": "reasoning-start", "id": reasoning_id})
                 chunks.append(
-                    {"type": "reasoning-delta", "id": reasoning_id, "delta": str(block.get("thinking") or "")}
+                    {
+                        "type": "reasoning-delta",
+                        "id": reasoning_id,
+                        "delta": str(block.get("thinking") or ""),
+                    }
                 )
                 chunks.append({"type": "reasoning-end", "id": reasoning_id})
             elif block_type == "tool_use":
@@ -485,7 +539,9 @@ def _ui_stream_chunks_for_event(turn_id: int, event_index: int, event: dict[str,
     elif event_type == "reasoning":
         reasoning_id = f"turn-{turn_id}-reasoning-{event_index}"
         chunks.append({"type": "reasoning-start", "id": reasoning_id})
-        chunks.append({"type": "reasoning-delta", "id": reasoning_id, "delta": str(event.get("text") or "")})
+        chunks.append(
+            {"type": "reasoning-delta", "id": reasoning_id, "delta": str(event.get("text") or "")}
+        )
         chunks.append({"type": "reasoning-end", "id": reasoning_id})
     elif event_type == "file_change":
         chunks.append(
@@ -509,7 +565,9 @@ def _ui_stream_chunks_for_event(turn_id: int, event_index: int, event: dict[str,
             }
         )
     elif event_type == "error":
-        chunks.append({"type": "error", "errorText": str(event.get("error") or event.get("message") or "")})
+        chunks.append(
+            {"type": "error", "errorText": str(event.get("error") or event.get("message") or "")}
+        )
     elif event_type == "result":
         text = str(event.get("result") or "")
         if text:
@@ -686,7 +744,7 @@ async def stream_thread_ui(
                 authoritative_usage = bool(usage_by_turn) and all(
                     turn_id in usage_authoritative_turns for turn_id in usage_by_turn
                 )
-                yield f"data: {json.dumps({'type': 'data-token-usage', 'id': 'thread-token-usage', 'data': {'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'total_tokens': usage_total, 'cost_usd': None, 'estimated': not authoritative_usage, 'authoritative': authoritative_usage, 'model': usage_model}})}\n\n"
+                yield f"data: {json.dumps({'type': 'data-token-usage', 'id': 'thread-token-usage', 'data': {'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'total_tokens': usage_total, 'cost_usd': _estimate_cost_usd(usage_model, total_input_tokens, total_output_tokens), 'estimated': not authoritative_usage, 'authoritative': authoritative_usage, 'model': usage_model}})}\n\n"
 
             if any_new_data:
                 ticks_since_data = 0

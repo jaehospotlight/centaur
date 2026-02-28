@@ -118,6 +118,7 @@ async function runShadow(
   originTs: string,
   files?: FileAttachment[],
   originThreadTs?: string,
+  userId?: string,
 ): Promise<string | null> {
   // If this is a thread reply, reuse the existing shadow thread
   const parentTs = originThreadTs || originTs;
@@ -186,7 +187,7 @@ async function runShadow(
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      result = await execute(shadowThreadKey, cleanedText, "amp", undefined, files);
+      result = await execute(shadowThreadKey, cleanedText, "amp", undefined, files, userId, "slack");
       break;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -247,6 +248,8 @@ export async function maybeShadow(body: Record<string, unknown>): Promise<void> 
   const cleanedText = text.replace(new RegExp(`<@${V1_BOT_USER_ID}>`, "g"), "").trim();
   if (!cleanedText) return;
 
+  const userId = (event.user as string) || undefined;
+
   // Extract file attachments
   const eventFiles = (event.files as Array<{ url_private?: string; name?: string }>) || [];
   const files: FileAttachment[] = eventFiles
@@ -265,7 +268,7 @@ export async function maybeShadow(body: Record<string, unknown>): Promise<void> 
   );
 
   try {
-    await runShadow(cleanedText, ts, files.length > 0 ? files : undefined, threadTs);
+    await runShadow(cleanedText, ts, files.length > 0 ? files : undefined, threadTs, userId);
   } catch (err) {
     console.log(
       JSON.stringify({
@@ -358,7 +361,7 @@ export async function backtest(
     );
 
     try {
-      await runShadow(cleanedText, ts, msgFiles.length > 0 ? msgFiles : undefined);
+      await runShadow(cleanedText, ts, msgFiles.length > 0 ? msgFiles : undefined, undefined, msg.user);
       replayed++;
     } catch (err) {
       console.log(
