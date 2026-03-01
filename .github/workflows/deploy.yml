@@ -66,7 +66,7 @@ jobs:
       # Infra change → rebuild entire stack (docker-compose, Dockerfile, services/, monitoring/)
       - name: Deploy all services
         if: steps.changes.outputs.infra == 'true'
-        run: docker compose up -d --build --wait
+        run: docker compose up -d --build
 
       # API+ETL share the same Dockerfile — build once, deploy both.
       # --wait blocks until health checks pass, preventing slackbot from
