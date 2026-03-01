@@ -36,9 +36,11 @@ log = logging.getLogger("secret_manager")
 
 _VAULT_NAME = os.environ.get("OP_VAULT", "ai-agents")
 _REFRESH_INTERVAL = int(os.environ.get("SECRET_REFRESH_SECONDS", "300"))  # 5 min
+_REFRESH_RETRY_INTERVAL = int(os.environ.get("SECRET_REFRESH_RETRY_SECONDS", "15"))
 
 # In-memory cache: key → value
 _cache: dict[str, str] = {}
+_last_refresh_error: str | None = None
 
 # SDK client — initialised once at startup
 _client: Client | None = None
@@ -80,7 +82,7 @@ async def _load_all() -> int:
 
     Returns the number of secrets loaded.
     """
-    global _client, _cache
+    global _client, _cache, _last_refresh_error
     if _client is None:
         _client = await _init_client()
 
@@ -112,6 +114,7 @@ async def _load_all() -> int:
 
     # Atomic swap — avoids readers seeing an empty cache during refresh
     _cache = new_cache
+    _last_refresh_error = None
     log.info("loaded %d keys from vault '%s'", len(_cache), _VAULT_NAME)
     return len(_cache)
 
@@ -121,13 +124,18 @@ async def _load_all() -> int:
 # ---------------------------------------------------------------------------
 
 
-async def _refresh_loop() -> None:
+async def _refresh_loop(initial_delay: int) -> None:
+    global _last_refresh_error
+    delay = initial_delay
     while True:
-        await asyncio.sleep(_REFRESH_INTERVAL)
+        await asyncio.sleep(delay)
         try:
             await _load_all()
-        except Exception:
+            delay = _REFRESH_INTERVAL
+        except Exception as exc:
+            _last_refresh_error = str(exc)
             log.exception("refresh failed")
+            delay = _REFRESH_RETRY_INTERVAL
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +145,18 @@ async def _refresh_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    global _last_refresh_error
     log.info("loading secrets from vault '%s' ...", _VAULT_NAME)
-    await _load_all()
-    task = asyncio.create_task(_refresh_loop())
+    initial_delay = _REFRESH_INTERVAL
+    try:
+        await _load_all()
+    except Exception as exc:
+        _last_refresh_error = str(exc)
+        # Start in degraded mode so API/ETL can boot; background refresh retries.
+        log.exception("initial secret load failed; starting in degraded mode")
+        initial_delay = _REFRESH_RETRY_INTERVAL
+
+    task = asyncio.create_task(_refresh_loop(initial_delay))
     try:
         yield
     finally:
@@ -151,7 +168,11 @@ app = FastAPI(title="Secret Manager", version="0.1.0", lifespan=lifespan)
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "cached_keys": len(_cache)}
+    return {
+        "status": "ok" if _last_refresh_error is None else "degraded",
+        "cached_keys": len(_cache),
+        "last_refresh_error": _last_refresh_error,
+    }
 
 
 @app.get("/secrets/{key}")
