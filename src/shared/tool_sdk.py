@@ -5,14 +5,12 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import shutil
-import subprocess
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-
 from threading import Lock
 from time import monotonic
 from typing import Any
+from urllib.parse import quote
 
 log = logging.getLogger(__name__)
 
@@ -39,91 +37,44 @@ def get_tool_context() -> ToolContext:
 
 
 # ---------------------------------------------------------------------------
-# 1Password backend
+# Secret Manager backend (replaces direct 1Password CLI calls)
 # ---------------------------------------------------------------------------
 
-# Vault name to read from — override with OP_VAULT env var.
-_OP_VAULT = os.environ.get("OP_VAULT", "AI-V2")
+_SECRET_MANAGER_URL = os.environ.get("SECRET_MANAGER_URL", "")
 
-# Cache: key → (value, expiry_monotonic)
-_op_cache: dict[str, tuple[str, float]] = {}
-_op_cache_lock = Lock()
-_OP_CACHE_TTL = 300  # 5 minutes
-
-# None = not checked yet, True/False = result of first check
-_op_available: bool | None = None
-
-# Whether 1Password lookups are enabled. Must be explicitly enabled via
-# ``enable_op_backend(True)`` — disabled by default to avoid interactive
-# prompts during tool discovery or automated workflows.
-_op_enabled: bool = False
+# Local cache so we don't HTTP on every secret() call.
+_sm_cache: dict[str, tuple[str, float]] = {}
+_sm_cache_lock = Lock()
+_SM_CACHE_TTL = 60  # re-check every 60s (the sidecar itself refreshes from 1PW)
 
 
-def enable_op_backend(enabled: bool = True) -> None:
-    """Explicitly enable or disable 1Password secret lookups."""
-    global _op_enabled
-    _op_enabled = enabled
-
-
-def _ensure_op_auth() -> bool:
-    """Ensure the 1Password CLI is available and has credentials.
-
-    Returns False immediately if the 1Password backend has not been explicitly
-    enabled via ``enable_op_backend(True)``.
-
-    In containers the entrypoint.sh handles signin/signout and exports secrets
-    as env vars before the process starts — op CLI is not needed at runtime.
-    Locally, the user should have an active ``op signin`` session.
-    Returns True if op CLI is available. Result is cached for the process lifetime.
-    """
-    global _op_available
-
-    if not _op_enabled:
-        return False
-
-    if _op_available is not None:
-        return _op_available
-
-    if not shutil.which("op"):
-        _op_available = False
-        return False
-
-    _op_available = True
-    return True
-
-
-def _op_read(key: str) -> str | None:
-    """Fetch a secret from 1Password. Results are cached with a TTL."""
-    if not _ensure_op_auth():
+def _sm_read(key: str) -> str | None:
+    """Fetch a secret from the secret-manager sidecar. Cached locally."""
+    if not _SECRET_MANAGER_URL:
         return None
 
     now = monotonic()
-    with _op_cache_lock:
-        cached = _op_cache.get(key)
+    with _sm_cache_lock:
+        cached = _sm_cache.get(key)
         if cached is not None:
             value, expiry = cached
             if now < expiry:
                 return value
-            del _op_cache[key]
+            del _sm_cache[key]
 
-    ref = f"op://{_OP_VAULT}/{key}/password"
     try:
-        result = subprocess.run(
-            ["op", "read", ref, "--no-newline"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+        import httpx
+
+        resp = httpx.get(f"{_SECRET_MANAGER_URL}/secrets/{quote(key, safe='')}", timeout=5.0)
+        if resp.status_code != 200:
+            return None
+        value = resp.json()["value"]
+    except Exception:
+        log.debug("secret-manager fetch failed for %s", key)
         return None
 
-    if result.returncode != 0:
-        log.debug("op read %s failed: %s", ref, result.stderr.strip())
-        return None
-
-    value = result.stdout
-    with _op_cache_lock:
-        _op_cache[key] = (value, monotonic() + _OP_CACHE_TTL)
+    with _sm_cache_lock:
+        _sm_cache[key] = (value, monotonic() + _SM_CACHE_TTL)
     return value
 
 
@@ -133,13 +84,11 @@ def _op_read(key: str) -> str | None:
 
 
 def secret(key: str, default: str | None = None) -> str:
-    """Get a secret. Resolution order: tool context → 1Password → os.environ.
+    """Get a secret. Resolution order: tool context → secret manager → os.environ.
 
     - **ToolContext**: Set by ToolManager, populated from .env files (if any).
-    - **1Password**: On-demand via ``op read``, cached in-memory with 5min TTL.
-      Requires ``op`` CLI — locally via interactive session, in containers
-      via entrypoint.sh (signs in, loads secrets as env vars, signs out).
-    - **os.environ**: Final fallback for standalone CLI, Docker env, k8s, etc.
+    - **Secret Manager**: HTTP sidecar backed by 1Password (``SECRET_MANAGER_URL``).
+    - **os.environ**: Final fallback for local dev, Docker env, k8s, etc.
     """
     # 1. Check tool context if available (server mode)
     try:
@@ -150,12 +99,12 @@ def secret(key: str, default: str | None = None) -> str:
     except LookupError:
         pass
 
-    # 2. 1Password (on-demand, cached in-memory only)
-    val = _op_read(key)
+    # 2. Secret manager sidecar (backed by 1Password)
+    val = _sm_read(key)
     if val is not None:
         return val
 
-    # 3. Fall back to os.environ (standalone CLI, Docker, k8s)
+    # 3. Fall back to os.environ (local dev, Docker, k8s)
     val = os.environ.get(key)
     if val is not None:
         return val

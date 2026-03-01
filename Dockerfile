@@ -1,22 +1,10 @@
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl unzip \
+    git curl \
     ripgrep fd-find jq yq tree gettext-base \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
-
-# Install 1Password CLI (multi-arch)
-ARG TARGETARCH
-RUN case "${TARGETARCH}" in \
-        arm64) OP_ARCH="arm64" ;; \
-        amd64) OP_ARCH="amd64" ;; \
-        *)     OP_ARCH="amd64" ;; \
-    esac && \
-    curl -sSfo /tmp/op.zip "https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.3/op_linux_${OP_ARCH}_v2.30.3.zip" \
-    && unzip -o /tmp/op.zip -d /usr/local/bin/ op \
-    && rm /tmp/op.zip \
-    && chmod +x /usr/local/bin/op
 
 COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /usr/local/bin/
 
@@ -53,7 +41,6 @@ COPY tools/ tools/
 # Copy migrations
 COPY migrations/ migrations/
 
-# Entrypoint: 1Password bootstrap (signin → load secrets → signout → exec)
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

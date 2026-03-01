@@ -21,6 +21,7 @@ dependencies = [
     "typer>=0.12.0",
     "toon-format @ git+https://github.com/toon-format/toon-python.git",
     "docker>=7.0.0",
+    "onepassword-sdk>=0.4.0",
 ]
 
 [project.scripts]
@@ -34,7 +35,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/api", "src/etl", "src/shared"]
+packages = ["src/api", "src/etl", "src/shared", "src/secret_manager"]
 
 [dependency-groups]
 dev = [
@@ -53,7 +54,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["api", "etl", "shared"]
+known-first-party = ["api", "etl", "shared", "secret_manager"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

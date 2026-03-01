@@ -23,6 +23,22 @@ services:
       timeout: 5s
       retries: 5
 
+  secrets:
+    build: .
+    command: ["uv", "run", "uvicorn", "secret_manager.app:app", "--host", "0.0.0.0", "--port", "8100"]
+    environment:
+      OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+      OP_VAULT: ai-agents
+    networks:
+      - secrets_net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8100/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
   api:
     build: .
     env_file:
@@ -32,10 +48,10 @@ services:
       DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
       SLACKBOT_URL: http://slackbot:3001
       AI_V2_LOG_LEVEL: info
-      OP_VAULT: AI-V2
-      OP_EMAIL: ${OP_EMAIL:-}
-      OP_SECRET_KEY: ${OP_SECRET_KEY:-}
-      OP_MASTER_PASSWORD: ${OP_MASTER_PASSWORD:-}
+      SECRET_MANAGER_URL: http://secrets:8100
+    networks:
+      - default
+      - secrets_net
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./tools:/app/tools
@@ -48,6 +64,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      secrets:
+        condition: service_healthy
     restart: unless-stopped
 
   etl:
@@ -58,12 +76,14 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
-      OP_VAULT: AI-V2
-      OP_EMAIL: ${OP_EMAIL:-}
-      OP_SECRET_KEY: ${OP_SECRET_KEY:-}
-      OP_MASTER_PASSWORD: ${OP_MASTER_PASSWORD:-}
+      SECRET_MANAGER_URL: http://secrets:8100
+    networks:
+      - default
+      - secrets_net
     depends_on:
       postgres:
+        condition: service_healthy
+      secrets:
         condition: service_healthy
     restart: unless-stopped
 
@@ -152,3 +172,7 @@ volumes:
   grafanadata:
   prometheusdata:
   lokidata:
+
+networks:
+  secrets_net:
+    internal: true
