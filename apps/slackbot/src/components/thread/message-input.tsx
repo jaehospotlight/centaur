@@ -10,10 +10,8 @@ type MessageInputProps = {
   mode: ComposerMode;
   state: ThreadState;
   isAgentRunning: boolean;
-  canSend?: boolean;
-  blockedReason?: string;
   onSend: (message: string) => Promise<boolean>;
-  onStop: () => Promise<boolean>;
+  onStop: () => Promise<void>;
 };
 
 const MAX_ROWS = 6;
@@ -22,8 +20,6 @@ export function MessageInput({
   mode,
   state,
   isAgentRunning,
-  canSend = true,
-  blockedReason,
   onSend,
   onStop,
 }: MessageInputProps) {
@@ -43,11 +39,10 @@ export function MessageInput({
   const placeholder = useMemo(() => {
     if (isSubmitting) return "Sending...";
     if (isStopMode) return "Agent is working...";
-    if (!canSend) return "Engineer is working...";
     if (mode === "reply") return "Reply to engineer...";
     if (state === "error") return "Restart with new message...";
     return "Send a message...";
-  }, [canSend, isStopMode, isSubmitting, mode, state]);
+  }, [isStopMode, isSubmitting, mode, state]);
 
   const announce = useCallback((message: string) => {
     setAnnouncement("");
@@ -93,10 +88,6 @@ export function MessageInput({
 
   const submitMessage = useCallback(async () => {
     if (isSubmitting || !hasText) return;
-    if (!canSend) {
-      setError(blockedReason ?? "Sending is currently unavailable.");
-      return;
-    }
     setError(null);
     setIsSubmitting(true);
     try {
@@ -110,15 +101,14 @@ export function MessageInput({
     } finally {
       setIsSubmitting(false);
     }
-  }, [announce, blockedReason, canSend, hasText, isSubmitting, onSend, trimmedValue]);
+  }, [announce, hasText, isSubmitting, onSend, trimmedValue]);
 
   const stopRun = useCallback(async () => {
     if (isSubmitting) return;
     setError(null);
     setIsSubmitting(true);
     try {
-      const didStop = await onStop();
-      if (!didStop) return;
+      await onStop();
       announce("Run stopped");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to stop run.");
@@ -165,14 +155,14 @@ export function MessageInput({
     <form
       onSubmit={handleSubmit}
       aria-label="Message composer"
-      className="mt-3 flex flex-col gap-2 bg-card border border-border rounded-sm p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+      className="mt-3 flex flex-col gap-2 rounded-sm border border-border bg-card p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
     >
       {error ? (
         <p className="px-2 text-xs text-destructive" aria-live="polite">
           {error}
         </p>
       ) : null}
-      <div className="flex gap-2 items-end">
+      <div className="flex items-end gap-2">
         <label htmlFor={inputId} className="sr-only">
           Message
         </label>
@@ -194,14 +184,14 @@ export function MessageInput({
           disabled={isSubmitting}
           autoComplete="off"
           aria-describedby={hintId}
-          className="flex-1 resize-none [field-sizing:content] bg-background text-base md:text-sm text-foreground placeholder:text-muted-foreground px-3 py-2 min-h-11 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm border border-input"
+          className="min-h-11 flex-1 resize-none rounded-sm border border-input bg-background px-3 py-2 text-base text-foreground placeholder:text-muted-foreground [field-sizing:content] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 md:text-sm"
         />
         <button
           type={isStopMode ? "button" : "submit"}
           onClick={isStopMode ? () => void stopRun() : undefined}
-          disabled={isSubmitting || (!isStopMode && (!hasText || !canSend))}
+          disabled={isSubmitting || (!isStopMode && !hasText)}
           aria-label={isStopMode ? "Stop generating" : "Send message"}
-          className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium text-primary-foreground bg-primary hover:opacity-90 rounded-sm disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shrink-0"
+          className="inline-flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-sm bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? (
             <LoaderCircle className="size-4 animate-spin" />

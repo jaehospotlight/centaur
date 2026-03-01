@@ -6,7 +6,7 @@ import { BASE } from "@/lib/constants";
 import { AgentThreadTransport } from "@/lib/agent-transport";
 import { stepsFromUiMessages } from "@/lib/chat-steps";
 
-type TokenUsage = {
+export type TokenUsage = {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
@@ -21,7 +21,6 @@ type SendRoute = "reply" | "execute";
 export function useThreadStream(threadKey: string) {
   const [thread, setThread] = useState<ThreadDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isPolling, setIsPolling] = useState(false);
   const [agentStatus, setAgentStatus] = useState<string | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const transport = useMemo(() => new AgentThreadTransport(threadKey), [threadKey]);
@@ -36,18 +35,18 @@ export function useThreadStream(threadKey: string) {
       "file-changes": z.object({ changes: z.array(z.object({ path: z.string(), kind: z.string() })) }),
       "user-message": z.object({
         id: z.string(),
-        turn_id: z.number(),
+        turn_id: z.number().optional(),
         text: z.string(),
         source: z.string().optional(),
-        user_id: z.string().nullable().optional(),
+        user_id: z.string().optional(),
         created_at: z.string().optional(),
       }),
       "context-message": z.object({
         id: z.string(),
-        turn_id: z.number(),
+        turn_id: z.number().optional(),
         text: z.string(),
         source: z.string().optional(),
-        user_id: z.string().nullable().optional(),
+        user_id: z.string().optional(),
         created_at: z.string().optional(),
       }),
       "token-usage": z.object({
@@ -121,13 +120,11 @@ export function useThreadStream(threadKey: string) {
   useEffect(() => {
     setThread(null);
     setError(null);
-    setIsPolling(false);
     setAgentStatus(null);
     setTokenUsage(null);
     void fetchThread();
     const poll = setInterval(() => {
-      setIsPolling(true);
-      void fetchThread().finally(() => setIsPolling(false));
+      void fetchThread();
     }, 5000);
 
     return () => {
@@ -159,23 +156,9 @@ export function useThreadStream(threadKey: string) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ slack_thread_key: threadKey }),
     });
-    const raw = await res.text().catch(() => "");
-    let message = "";
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as { error?: unknown; detail?: unknown };
-        if (typeof parsed.error === "string" && parsed.error.trim()) {
-          message = parsed.error;
-        } else if (typeof parsed.detail === "string" && parsed.detail.trim()) {
-          message = parsed.detail;
-        }
-      } catch {
-        if (!res.ok) message = raw;
-      }
-    }
-
-    if (!res.ok || message) {
-      throw new Error(message || `Interrupt failed (${res.status}).`);
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok || data.error) {
+      throw new Error(data.error ?? `Interrupt failed (${res.status}).`);
     }
   }, [threadKey]);
 
@@ -185,7 +168,7 @@ export function useThreadStream(threadKey: string) {
     thread,
     error,
     fetchThread,
-    isReconnecting: isPolling || chat.status === "error",
+    isReconnecting: chat.status === "error",
     agentStatus,
     tokenUsage,
     chatStatus: chat.status,

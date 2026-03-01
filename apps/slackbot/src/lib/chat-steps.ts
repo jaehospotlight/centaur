@@ -1,6 +1,12 @@
 import type { UIMessage } from "ai";
 import type { LucideIcon } from "lucide-react";
-import { categorizeToolCall, summarizeGroup, type Step, type ToolCall } from "@/lib/describe";
+import {
+  categorizeToolCall,
+  summarizeGroup,
+  type ContextMessageItem,
+  type Step,
+  type ToolCall,
+} from "@/lib/describe";
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -29,23 +35,12 @@ function toolNameFromPart(part: Record<string, unknown>): string | null {
 
 export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
   const steps: Step[] = [];
-  const byId = new Map<string, number>();
   let pendingGroup: { id: string; category: string; icon: LucideIcon; calls: ToolCall[] } | null =
     null;
 
-  const pushStep = (step: Step) => {
-    const existingIndex = byId.get(step.id);
-    if (existingIndex !== undefined) {
-      steps[existingIndex] = step;
-      return;
-    }
-    byId.set(step.id, steps.length);
-    steps.push(step);
-  };
-
   const flushGroup = () => {
     if (!pendingGroup || pendingGroup.calls.length === 0) return;
-    pushStep({
+    steps.push({
       id: pendingGroup.id,
       type: "tool-group",
       icon: pendingGroup.icon,
@@ -56,18 +51,20 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
     pendingGroup = null;
   };
 
-  for (const message of messages) {
+  for (const [messageIndex, message] of messages.entries()) {
     if (message.role !== "assistant") continue;
+    const messageId = `${String(message.id ?? "message")}-${messageIndex}`;
     for (const [partIndex, rawPart] of (message.parts ?? []).entries()) {
       const part = rawPart as Record<string, unknown>;
       const partType = asString(part.type);
+      const partId = `${messageId}:${partIndex}`;
 
       if (partType === "text") {
         const text = asString(part.text).trim();
         if (!text) continue;
         flushGroup();
-        pushStep({
-          id: `result-${message.id}-${partIndex}`,
+        steps.push({
+          id: `result:${partId}`,
           type: "result",
           text,
           streaming: asString(part.state) === "streaming",
@@ -79,11 +76,7 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
         const text = asString(part.text).trim();
         if (!text) continue;
         flushGroup();
-        pushStep({
-          id: `thinking-${message.id}-${partIndex}`,
-          type: "thinking",
-          text,
-        });
+        steps.push({ id: `thinking:${partId}`, type: "thinking", text });
         continue;
       }
 
@@ -99,11 +92,7 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
           }))
           .filter((item) => item.path);
         if (changes.length > 0) {
-          pushStep({
-            id: `file-changes-${message.id}-${partIndex}`,
-            type: "file-changes",
-            changes,
-          });
+          steps.push({ id: `file-changes:${partId}`, type: "file-changes", changes });
         }
         continue;
       }
@@ -113,19 +102,16 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
         const phase = asString(data.phase);
         if (!phase) continue;
         flushGroup();
-        pushStep({
-          id: `phase-${message.id}-${partIndex}-${phase}`,
-          type: "phase",
-          phase,
-        });
+        const turnId = data.turn_id === undefined || data.turn_id === null ? "" : String(data.turn_id);
+        steps.push({ id: `phase:${turnId || partId}:${phase}`, type: "phase", phase });
         continue;
       }
 
       if (partType === "data-shell-command") {
         flushGroup();
         const data = asRecord(part.data);
-        pushStep({
-          id: `terminal-${message.id}-${partIndex}`,
+        steps.push({
+          id: `terminal:${partId}`,
           type: "terminal",
           description: "Ran shell command",
           command: asString(data.command),
@@ -140,14 +126,12 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
         const data = asRecord(part.data);
         const text = asString(data.text).trim();
         if (!text) continue;
-        const messageId = asString(data.id) || `user-${message.id}-${partIndex}`;
-        pushStep({
-          id: `user-message-${messageId}`,
+        steps.push({
+          id: asString(data.id) || `user:${partId}`,
           type: "user-message",
           text,
           source: asString(data.source) || undefined,
           userId: asString(data.user_id) || undefined,
-          createdAt: asString(data.created_at) || undefined,
         });
         continue;
       }
@@ -157,33 +141,31 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
         const data = asRecord(part.data);
         const text = asString(data.text).trim();
         if (!text) continue;
-        const contextItemId = asString(data.id) || `context-${message.id}-${partIndex}`;
-        const turnId = Number(data.turn_id ?? 0);
-        const groupId = turnId > 0 ? `context-group-${turnId}` : "context-group";
-        const existingIndex = byId.get(groupId);
-        const existing =
-          existingIndex !== undefined
-            ? (steps[existingIndex] as Extract<Step, { type: "context-group" }>)
-            : null;
-        const items = existing ? [...existing.items] : [];
-        const itemIndex = items.findIndex((item) => item.id === contextItemId);
-        const item = {
-          id: contextItemId,
+        const turnId = data.turn_id === undefined || data.turn_id === null ? "" : String(data.turn_id);
+        const groupId = turnId ? `context-group:${turnId}` : "context-group:thread";
+        const item: ContextMessageItem = {
+          id: asString(data.id) || `context:${partId}`,
           text,
           source: asString(data.source) || undefined,
           userId: asString(data.user_id) || undefined,
           createdAt: asString(data.created_at) || undefined,
         };
-        if (itemIndex >= 0) {
-          items[itemIndex] = item;
+        const existingIndex = steps.findIndex((step) => step.id === groupId);
+        if (existingIndex >= 0) {
+          const existing = steps[existingIndex];
+          if (existing.type === "context-group") {
+            if (!existing.items.some((contextItem) => contextItem.id === item.id)) {
+              existing.items.push(item);
+            }
+          }
         } else {
-          items.push(item);
+          steps.push({
+            id: groupId,
+            type: "context-group",
+            title: "Thread discussion",
+            items: [item],
+          });
         }
-        pushStep({
-          id: groupId,
-          type: "context-group",
-          items: items.slice(-50),
-        });
         continue;
       }
 
@@ -191,7 +173,7 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
         const toolName = toolNameFromPart(part);
         if (!toolName) continue;
         const toolInput = asRecord(part.input);
-        const toolCallId = asString(part.toolCallId) || `${message.id}-${toolName}-${partIndex}`;
+        const toolCallId = asString(part.toolCallId) || `${messageId}-${toolName}-${partIndex}`;
         const outputText = outputToText(part.output);
         const errorText = asString(part.errorText);
         const partState = asString(part.state);
@@ -212,8 +194,8 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
           flushGroup();
           const path = asString(toolInput.path);
           const ext = path.split(".").pop()?.toLowerCase();
-          pushStep({
-            id: `diff-${toolCallId}`,
+          steps.push({
+            id: `diff:${toolCallId}`,
             type: "diff",
             file: path,
             lang: ext || "txt",
@@ -226,8 +208,8 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
 
         if (toolName === "shell" || toolName === "bash") {
           flushGroup();
-          pushStep({
-            id: `terminal-${toolCallId}`,
+          steps.push({
+            id: `terminal:${toolCallId}`,
             type: "terminal",
             description: "Ran shell command",
             command: asString(toolInput.command),
@@ -241,29 +223,52 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
           pendingGroup.calls.push(call);
         } else {
           flushGroup();
-          pendingGroup = {
-            id: `tool-group-${category}-${message.id}-${partIndex}`,
-            category,
-            icon,
-            calls: [call],
-          };
+          pendingGroup = { id: `tool-group:${toolCallId}:${category}`, category, icon, calls: [call] };
         }
       }
     }
   }
 
   flushGroup();
-  const deduped: Step[] = [];
+  const byId = new Map<string, number>();
+  const stable: Step[] = [];
   for (const step of steps) {
+    const existingIndex = byId.get(step.id);
+    if (existingIndex === undefined) {
+      byId.set(step.id, stable.length);
+      stable.push(step);
+      continue;
+    }
+    const existing = stable[existingIndex];
+    if (existing.type === "context-group" && step.type === "context-group") {
+      const existingItems = new Set(existing.items.map((item) => item.id));
+      const merged = [...existing.items];
+      for (const item of step.items) {
+        if (!existingItems.has(item.id)) {
+          merged.push(item);
+        }
+      }
+      stable[existingIndex] = { ...existing, items: merged };
+      continue;
+    }
+    if (existing.type === "result" && step.type === "result") {
+      stable[existingIndex] = {
+        ...existing,
+        text: step.text || existing.text,
+        streaming: existing.streaming && !step.streaming ? false : step.streaming,
+      };
+      continue;
+    }
+    stable[existingIndex] = step;
+  }
+
+  const deduped: Step[] = [];
+  for (const step of stable) {
     if (step.type === "result" && deduped.length > 0) {
       const previous = deduped[deduped.length - 1];
-      const isStreamingReplay =
-        previous.type === "result" &&
-        previous.text === step.text &&
-        (Boolean(previous.streaming) || Boolean(step.streaming));
-      if (isStreamingReplay) {
-        // Preserve completion when replayed duplicate arrives after a streaming fragment.
-        if (previous.type === "result" && previous.streaming && !step.streaming) {
+      if (previous.type === "result" && previous.text === step.text) {
+        // Preserve completion if a replayed duplicate carries non-streaming state.
+        if (previous.streaming && !step.streaming) {
           previous.streaming = false;
         }
         continue;
