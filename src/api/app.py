@@ -9,7 +9,7 @@ import secrets as _secrets
 import sys
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
@@ -17,9 +17,9 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
-from api.agent import session_items_snapshot, signal_shutdown
+from api.agent import reap_stale_running_sessions, session_items_snapshot, signal_shutdown
 from api.mcp_server import mcp, set_pool, set_tool_manager
 from api.routers import admin, health, query, search, secrets, slack_events, threads
 from api.routers import agent as agent_router_mod
@@ -101,6 +101,22 @@ async def _watch_tools(pm: ToolManager) -> None:
             log.error("tool_auto_reload_failed", error=str(e))
 
 
+async def _run_stale_session_reaper(
+    interval_s: float = 120.0,
+    stale_after_s: int = 600,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            result = await asyncio.to_thread(reap_stale_running_sessions, stale_after_s)
+            if result.get("reaped"):
+                log.info("agent_session_reaper_reaped", **result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("agent_session_reaper_failed", error=str(e))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("connecting to database", url=settings.database_url.split("@")[-1])
@@ -113,10 +129,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _warm_tool_caches()
         _recover_agent_sessions()
         watcher_task = asyncio.create_task(_watch_tools(tool_manager))
+        reaper_task = asyncio.create_task(_run_stale_session_reaper())
         try:
             yield
         finally:
             watcher_task.cancel()
+            reaper_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher_task
+            with suppress(asyncio.CancelledError):
+                await reaper_task
     signal_shutdown()
     for _ in range(20):
         active = [s for _, s in session_items_snapshot() if s.get("state") == "working"]

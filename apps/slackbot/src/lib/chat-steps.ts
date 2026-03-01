@@ -164,5 +164,19 @@ export function stepsFromUiMessages(messages: UIMessage[]): Step[] {
   }
 
   flushGroup();
-  return steps;
+  const deduped: Step[] = [];
+  for (const step of steps) {
+    if (step.type === "result" && deduped.length > 0) {
+      const previous = deduped[deduped.length - 1];
+      if (previous.type === "result" && previous.text === step.text) {
+        // Preserve completion when replayed duplicate arrives after a streaming fragment.
+        if (previous.streaming && !step.streaming) {
+          previous.streaming = false;
+        }
+        continue;
+      }
+    }
+    deduped.push(step);
+  }
+  return deduped;
 }

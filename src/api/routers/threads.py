@@ -7,12 +7,13 @@ Historical/completed threads are read from Postgres.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from typing import Annotated, Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
-from starlette.responses import StreamingResponse
+from starlette.responses import RedirectResponse, StreamingResponse
 
 from api.agent import get_session_state, session_items_snapshot
 from api.deps import get_pool, verify_ui_or_api_key
@@ -22,6 +23,68 @@ router = APIRouter(
     tags=["threads"],
     dependencies=[Depends(verify_ui_or_api_key)],
 )
+
+
+def _raw_item_call_digest(item: dict[str, Any]) -> str:
+    """Build a stable digest for tool-call identity fallback."""
+    name = str(item.get("tool") or item.get("name") or item.get("tool_name") or item.get("type") or "tool")
+    payload = item.get("arguments") or item.get("input") or item.get("args")
+    stable_input: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        stable_input = payload
+    elif isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+            if isinstance(parsed, dict):
+                stable_input = parsed
+        except Exception:
+            stable_input = {}
+
+    if stable_input:
+        fingerprint_source = json.dumps({"name": name, "input": stable_input}, sort_keys=True, default=str)
+    else:
+        command = str(item.get("command") or "")
+        fingerprint_source = f"{name}:{command}"
+    return hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()[:12]
+
+
+def _raw_item_call_id(
+    item: dict[str, Any],
+    turn_id: int,
+    *,
+    event_type: str = "",
+    event_index: int = 0,
+    pending_ids: dict[tuple[int, str], list[str]] | None = None,
+    call_counters: dict[tuple[int, str], int] | None = None,
+) -> str:
+    for key in ("id", "tool_call_id", "toolCallId", "tool_use_id", "toolUseId", "call_id"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    digest = _raw_item_call_digest(item)
+    if pending_ids is None or call_counters is None:
+        return f"turn-{turn_id}-item-{digest}"
+
+    queue_key = (turn_id, digest)
+    if event_type == "item.started":
+        call_counters[queue_key] = call_counters.get(queue_key, 0) + 1
+        call_id = f"turn-{turn_id}-item-{digest}-{call_counters[queue_key]}"
+        pending_ids.setdefault(queue_key, []).append(call_id)
+        return call_id
+
+    if event_type in {"item.updated", "item.completed"}:
+        queued = pending_ids.get(queue_key)
+        if queued:
+            call_id = queued[0]
+            if event_type == "item.completed":
+                queued.pop(0)
+                if not queued:
+                    pending_ids.pop(queue_key, None)
+            return call_id
+
+    # No matching start event seen for this connection (e.g. live_only attach mid-run).
+    return f"turn-{turn_id}-item-{digest}-e{event_index}"
 
 
 def _build_participants_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -485,7 +548,11 @@ def _extract_usage_model(event: dict[str, Any]) -> str | None:
 
 
 def _ui_stream_chunks_for_event(
-    turn_id: int, event_index: int, event: dict[str, Any]
+    turn_id: int,
+    event_index: int,
+    event: dict[str, Any],
+    pending_tool_ids: dict[tuple[int, str], list[str]] | None = None,
+    tool_call_counters: dict[tuple[int, str], int] | None = None,
 ) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     event_type = event.get("type")
@@ -558,7 +625,7 @@ def _ui_stream_chunks_for_event(
                 "id": f"turn-{turn_id}-command-{event_index}",
                 "data": {
                     "command": event.get("command") or "",
-                    "output": event.get("aggregated_output") or "",
+                    "output": event.get("aggregated_output") or event.get("output") or "",
                     "exitCode": event.get("exit_code"),
                     "status": event.get("status"),
                 },
@@ -575,13 +642,68 @@ def _ui_stream_chunks_for_event(
             chunks.append({"type": "text-start", "id": text_id})
             chunks.append({"type": "text-delta", "id": text_id, "delta": text})
             chunks.append({"type": "text-end", "id": text_id})
-    elif event_type == "item.completed":
-        text = str((event.get("item") or {}).get("text") or "")
-        if text:
-            text_id = f"turn-{turn_id}-item-result-{event_index}"
-            chunks.append({"type": "text-start", "id": text_id})
-            chunks.append({"type": "text-delta", "id": text_id, "delta": text})
-            chunks.append({"type": "text-end", "id": text_id})
+    elif event_type in {"item.started", "item.updated", "item.completed"}:
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        item_type = str(item.get("type") or "")
+
+        if item_type in {"mcp_tool_call", "tool_call", "function_call", "custom_tool_call"}:
+            item_id = _raw_item_call_id(
+                item,
+                turn_id,
+                event_type=str(event_type),
+                event_index=event_index,
+                pending_ids=pending_tool_ids,
+                call_counters=tool_call_counters,
+            )
+            tool_name = str(item.get("tool") or item.get("name") or item.get("tool_name") or "tool")
+            tool_input = item.get("arguments") or item.get("input") or item.get("args") or {}
+            if event_type == "item.started":
+                chunks.append(
+                    {
+                        "type": "tool-input-available",
+                        "toolCallId": item_id,
+                        "toolName": tool_name,
+                        "input": tool_input if isinstance(tool_input, dict) else {},
+                    }
+                )
+            elif event_type == "item.completed":
+                output = item.get("result")
+                if output is None and item.get("error") is not None:
+                    output = item.get("error")
+                chunks.append(
+                    {
+                        "type": "tool-output-available",
+                        "toolCallId": item_id,
+                        "output": output,
+                    }
+                )
+        elif item_type == "command_execution" and event_type == "item.completed":
+            chunks.append(
+                {
+                    "type": "data-shell-command",
+                    "id": f"turn-{turn_id}-item-command-{event_index}",
+                    "data": {
+                        "command": item.get("command") or "",
+                        "output": item.get("aggregated_output") or item.get("output") or "",
+                        "exitCode": item.get("exit_code"),
+                        "status": item.get("status"),
+                    },
+                }
+            )
+        elif item_type == "reasoning" and event_type in {"item.updated", "item.completed"}:
+            text = str(item.get("text") or item.get("thinking") or "")
+            if text:
+                reasoning_id = f"turn-{turn_id}-item-reasoning-{event_index}"
+                chunks.append({"type": "reasoning-start", "id": reasoning_id})
+                chunks.append({"type": "reasoning-delta", "id": reasoning_id, "delta": text})
+                chunks.append({"type": "reasoning-end", "id": reasoning_id})
+        elif event_type == "item.completed":
+            text = str(item.get("text") or "")
+            if text:
+                text_id = f"turn-{turn_id}-item-result-{event_index}"
+                chunks.append({"type": "text-start", "id": text_id})
+                chunks.append({"type": "text-delta", "id": text_id, "delta": text})
+                chunks.append({"type": "text-end", "id": text_id})
 
     return chunks
 
@@ -615,6 +737,8 @@ async def stream_thread_ui(
         usage_model: str | None = None
         initialized_live_cursor = False
         turns_with_stream_chunks: set[int] = set()
+        pending_tool_ids: dict[tuple[int, str], list[str]] = {}
+        tool_call_counters: dict[tuple[int, str], int] = {}
 
         while True:
             if await request.is_disconnected():
@@ -698,7 +822,13 @@ async def stream_thread_ui(
                                         "output_tokens": previous["output_tokens"]
                                         + explicit_usage["output_tokens"],
                                     }
-                        chunks = _ui_stream_chunks_for_event(turn_id, index, event)
+                        chunks = _ui_stream_chunks_for_event(
+                            turn_id,
+                            index,
+                            event,
+                            pending_tool_ids,
+                            tool_call_counters,
+                        )
                         if not chunks:
                             continue
                         turn_had_chunks = True
@@ -773,4 +903,18 @@ async def stream_thread_ui(
             "X-Accel-Buffering": "no",
             "x-vercel-ai-ui-message-stream": "v1",
         },
+    )
+
+
+@router.get("/stream", include_in_schema=False)
+async def stream_thread_redirect(request: Request) -> RedirectResponse:
+    """Legacy alias for clients still using /stream."""
+    target = "/api/threads/stream-ui"
+    query = request.url.query
+    if query:
+        target = f"{target}?{query}"
+    return RedirectResponse(
+        url=target,
+        status_code=307,
+        headers={"Cache-Control": "no-store, no-cache, max-age=0"},
     )

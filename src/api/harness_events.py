@@ -25,6 +25,18 @@ def _as_text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _parse_dictish(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def _stable_tool_call_id(name: str, tool_input: Any) -> str:
     payload = {"name": name or "tool", "input": tool_input if isinstance(tool_input, dict) else {}}
     digest = hashlib.sha1(
@@ -91,7 +103,14 @@ def _normalize_amp_like_event(event: dict[str, Any]) -> list[dict[str, Any]]:
             return [{"type": "tool", "content": tool_results}]
         return []
 
-    if event_type in {"assistant", "reasoning", "tool", "command_execution", "file_change", "result"}:
+    if event_type in {
+        "assistant",
+        "reasoning",
+        "tool",
+        "command_execution",
+        "file_change",
+        "result",
+    }:
         return [event]
 
     if event_type == "error":
@@ -127,6 +146,7 @@ def _normalize_amp_like_event(event: dict[str, Any]) -> list[dict[str, Any]]:
 def _codex_tool_name(item: dict[str, Any]) -> str:
     return (
         _as_text(item.get("tool"))
+        or _as_text(item.get("toolName"))
         or _as_text(item.get("name"))
         or _as_text(item.get("tool_name"))
         or "tool"
@@ -135,8 +155,8 @@ def _codex_tool_name(item: dict[str, Any]) -> str:
 
 def _codex_tool_input(item: dict[str, Any]) -> dict[str, Any]:
     for key in ("arguments", "input", "args"):
-        value = item.get(key)
-        if isinstance(value, dict):
+        value = _parse_dictish(item.get(key))
+        if value:
             return value
     return {}
 
@@ -145,7 +165,10 @@ def _codex_tool_call_id(item: dict[str, Any]) -> str:
     direct_id = (
         _as_text(item.get("id"))
         or _as_text(item.get("tool_call_id"))
+        or _as_text(item.get("tool_use_id"))
+        or _as_text(item.get("toolUseId"))
         or _as_text(item.get("toolCallId"))
+        or _as_text(item.get("call_id"))
     )
     if direct_id:
         return direct_id
@@ -159,11 +182,11 @@ def _normalize_codex_item(item: dict[str, Any], phase: str) -> list[dict[str, An
         text = _as_text(item.get("text"))
         return [_assistant_text_event(text)] if text else []
 
-    if item_type == "reasoning" and phase == "completed":
-        text = _as_text(item.get("text"))
+    if item_type == "reasoning" and phase in {"updated", "completed"}:
+        text = _as_text(item.get("text")) or _as_text(item.get("thinking"))
         return [{"type": "reasoning", "text": text}] if text else []
 
-    if item_type == "mcp_tool_call":
+    if item_type in {"mcp_tool_call", "tool_call", "function_call", "custom_tool_call"}:
         tool_id = _codex_tool_call_id(item)
         tool_name = _codex_tool_name(item)
         if phase == "started":
@@ -251,7 +274,9 @@ def _normalize_pi_message_content(message: dict[str, Any]) -> list[dict[str, Any
                 normalized.append({"type": "reasoning", "text": text})
         elif block_type in {"tool_call", "toolcall"}:
             tool_call = _as_dict(block_dict.get("toolCall")) or block_dict
-            tool_name = _as_text(tool_call.get("name")) or _as_text(block_dict.get("name")) or "tool"
+            tool_name = (
+                _as_text(tool_call.get("name")) or _as_text(block_dict.get("name")) or "tool"
+            )
             tool_input = _as_dict(tool_call.get("input")) or _as_dict(block_dict.get("input"))
             tool_id = _as_text(tool_call.get("id")) or _as_text(block_dict.get("id"))
             normalized.append(_assistant_tool_use_event(tool_id, tool_name, tool_input))
@@ -263,7 +288,9 @@ def _normalize_pi_event(event: dict[str, Any]) -> list[dict[str, Any]]:
 
     if event_type == "session":
         session_id = _as_text(event.get("id"))
-        return [{"type": "system", "subtype": "init", "session_id": session_id}] if session_id else []
+        return (
+            [{"type": "system", "subtype": "init", "session_id": session_id}] if session_id else []
+        )
 
     if event_type == "tool_execution_start":
         tool_name = _as_text(event.get("toolName")) or "tool"
@@ -293,7 +320,9 @@ def _normalize_pi_event(event: dict[str, Any]) -> list[dict[str, Any]]:
         messages = _as_list(event.get("messages"))
         if not messages:
             return []
-        assistant_messages = [m for m in messages if _as_text(_as_dict(m).get("role")) == "assistant"]
+        assistant_messages = [
+            m for m in messages if _as_text(_as_dict(m).get("role")) == "assistant"
+        ]
         if not assistant_messages:
             return []
         last_assistant = _as_dict(assistant_messages[-1])
@@ -311,7 +340,11 @@ def normalize_harness_event(harness: str, event: dict[str, Any]) -> list[dict[st
     normalized_harness = (harness or "").strip().lower()
     if not normalized_harness:
         event_type = _as_text(event.get("type"))
-        if event_type.startswith("item.") or event_type.startswith("turn.") or event_type == "thread.started":
+        if (
+            event_type.startswith("item.")
+            or event_type.startswith("turn.")
+            or event_type == "thread.started"
+        ):
             normalized_harness = "codex"
         elif event_type in {
             "session",
