@@ -903,11 +903,17 @@ def _container_env() -> list[str]:
 
     firewall_host = os.getenv("FIREWALL_HOST", os.getenv("MITM_HOST", ""))
     if firewall_host:
-        # Dummy values — the firewall proxy injects real credentials at the HTTP layer.
-        _ph = "PROXY_MANAGED"
-        for _k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY",
-                    "AMP_API_KEY", "GITHUB_TOKEN"):
-            env.append(f"{_k}={_ph}")
+        # Auto-stub every secret-like env var so harness CLIs initialise
+        # without complaining.  The firewall proxy injects real credentials
+        # at the HTTP layer — these stubs never reach upstream APIs.
+        # Stubs match the original value length (min 50) so basic CLI
+        # length/format checks pass.
+        _skip = {"API_SECRET_KEY"}  # internal, already forwarded above
+        for _k, _v in os.environ.items():
+            if not _v or _k in _skip:
+                continue
+            if _k.endswith(("_API_KEY", "_TOKEN", "_SECRET_KEY", "_SECRET")):
+                env.append(f"{_k}={'0' * max(len(_v), 50)}")
 
         env.extend([
             f"HTTPS_PROXY=http://{firewall_host}:8080",
