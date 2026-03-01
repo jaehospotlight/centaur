@@ -10,6 +10,34 @@ import { StepGroup } from "@/components/thread/step-group";
 import { TerminalCard } from "@/components/thread/terminal-card";
 import { ThinkingDivider } from "@/components/thread/thinking-divider";
 
+function stepKey(step: Step, index: number): string {
+  if (step.type === "tool-group") {
+    return `tool-group:${step.category}:${step.calls[0]?.id ?? index}`;
+  }
+  if (step.type === "result") {
+    return `result:${step.text.slice(0, 48)}:${index}`;
+  }
+  if (step.type === "thinking") {
+    return `thinking:${step.text.slice(0, 40)}:${index}`;
+  }
+  if (step.type === "terminal") {
+    return `terminal:${step.command.slice(0, 40)}:${index}`;
+  }
+  if (step.type === "diff") {
+    return `diff:${step.file}:${index}`;
+  }
+  if (step.type === "phase") {
+    return `phase:${step.phase}:${index}`;
+  }
+  if (step.type === "file-changes") {
+    return `file-changes:${step.changes[0]?.path ?? "none"}:${index}`;
+  }
+  if (step.type === "error") {
+    return `error:${step.message.slice(0, 40)}:${index}`;
+  }
+  return `step:${index}`;
+}
+
 function renderStep(step: Step, key: string): React.ReactNode {
   if (step.type === "phase") {
     return (
@@ -125,7 +153,7 @@ export function ActivityFeed({ steps, state }: { steps: Step[]; state?: string }
           {state === "idle" ? "No events yet. This thread is idle." : "Waiting for events…"}
         </div>
       ) : (
-        steps.map((step, index) => renderStep(step, `live-${index}`))
+        steps.map((step, index) => renderStep(step, stepKey(step, index)))
       )}
       <div ref={sentinelRef} className="h-px" />
       </div>

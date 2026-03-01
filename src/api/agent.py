@@ -43,6 +43,10 @@ _SLACK_POST_TIMEOUT_S = 20.0
 _MAX_SLACK_MESSAGE_CHARS = 3800
 _SLACK_TRUNCATED_SUFFIX = "\n\n... (truncated)"
 _SLACK_POST_RETRY_ATTEMPTS = 3
+_THREAD_NAME_MAX_CHARS = 60
+_THREAD_CONTEXT_DELIMITER = "---"
+_SLACK_MENTION_RE = re.compile(r"<@[^>]+>")
+_PLAIN_MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9._-]+")
 
 # In-memory session registry: slack_thread_key → session dict
 _sessions: dict[str, dict[str, Any]] = {}
@@ -95,6 +99,67 @@ def get_execute_lock(thread_key: str) -> threading.Lock:
         return lock
 
 
+def _session_has_active_turn(session: dict[str, Any]) -> bool:
+    turns = session.get("turns")
+    if not isinstance(turns, list):
+        return False
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        if turn.get("finished_at") is None:
+            return True
+    return False
+
+
+def reap_stale_running_sessions(
+    stale_after_s: int = 600,
+    now_ts: float | None = None,
+) -> dict[str, Any]:
+    """Mark stale `running` sessions as idle when no turn is active."""
+    checked = 0
+    reaped: list[str] = []
+    current_ts = now_ts if now_ts is not None else time.time()
+
+    for key, _ in session_items_snapshot():
+        execute_lock = get_execute_lock(key)
+        if not execute_lock.acquire(blocking=False):
+            continue
+        try:
+            checked += 1
+            session_to_persist: dict[str, Any] | None = None
+            with _sessions_lock:
+                session = _sessions.get(key)
+                if not session:
+                    continue
+                if session.get("state") != "running":
+                    continue
+                if _session_has_active_turn(session):
+                    continue
+                try:
+                    last_activity = float(session.get("last_activity"))
+                except (TypeError, ValueError):
+                    continue
+                if current_ts - last_activity <= stale_after_s:
+                    continue
+                session["state"] = "idle"
+                session["last_activity"] = current_ts
+                session_to_persist = dict(session)
+            if session_to_persist is not None:
+                _persist_session(session_to_persist, key)
+                reaped.append(key)
+        finally:
+            execute_lock.release()
+
+    if reaped:
+        log.info(
+            "stale_running_sessions_reaped",
+            count=len(reaped),
+            thread_keys=reaped,
+            stale_after_s=stale_after_s,
+        )
+    return {"checked": checked, "reaped": len(reaped), "thread_keys": reaped}
+
+
 def _normalize_thread_key(thread_key: str) -> str:
     raw = thread_key.strip()
     parts = raw.split(":")
@@ -143,6 +208,26 @@ def _truncate_slack_message(text: str) -> str:
     if budget <= 0:
         return _SLACK_TRUNCATED_SUFFIX[:_MAX_SLACK_MESSAGE_CHARS]
     return safe_text[:budget].rstrip() + _SLACK_TRUNCATED_SUFFIX
+
+
+def _thread_name_from_user_message(raw_message: str) -> str | None:
+    text = str(raw_message or "").strip()
+    if not text:
+        return None
+
+    if _THREAD_CONTEXT_DELIMITER in text:
+        text = text.split(_THREAD_CONTEXT_DELIMITER, 1)[1]
+
+    text = _SLACK_MENTION_RE.sub(" ", text)
+    text = _PLAIN_MENTION_RE.sub(" ", text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    first_line = re.sub(r"\s+", " ", lines[0]).strip()
+    if not first_line:
+        return None
+    return first_line[:_THREAD_NAME_MAX_CHARS].rstrip() or None
 
 
 def _slack_retry_after_s(response: httpx.Response) -> float:
@@ -911,9 +996,7 @@ class AgentClient:
                 file_paths = _download_files_to_container(container, files)
                 if file_paths:
                     listing = "\n".join(f"- {p}" for p in file_paths)
-                    message = (
-                        f"{message}\n\nAttached files (already downloaded to the container):\n{listing}"
-                    )
+                    message = f"{message}\n\nAttached files (already downloaded to the container):\n{listing}"
 
             cmd = _build_command(session["harness"], message, session["agent_thread_id"])
 
@@ -921,6 +1004,7 @@ class AgentClient:
             with _sessions_lock:
                 session["state"] = "working"
                 session["last_activity"] = started_ts
+            _persist_session(session, slack_thread_key)
             log.info(
                 "exec_start",
                 request_id=rid,
@@ -1013,15 +1097,34 @@ class AgentClient:
                             elapsed = round(time.monotonic() - started, 3)
                             try:
                                 evt = json.loads(stripped)
-                                normalized_events = normalize_harness_event(session["harness"], evt)
-                                for normalized in normalized_events:
-                                    normalized["received_at"] = now
-                                    normalized["elapsed_s"] = elapsed
-                                    live_turn["events"].append(normalized)
-                                    _emit(normalized)
+                                if isinstance(evt, dict):
+                                    normalized_events = normalize_harness_event(
+                                        session["harness"], evt
+                                    )
+                                    if not normalized_events:
+                                        normalized_events = [evt]
+                                    for normalized in normalized_events:
+                                        normalized["received_at"] = now
+                                        normalized["elapsed_s"] = elapsed
+                                        live_turn["events"].append(normalized)
+                                        _emit(normalized)
+                                else:
+                                    live_turn["events"].append(
+                                        {
+                                            "type": "raw",
+                                            "text": stripped,
+                                            "received_at": now,
+                                            "elapsed_s": elapsed,
+                                        }
+                                    )
                             except json.JSONDecodeError:
                                 live_turn["events"].append(
-                                    {"type": "raw", "text": stripped, "received_at": now, "elapsed_s": elapsed}
+                                    {
+                                        "type": "raw",
+                                        "text": stripped,
+                                        "received_at": now,
+                                        "elapsed_s": elapsed,
+                                    }
                                 )
                 if stderr_chunk:
                     err_buf += stderr_decoder.decode(stderr_chunk)
@@ -1038,12 +1141,24 @@ class AgentClient:
                 elapsed = round(time.monotonic() - started, 3)
                 try:
                     evt = json.loads(stripped)
-                    normalized_events = normalize_harness_event(session["harness"], evt)
-                    for normalized in normalized_events:
-                        normalized["received_at"] = now
-                        normalized["elapsed_s"] = elapsed
-                        live_turn["events"].append(normalized)
-                        _emit(normalized)
+                    if isinstance(evt, dict):
+                        normalized_events = normalize_harness_event(session["harness"], evt)
+                        if not normalized_events:
+                            normalized_events = [evt]
+                        for normalized in normalized_events:
+                            normalized["received_at"] = now
+                            normalized["elapsed_s"] = elapsed
+                            live_turn["events"].append(normalized)
+                            _emit(normalized)
+                    else:
+                        live_turn["events"].append(
+                            {
+                                "type": "raw",
+                                "text": stripped,
+                                "received_at": now,
+                                "elapsed_s": elapsed,
+                            }
+                        )
                 except json.JSONDecodeError:
                     live_turn["events"].append(
                         {"type": "raw", "text": stripped, "received_at": now, "elapsed_s": elapsed}
@@ -1088,6 +1203,12 @@ class AgentClient:
             _persist_turn(slack_thread_key, live_turn)
 
             with _sessions_lock:
+                if live_turn["turn_id"] == 1 and not str(session.get("thread_name") or "").strip():
+                    suggested_name = _thread_name_from_user_message(
+                        str(live_turn.get("user_message") or "")
+                    )
+                    if suggested_name:
+                        session["thread_name"] = suggested_name
                 session["state"] = "idle"
                 session["last_activity"] = time.time()
             _persist_session(session, slack_thread_key)
@@ -1375,7 +1496,11 @@ class AgentClient:
             _pg_write(
                 "UPDATE agent_turns SET finished_at = now(), result = %s, exit_code = -1 "
                 "WHERE slack_thread_key = %s AND turn_id = %s AND finished_at IS NULL",
-                ("⚠️ Interrupted by API restart — retrying automatically.", key, interrupted_turn["turn_id"]),
+                (
+                    "⚠️ Interrupted by API restart — retrying automatically.",
+                    key,
+                    interrupted_turn["turn_id"],
+                ),
             )
             # Also update the in-memory turn if present
             for t in session.get("turns", []):
@@ -1385,7 +1510,12 @@ class AgentClient:
                     t["exit_code"] = -1
 
             harness = session.get("harness", "amp")
-            log.info("session_resume_scheduled", thread=key, harness=harness, message_len=len(user_message))
+            log.info(
+                "session_resume_scheduled",
+                thread=key,
+                harness=harness,
+                message_len=len(user_message),
+            )
 
             def _resume(thread_key: str, msg: str, h: str) -> None:
                 try:

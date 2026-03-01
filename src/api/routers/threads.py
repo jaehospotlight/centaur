@@ -7,12 +7,13 @@ Historical/completed threads are read from Postgres.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from typing import Annotated, Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
-from starlette.responses import StreamingResponse
+from starlette.responses import RedirectResponse, StreamingResponse
 
 from api.agent import get_session_state, session_items_snapshot
 from api.deps import get_pool, verify_ui_or_api_key
@@ -22,6 +23,39 @@ router = APIRouter(
     tags=["threads"],
     dependencies=[Depends(verify_ui_or_api_key)],
 )
+
+
+def _raw_item_call_id(item: dict[str, Any], turn_id: int) -> str:
+    for key in ("id", "tool_call_id", "toolCallId", "tool_use_id", "toolUseId", "call_id"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    name = str(
+        item.get("tool") or item.get("name") or item.get("tool_name") or item.get("type") or "tool"
+    )
+    payload = item.get("arguments") or item.get("input") or item.get("args")
+    stable_input: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        stable_input = payload
+    elif isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+            if isinstance(parsed, dict):
+                stable_input = parsed
+        except Exception:
+            stable_input = {}
+
+    if stable_input:
+        fingerprint_source = json.dumps(
+            {"name": name, "input": stable_input}, sort_keys=True, default=str
+        )
+    else:
+        command = str(item.get("command") or "")
+        fingerprint_source = f"{name}:{command}"
+
+    digest = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()[:12]
+    return f"turn-{turn_id}-item-{digest}"
 
 
 def _build_participants_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -558,7 +592,7 @@ def _ui_stream_chunks_for_event(
                 "id": f"turn-{turn_id}-command-{event_index}",
                 "data": {
                     "command": event.get("command") or "",
-                    "output": event.get("aggregated_output") or "",
+                    "output": event.get("aggregated_output") or event.get("output") or "",
                     "exitCode": event.get("exit_code"),
                     "status": event.get("status"),
                 },
@@ -575,13 +609,61 @@ def _ui_stream_chunks_for_event(
             chunks.append({"type": "text-start", "id": text_id})
             chunks.append({"type": "text-delta", "id": text_id, "delta": text})
             chunks.append({"type": "text-end", "id": text_id})
-    elif event_type == "item.completed":
-        text = str((event.get("item") or {}).get("text") or "")
-        if text:
-            text_id = f"turn-{turn_id}-item-result-{event_index}"
-            chunks.append({"type": "text-start", "id": text_id})
-            chunks.append({"type": "text-delta", "id": text_id, "delta": text})
-            chunks.append({"type": "text-end", "id": text_id})
+    elif event_type in {"item.started", "item.updated", "item.completed"}:
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        item_type = str(item.get("type") or "")
+        item_id = _raw_item_call_id(item, turn_id)
+
+        if item_type in {"mcp_tool_call", "tool_call", "function_call", "custom_tool_call"}:
+            tool_name = str(item.get("tool") or item.get("name") or item.get("tool_name") or "tool")
+            tool_input = item.get("arguments") or item.get("input") or item.get("args") or {}
+            if event_type == "item.started":
+                chunks.append(
+                    {
+                        "type": "tool-input-available",
+                        "toolCallId": item_id,
+                        "toolName": tool_name,
+                        "input": tool_input if isinstance(tool_input, dict) else {},
+                    }
+                )
+            else:
+                output = item.get("result")
+                if output is None and item.get("error") is not None:
+                    output = item.get("error")
+                chunks.append(
+                    {
+                        "type": "tool-output-available",
+                        "toolCallId": item_id,
+                        "output": output,
+                    }
+                )
+        elif item_type == "command_execution" and event_type == "item.completed":
+            chunks.append(
+                {
+                    "type": "data-shell-command",
+                    "id": f"turn-{turn_id}-item-command-{event_index}",
+                    "data": {
+                        "command": item.get("command") or "",
+                        "output": item.get("aggregated_output") or item.get("output") or "",
+                        "exitCode": item.get("exit_code"),
+                        "status": item.get("status"),
+                    },
+                }
+            )
+        elif item_type == "reasoning" and event_type in {"item.updated", "item.completed"}:
+            text = str(item.get("text") or item.get("thinking") or "")
+            if text:
+                reasoning_id = f"turn-{turn_id}-item-reasoning-{event_index}"
+                chunks.append({"type": "reasoning-start", "id": reasoning_id})
+                chunks.append({"type": "reasoning-delta", "id": reasoning_id, "delta": text})
+                chunks.append({"type": "reasoning-end", "id": reasoning_id})
+        elif event_type == "item.completed":
+            text = str(item.get("text") or "")
+            if text:
+                text_id = f"turn-{turn_id}-item-result-{event_index}"
+                chunks.append({"type": "text-start", "id": text_id})
+                chunks.append({"type": "text-delta", "id": text_id, "delta": text})
+                chunks.append({"type": "text-end", "id": text_id})
 
     return chunks
 
@@ -773,4 +855,18 @@ async def stream_thread_ui(
             "X-Accel-Buffering": "no",
             "x-vercel-ai-ui-message-stream": "v1",
         },
+    )
+
+
+@router.get("/stream", include_in_schema=False)
+async def stream_thread_redirect(request: Request) -> RedirectResponse:
+    """Legacy alias for clients still using /stream."""
+    target = "/api/threads/stream-ui"
+    query = request.url.query
+    if query:
+        target = f"{target}?{query}"
+    return RedirectResponse(
+        url=target,
+        status_code=307,
+        headers={"Cache-Control": "no-store, no-cache, max-age=0"},
     )
