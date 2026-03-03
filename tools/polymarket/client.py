@@ -91,14 +91,35 @@ class PolymarketClient:
         }
         return self._request(f"{self.gamma_url}/public-search", params)
 
-    def get_price(self, token_id: str) -> dict:
-        """Get current price for a token from CLOB."""
-        return self._request(f"{self.clob_url}/price", {"token_id": token_id})
+    def get_price(self, token_id: str, side: str = "buy") -> dict:
+        """Get current price for a token from CLOB.
 
-    def get_prices(self, token_ids: list[str]) -> list[dict]:
-        """Get prices for multiple tokens."""
-        params = {"token_ids": ",".join(token_ids)}
-        return self._request(f"{self.clob_url}/prices", params)
+        Args:
+            token_id: CLOB token ID
+            side: Order side ("buy" or "sell")
+        """
+        return self._request(
+            f"{self.clob_url}/price", {"token_id": token_id, "side": side}
+        )
+
+    def get_prices(self, token_ids: list[str], side: str = "buy") -> list[dict]:
+        """Get prices for multiple tokens.
+
+        Args:
+            token_ids: List of CLOB token IDs
+            side: Order side ("buy" or "sell")
+        """
+        params = [("token_ids", tid) for tid in token_ids]
+        params.append(("side", side))
+        url = f"{self.clob_url}/prices"
+        try:
+            response = self.client.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"API error: {e.response.status_code} - {e.response.text}")
+        except httpx.RequestError as e:
+            raise RuntimeError(f"Request failed: {e}")
 
     def get_book(self, token_id: str) -> dict:
         """Get orderbook for a token."""

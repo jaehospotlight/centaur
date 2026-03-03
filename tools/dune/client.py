@@ -9,7 +9,7 @@ class DuneClient:
     """Dune Analytics API client."""
 
     def __init__(self, api_key: str | None = None):
-        self._api_key = api_key or secret("DUNE_API_KEY", "")
+        self._api_key = api_key or ""
         if not self._api_key:
             raise RuntimeError(
                 "DUNE_API_KEY not set.\nGet your API key at https://dune.com/settings/api"
@@ -94,16 +94,29 @@ class DuneClient:
         """
         return self._request("GET", f"/query/{query_id}")
 
-    def raw_request(self, method: str, endpoint: str, **kwargs) -> dict:
+    def raw_request(
+        self,
+        method: str,
+        endpoint: str,
+        json: dict | None = None,
+        params: dict | None = None,
+    ) -> dict:
         """Make a raw API call.
 
         Args:
             method: HTTP method
             endpoint: API endpoint path
+            json: Optional JSON body
+            params: Optional query parameters
 
         Returns:
             JSON response
         """
+        kwargs: dict = {}
+        if json is not None:
+            kwargs["json"] = json
+        if params is not None:
+            kwargs["params"] = params
         return self._request(method, endpoint, **kwargs)
 
     def close(self):

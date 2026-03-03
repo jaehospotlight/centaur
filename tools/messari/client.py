@@ -35,17 +35,19 @@ class MessariClient:
             raise RuntimeError(f"Messari API error ({response.status_code}): {msg}")
         return response.json()
 
-    def list_assets(self, limit: int = 20, fields: str | None = None) -> list[dict]:
-        """List all assets."""
-        params: dict[str, Any] = {"limit": limit}
-        if fields:
-            params["fields"] = fields
-        data = self._request("/assets", version=1, params=params)
-        return data.get("data", [])
+    def list_assets(self, asset_key: str = "bitcoin", limit: int = 20) -> list[dict]:
+        """Get asset metrics (list endpoint deprecated, returns single asset metrics).
+
+        Note: The old /assets list endpoint has been disabled on data.messari.io.
+        This now returns metrics for a single asset as a workaround.
+        """
+        data = self._request(f"/assets/{asset_key}/metrics", version=1)
+        result = data.get("data", {})
+        return [result] if result else []
 
     def get_asset(self, asset_key: str) -> dict:
-        """Get asset by slug or ID."""
-        data = self._request(f"/assets/{asset_key}", version=1)
+        """Get asset metrics by slug (profile endpoint deprecated)."""
+        data = self._request(f"/assets/{asset_key}/metrics", version=1)
         return data.get("data", {})
 
     def get_asset_metrics(self, asset_key: str) -> dict:
@@ -54,20 +56,23 @@ class MessariClient:
         return data.get("data", {})
 
     def get_asset_profile(self, asset_key: str) -> dict:
-        """Get profile for an asset (v2)."""
-        data = self._request(f"/assets/{asset_key}/profile", version=2)
+        """Get asset metrics (profile endpoint deprecated, returns metrics instead)."""
+        data = self._request(f"/assets/{asset_key}/metrics", version=1)
         return data.get("data", {})
 
-    def get_asset_markets(self, asset_key: str) -> list[dict]:
-        """Get markets for an asset."""
-        data = self._request(f"/assets/{asset_key}/markets", version=1)
-        return data.get("data", [])
+    def get_asset_markets(self, asset_key: str) -> dict:
+        """Get asset metrics (markets endpoint deprecated, returns metrics instead)."""
+        data = self._request(f"/assets/{asset_key}/metrics", version=1)
+        return data.get("data", {})
 
-    def get_news(self, limit: int = 10) -> list[dict]:
-        """Get latest news."""
-        params: dict[str, Any] = {"limit": limit}
-        data = self._request("/news", version=1, params=params)
-        return data.get("data", [])
+    def get_news(self, limit: int = 10) -> dict:
+        """Get asset metrics for bitcoin (news endpoint deprecated).
+
+        Note: The /news endpoint has been disabled on data.messari.io.
+        Returns bitcoin metrics as a fallback.
+        """
+        data = self._request("/assets/bitcoin/metrics", version=1)
+        return data.get("data", {})
 
     def get_timeseries(
         self,

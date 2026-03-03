@@ -40,7 +40,7 @@ class KarmaClient:
         Returns:
             List of DAO data
         """
-        return self._request("/daos")
+        return self._request("/dao", params={"pageSize": 100})
 
     def get_delegates(
         self,
@@ -52,7 +52,7 @@ class KarmaClient:
         """Get delegates for a DAO.
 
         Args:
-            dao_name: DAO name (e.g., "aave", "uniswap", "optimism")
+            dao_name: DAO name (e.g., "ens", "uniswap", "optimism")
             limit: Maximum number of delegates to return
             offset: Offset for pagination
             order_by: Sort field (e.g., "score", "delegatedVotes")
@@ -61,21 +61,29 @@ class KarmaClient:
             List of delegate dicts
         """
         return self._request(
-            f"/dao/{dao_name}/delegates",
-            params={"pageSize": limit, "offset": offset, "order": order_by},
+            "/dao/delegates",
+            params={
+                "name": dao_name,
+                "pageSize": limit,
+                "offset": offset,
+                "order": order_by,
+            },
         )
 
     def get_delegate(self, dao_name: str, address: str) -> dict:
         """Get a specific delegate's profile and stats.
 
         Args:
-            dao_name: DAO name (e.g., "aave", "uniswap")
+            dao_name: DAO name (e.g., "ens", "uniswap")
             address: Delegate's Ethereum address
 
         Returns:
             Delegate profile dict
         """
-        return self._request(f"/dao/{dao_name}/delegates/{address}")
+        return self._request(
+            "/dao/find-delegate",
+            params={"dao": dao_name, "user": address},
+        )
 
     def get_delegate_activity(self, dao_name: str, address: str) -> list[dict]:
         """Get voting and proposal activity for a delegate.
@@ -87,18 +95,21 @@ class KarmaClient:
         Returns:
             List of activity entries
         """
-        return self._request(f"/dao/{dao_name}/delegates/{address}/activity")
+        return self._request(
+            "/dao/find-delegate",
+            params={"dao": dao_name, "user": address},
+        )
 
     def get_dao_stats(self, dao_name: str) -> dict:
         """Get governance statistics for a DAO.
 
         Args:
-            dao_name: DAO name (e.g., "aave", "uniswap")
+            dao_name: DAO name (e.g., "ens", "uniswap")
 
         Returns:
-            DAO governance stats
+            DAO governance stats (delegate count and info returned with delegate listing)
         """
-        return self._request(f"/dao/{dao_name}/stats")
+        return self._request("/dao/delegates", params={"name": dao_name, "pageSize": 1})
 
     def close(self):
         """Close the HTTP client."""

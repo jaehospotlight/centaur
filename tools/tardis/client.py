@@ -50,14 +50,25 @@ class TardisClient:
         """Get exchange details including available symbols and channels."""
         return self._request(f"/exchanges/{exchange}")
 
-    def get_instruments(self, exchange: str, filter_obj: dict | None = None) -> list[dict]:
-        """Get instruments for an exchange with optional filter."""
+    def get_instruments(
+        self, exchange: str, filter_obj: dict | None = None, limit: int | None = None
+    ) -> list[dict]:
+        """Get instruments for an exchange with optional filter.
+
+        Args:
+            exchange: Exchange name (e.g., "binance", "deribit")
+            filter_obj: Optional filter dict
+            limit: Optional max number of instruments to return
+        """
         params = {}
         if filter_obj:
             import json
 
             params["filter"] = json.dumps(filter_obj)
-        return self._request(f"/instruments/{exchange}", params=params if params else None)
+        result = self._request(f"/instruments/{exchange}", params=params if params else None)
+        if limit and isinstance(result, list):
+            return result[:limit]
+        return result
 
     def close(self):
         if self._client:

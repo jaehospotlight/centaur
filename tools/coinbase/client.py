@@ -3,13 +3,25 @@
 import base64
 import hashlib
 import hmac
-import os
 import time
 from typing import Any
 
 import httpx
 
 BASE_URL = "https://api.prime.coinbase.com/v1"
+
+
+def _clean_secret(value: str | None) -> str | None:
+    """Clean a secret value, stripping whitespace and taking only the first line.
+
+    The 1Password secret manager may return multi-line blobs when credentials
+    are stored as notes or multi-section items. This ensures we only use the
+    first non-empty line and never leak additional credential data in headers.
+    """
+    if not value:
+        return value
+    first_line = value.strip().split("\n")[0].strip()
+    return first_line if first_line else None
 
 
 class CoinbasePrimeClient:
@@ -21,10 +33,10 @@ class CoinbasePrimeClient:
         passphrase: str | None = None,
         portfolio_id: str | None = None,
     ):
-        self._api_key = api_key or secret("COINBASE_API_KEY", "")
-        self._api_secret = api_secret or secret("COINBASE_API_SECRET", "")
-        self._passphrase = passphrase or secret("COINBASE_API_PASSPHRASE", "")
-        self._portfolio_id = portfolio_id or secret("COINBASE_PORTFOLIO_ID", "") or ""
+        self._api_key = _clean_secret(api_key) or ""
+        self._api_secret = _clean_secret(api_secret) or ""
+        self._passphrase = _clean_secret(passphrase) or ""
+        self._portfolio_id = _clean_secret(portfolio_id) or ""
 
         if not self._api_key or not self._api_secret or not self._passphrase:
             raise RuntimeError(

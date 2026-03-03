@@ -107,8 +107,10 @@ class FederalRegisterClient:
             agency: Agency slug filter
             per_page: Results per page
         """
+        from datetime import date
+
         params: dict = {
-            "conditions[commenting_on][status]": "open",
+            "conditions[comment_date][gte]": date.today().isoformat(),
             "per_page": per_page,
         }
         if agency:
