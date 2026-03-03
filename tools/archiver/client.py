@@ -7,23 +7,19 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .db import init_db
 from .download.orchestrator import download_source
-from .fetch import fetch_chunk
-from .ingest.archive import archive_manifest
-from .ingest.embed import embed_manifest
-from .ingest.ingest import ingest_manifest
 from .ingest.parse import parse_manifest
-from .search import search, search_stats
-from .status import status_for_source
-from .utils import dump_json
+from .utils import (
+    FileRecord,
+    compute_file_hash,
+    detect_mime_type,
+    dump_json,
+    file_record_to_dict,
+)
 
 
 class ArchiverClient:
-    """Unified client for the document archiver tool."""
-
-    def init_db(self) -> None:
-        init_db()
+    """Extraction-first client for investment document parsing."""
 
     def download(
         self,
@@ -32,25 +28,17 @@ class ArchiverClient:
         company: str | None = None,
         account: str | None = None,
         password: str | None = None,
+        email: str | None = None,
         max_depth: int = 3,
-        skip_if_ingested: bool = False,
     ) -> dict:
         output_dir = Path(output_dir)
-        if skip_if_ingested:
-            status = status_for_source(source_url)
-            if status.get("status") == "ok":
-                return {
-                    "status": "skipped",
-                    "reason": "already_ingested",
-                    "status_result": status,
-                }
-
         payload = download_source(
             source_url=source_url,
             output_dir=output_dir,
             company=company,
             account=account,
             password=password,
+            email=email,
             max_depth=max_depth,
         )
         manifest_path = output_dir / "manifest.json"
@@ -74,49 +62,114 @@ class ArchiverClient:
         path = self._manifest_with_context(path, context)
         return parse_manifest(path)
 
-    def embed(self, manifest_path: str, context: dict | None = None) -> dict:
-        path = Path(manifest_path)
-        path = self._manifest_with_context(path, context)
-        return embed_manifest(path)
+    def extract_manifest(self, manifest_path: str, context: dict | None = None) -> dict:
+        """Reducto-first extraction from an existing manifest."""
+        return self.parse(manifest_path, context=context)
 
-    def archive(self, manifest_path: str, context: dict | None = None) -> dict:
-        path = Path(manifest_path)
-        path = self._manifest_with_context(path, context)
-        return archive_manifest(path)
-
-    def ingest(self, manifest_path: str, context: dict | None = None) -> dict:
-        path = Path(manifest_path)
-        path = self._manifest_with_context(path, context)
-        return ingest_manifest(path)
-
-    def search(
+    def _build_manifest_from_local_files(
         self,
-        query: str,
-        mode: str = "hybrid",
-        limit: int = 10,
-        threshold: float = 0.3,
-    ) -> dict:
-        return search(query=query, mode=mode, limit=limit, threshold=threshold)
+        file_paths: list[str],
+        context: dict | None = None,
+        source_url: str | None = None,
+    ) -> Path:
+        records: list[dict[str, Any]] = []
+        for raw in file_paths:
+            path = Path(raw).expanduser()
+            if path.exists() and path.is_file():
+                resolved = path.resolve()
+                record = FileRecord(
+                    source_url=source_url or "local://manual",
+                    source_type="local",
+                    file_path=str(resolved),
+                    filename=resolved.name,
+                    file_hash=compute_file_hash(resolved),
+                    size_bytes=resolved.stat().st_size,
+                    mime_type=detect_mime_type(resolved),
+                )
+                records.append(file_record_to_dict(record))
+            else:
+                records.append(
+                    {
+                        "source_url": source_url or "local://manual",
+                        "source_type": "local",
+                        "file_path": str(path),
+                        "filename": path.name,
+                        "file_hash": "",
+                        "size_bytes": 0,
+                        "mime_type": None,
+                        "status": "error",
+                        "error": "File not found",
+                    }
+                )
 
-    def search_stats(self) -> dict:
-        return search_stats()
+        payload: dict[str, Any] = {
+            "status": "ok",
+            "source_url": source_url or "local://manual",
+            "source_type": "local",
+            "files": records,
+        }
+        if context:
+            payload["context"] = context
 
-    def status(self, source: str) -> dict:
-        return status_for_source(source)
+        manifest_path = Path(tempfile.mktemp(suffix=".manifest.json"))
+        manifest_path.write_text(json.dumps(payload))
+        return manifest_path
 
-    def fetch(
+    def extract_files(
         self,
-        chunk_id: int,
-        include_reducto: bool = False,
-        download_to: str | None = None,
-        overwrite: bool = False,
+        file_paths: list[str],
+        context: dict | None = None,
+        source_url: str | None = None,
     ) -> dict:
-        return fetch_chunk(
-            chunk_id=chunk_id,
-            include_reducto=include_reducto,
-            download_to=download_to,
-            overwrite=overwrite,
+        """Reducto-first extraction directly from local files."""
+        if not file_paths:
+            return {"status": "error", "error": "file_paths cannot be empty", "files": []}
+        manifest = self._build_manifest_from_local_files(
+            file_paths=file_paths,
+            context=context,
+            source_url=source_url,
         )
+        return parse_manifest(manifest)
+
+    def extract_source(
+        self,
+        source_url: str,
+        output_dir: str,
+        company: str | None = None,
+        account: str | None = None,
+        password: str | None = None,
+        email: str | None = None,
+        max_depth: int = 3,
+        context: dict | None = None,
+    ) -> dict:
+        """Download source and run Reducto extraction in one call."""
+        download_payload = self.download(
+            source_url=source_url,
+            output_dir=output_dir,
+            company=company,
+            account=account,
+            password=password,
+            email=email,
+            max_depth=max_depth,
+        )
+        if download_payload.get("status") != "ok":
+            return {
+                "status": "error",
+                "error": "Download stage failed",
+                "source": source_url,
+                "download": download_payload,
+                "files": [],
+            }
+        if not download_payload.get("files"):
+            return {
+                "status": "error",
+                "error": "Download stage produced no files",
+                "source": source_url,
+                "download": download_payload,
+                "files": [],
+            }
+        manifest_path = Path(output_dir) / "manifest.json"
+        return self.extract_manifest(str(manifest_path), context=context)
 
 
 def _client() -> ArchiverClient:

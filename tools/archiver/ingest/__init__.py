@@ -1,1 +1,1 @@
-"""Ingest pipeline for parchiver."""
+"""Parsing helpers for Reducto-based extraction."""

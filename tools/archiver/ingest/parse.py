@@ -20,7 +20,7 @@ from ..utils import compute_file_hash, file_record_to_dict
 
 load_dotenv()
 
-REDUCTO_API_KEY = os.getenv("PARCHIVER_REDUCTO_API_KEY")
+REDUCTO_API_KEY = os.getenv("REDUCTO_API_KEY")
 
 REDUCTO_UPLOAD_URL = "https://platform.reducto.ai/upload"
 REDUCTO_PARSE_ASYNC_URL = "https://platform.reducto.ai/parse_async"
@@ -28,8 +28,8 @@ REDUCTO_EXTRACT_ASYNC_URL = "https://platform.reducto.ai/extract_async"
 REDUCTO_JOB_URL = "https://platform.reducto.ai/job"
 
 JOB_POLL_INTERVAL = 2
-PARSE_JOB_TIMEOUT_S = int(os.getenv("PARCHIVER_PARSE_TIMEOUT_S", "300"))
-EXTRACT_JOB_TIMEOUT_S = int(os.getenv("PARCHIVER_EXTRACT_TIMEOUT_S", str(PARSE_JOB_TIMEOUT_S)))
+PARSE_JOB_TIMEOUT_S = int(os.getenv("PARSE_TIMEOUT_S", "300"))
+EXTRACT_JOB_TIMEOUT_S = int(os.getenv("EXTRACT_TIMEOUT_S", str(PARSE_JOB_TIMEOUT_S)))
 
 
 def _env_enabled(name: str, default: bool) -> bool:
@@ -40,7 +40,7 @@ def _env_enabled(name: str, default: bool) -> bool:
 
 
 EXTRACT_OPTIMIZE_FOR_LATENCY = _env_enabled(
-    "PARCHIVER_EXTRACT_OPTIMIZE_FOR_LATENCY",
+    "EXTRACT_OPTIMIZE_FOR_LATENCY",
     default=True,
 )
 
@@ -125,7 +125,7 @@ logger = get_logger(__name__)
 
 def _check_env() -> None:
     if not REDUCTO_API_KEY:
-        raise RuntimeError("REDUCTO_API_KEY not set")
+        raise RuntimeError("Missing Reducto API key: set REDUCTO_API_KEY")
 
 
 def upload_to_reducto(file_path: Path) -> str:

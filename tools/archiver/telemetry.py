@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-RUN_ID = os.getenv("PARCHIVER_RUN_ID") or uuid.uuid4().hex
+RUN_ID = os.getenv("RUN_ID") or uuid.uuid4().hex
 _CONFIGURED = False
 _STREAMS_CONFIGURED = False
 
@@ -147,12 +147,12 @@ class _TeeStream:
 
 
 def _stream_log_path(stream_name: str) -> Path:
-    env_name = "PARCHIVER_STDOUT_LOG" if stream_name == "stdout" else "PARCHIVER_STDERR_LOG"
+    env_name = "STDOUT_LOG" if stream_name == "stdout" else "STDERR_LOG"
     explicit = os.getenv(env_name)
     if explicit:
         return Path(explicit)
 
-    stream_dir = Path(os.getenv("PARCHIVER_STREAM_DIR", "logs/parchiver"))
+    stream_dir = Path(os.getenv("STREAM_DIR", "logs/parchiver"))
     return stream_dir / f"{RUN_ID}.{stream_name}.log"
 
 
@@ -162,7 +162,7 @@ def configure_stream_tee() -> None:
         return
     _STREAMS_CONFIGURED = True
 
-    if not _env_enabled("PARCHIVER_STREAM_TEE", default=True):
+    if not _env_enabled("STREAM_TEE", default=True):
         return
 
     stdout_path = _stream_log_path("stdout")
@@ -189,8 +189,8 @@ def configure_logging(
         return
     configure_stream_tee()
 
-    level_name = (level or os.getenv("PARCHIVER_LOG_LEVEL", "INFO")).upper()
-    format_name = (fmt or os.getenv("PARCHIVER_LOG_FORMAT", "json")).lower()
+    level_name = (level or os.getenv("LOG_LEVEL", "INFO")).upper()
+    format_name = (fmt or os.getenv("LOG_FORMAT", "json")).lower()
     level_value = getattr(logging, level_name, logging.INFO)
 
     root = logging.getLogger("parchiver")

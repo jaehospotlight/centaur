@@ -78,9 +78,10 @@ async def _download_docsend_async(
     output_dir: Path,
     company: str | None,
     password: str | None,
+    email: str | None,
 ) -> dict:
     with step_timer(logger, "download.docsend", source_url=source_url, output_dir=str(output_dir)) as step:
-        if not os.getenv("PARCHIVER_BROWSER_USE_API_KEY"):
+        if not os.getenv("BROWSER_USE_API_KEY"):
             return {
                 "status": "error",
                 "error": _with_manual_download_suggestion("BROWSER_USE_API_KEY not set"),
@@ -91,6 +92,7 @@ async def _download_docsend_async(
         results = await route_all_docsends(
             [{"url": source_url, "company": company_name, "password": password}],
             output_dir=output_dir,
+            email=email or os.getenv("DOCSEND_EMAIL") or "ricardo@paradigm.xyz",
         )
         if not results:
             return {
@@ -189,6 +191,7 @@ def download_docsend(
     output_dir: Path,
     company: str | None,
     password: str | None,
+    email: str | None,
 ) -> dict:
     return asyncio.run(
         _download_docsend_async(
@@ -196,6 +199,7 @@ def download_docsend(
             output_dir=output_dir,
             company=company,
             password=password,
+            email=email,
         )
     )
 
@@ -302,6 +306,7 @@ def download_source(
     company: str | None,
     account: str | None,
     password: str | None,
+    email: str | None,
     max_depth: int,
 ) -> dict:
     with step_timer(logger, "download.source", source_url=source_url, output_dir=str(output_dir)) as step:
@@ -310,7 +315,7 @@ def download_source(
         if "docsend.com" in canonical_url:
             docsend_dir = output_dir / "docsend"
             docsend_dir.mkdir(parents=True, exist_ok=True)
-            payload = download_docsend(source_url, docsend_dir, company, password)
+            payload = download_docsend(source_url, docsend_dir, company, password, email)
             result = {
                 "status": payload["status"],
                 "error": (

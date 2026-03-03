@@ -1,1 +1,1 @@
-"""Document archiver for investment materials (DocSend, Google Drive)."""
+"""Reducto-first document extraction for investment materials."""

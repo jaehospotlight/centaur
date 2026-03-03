@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
-import sys
+import os
 from pathlib import Path
+import sys
 from typing import Optional
 
 import typer
 
 from .client import _client
-from .utils import dump_json
+from .utils import dump_json, normalize_url
 
-app = typer.Typer(name="archiver", help="Document archiver for investment materials.")
+app = typer.Typer(name="archiver", help="Reducto-first document extraction for investment materials.")
+
+DEFAULT_GOOGLE_ACCOUNT = (
+    (os.getenv("GOOGLE_ACCOUNT") or "").strip()
+    or "svc_ai@paradigm.xyz"
+)
 
 
 def _read_context(
@@ -29,12 +35,80 @@ def _read_context(
     return None
 
 
+def _exit_json(error: str) -> None:
+    print(dump_json({"status": "error", "error": error}))
+    raise typer.Exit(1)
+
+
+def _is_interactive() -> bool:
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _source_kind(source_url: str) -> str:
+    canonical = normalize_url(source_url).lower()
+    if "docsend.com" in canonical:
+        return "docsend"
+    if "google.com" in canonical:
+        return "google_drive"
+    return "unknown"
+
+
+def _looks_password_required(payload: dict) -> bool:
+    text = str(payload.get("error") or "").lower()
+    if "password" in text or "passcode" in text:
+        return True
+    files = payload.get("files") or []
+    for entry in files:
+        err = str((entry or {}).get("error") or "").lower()
+        if "password" in err or "passcode" in err:
+            return True
+    return False
+
+
+def _resolve_source_auth_inputs(
+    source_url: str,
+    account: str | None,
+    password: str | None,
+    email: str | None,
+) -> tuple[str, str | None, str | None, str | None]:
+    kind = _source_kind(source_url)
+    resolved_account = (account or "").strip() or None
+    resolved_password = (password or "").strip() or None
+    resolved_email = (email or "").strip() or os.getenv("DOCSEND_EMAIL") or None
+
+    if kind == "google_drive" and not resolved_account:
+        # Prefer default service account for automated and harness runs.
+        resolved_account = DEFAULT_GOOGLE_ACCOUNT or None
+    if kind == "google_drive" and not resolved_account:
+        if _is_interactive():
+            entered = typer.prompt("Google account email for this Drive source")
+            resolved_account = entered.strip() or None
+        if not resolved_account:
+            _exit_json("Google account email is required")
+
+    if kind == "docsend" and not resolved_email and _is_interactive():
+        entered = typer.prompt(
+            "DocSend email (optional, press Enter to skip)",
+            default="",
+            show_default=False,
+        )
+        resolved_email = entered.strip() or None
+
+    return kind, resolved_account, resolved_password, resolved_email
+
+
 @app.command("init-db")
 def init_db() -> None:
-    """Initialize database schema."""
-    client = _client()
-    client.init_db()
-    print(dump_json({"status": "ok", "action": "init-db"}))
+    """Deprecated: DB setup is not required in extraction-only mode."""
+    print(
+        dump_json(
+            {
+                "status": "error",
+                "error": "init-db is disabled in extraction-only mode",
+            }
+        )
+    )
+    raise typer.Exit(1)
 
 
 @app.command()
@@ -42,24 +116,52 @@ def download(
     source: str = typer.Option(..., help="Source URL (DocSend or Google Drive)"),
     output: str = typer.Option(..., help="Output directory"),
     company: Optional[str] = typer.Option(None, help="Company name for metadata"),
-    account: Optional[str] = typer.Option(None, help="Google account email for gog"),
+    account: Optional[str] = typer.Option(
+        None,
+        help="Google account email for Drive (defaults to svc_ai@paradigm.xyz)",
+    ),
     password: Optional[str] = typer.Option(None, help="DocSend password if required"),
+    email: Optional[str] = typer.Option(None, help="DocSend email for email-gated links"),
     max_depth: int = typer.Option(3, help="Google folder recursion depth"),
-    skip_if_ingested: bool = typer.Option(False, help="Skip download if source already exists in archive"),
 ) -> None:
     """Download docsend/drive sources."""
     client = _client()
+    source_kind, resolved_account, resolved_password, resolved_email = _resolve_source_auth_inputs(
+        source_url=source,
+        account=account,
+        password=password,
+        email=email,
+    )
     payload = client.download(
         source_url=source,
         output_dir=output,
         company=company,
-        account=account,
-        password=password,
+        account=resolved_account,
+        password=resolved_password,
+        email=resolved_email,
         max_depth=max_depth,
-        skip_if_ingested=skip_if_ingested,
     )
+    if (
+        source_kind == "docsend"
+        and payload.get("status") != "ok"
+        and not resolved_password
+        and _looks_password_required(payload)
+        and _is_interactive()
+    ):
+        entered_password = typer.prompt("DocSend password", hide_input=True, confirmation_prompt=False)
+        entered_password = entered_password.strip()
+        if entered_password:
+            payload = client.download(
+                source_url=source,
+                output_dir=output,
+                company=company,
+                account=resolved_account,
+                password=entered_password,
+                email=resolved_email,
+                max_depth=max_depth,
+            )
     print(dump_json(payload))
-    if payload.get("status") not in ("ok", "skipped"):
+    if payload.get("status") != "ok":
         raise typer.Exit(1)
 
 
@@ -79,30 +181,96 @@ def parse(
 
 
 @app.command()
-def embed(
-    manifest: str = typer.Option(..., help="Parse manifest JSON"),
+def extract(
+    manifest: Optional[str] = typer.Option(
+        None,
+        help="Existing manifest path; use with pre-downloaded files",
+    ),
+    source: Optional[str] = typer.Option(
+        None,
+        help="DocSend or Google Drive URL; downloads and extracts in one shot",
+    ),
+    output: Optional[str] = typer.Option(
+        None,
+        help="Output directory (required with --source)",
+    ),
+    file: list[str] = typer.Option(
+        [],
+        "--file",
+        help="Local file path (repeatable) for direct extraction",
+    ),
+    company: Optional[str] = typer.Option(None, help="Company hint for source mode"),
+    account: Optional[str] = typer.Option(
+        None,
+        help="Google account for Drive mode (defaults to svc_ai@paradigm.xyz)",
+    ),
+    password: Optional[str] = typer.Option(None, help="DocSend password"),
+    email: Optional[str] = typer.Option(None, help="DocSend email for email-gated links"),
+    max_depth: int = typer.Option(3, help="Google folder recursion depth"),
     context: Optional[str] = typer.Option(None, help="Inline JSON context"),
     context_file: Optional[str] = typer.Option(None, help="Path to JSON file with context"),
 ) -> None:
-    """Generate embeddings from parse output."""
+    """Unified Reducto extraction command."""
     client = _client()
     ctx = _read_context(context, context_file)
-    payload = client.embed(manifest, context=ctx)
-    print(dump_json(payload))
-    if payload.get("status") != "ok":
+
+    mode_count = sum(1 for enabled in [bool(manifest), bool(source), bool(file)] if enabled)
+    if mode_count != 1:
+        print(
+            dump_json(
+                {
+                    "status": "error",
+                    "error": "Specify exactly one input mode: --manifest, --source, or --file",
+                }
+            )
+        )
         raise typer.Exit(1)
 
+    if manifest:
+        payload = client.extract_manifest(manifest, context=ctx)
+    elif source:
+        if not output:
+            print(dump_json({"status": "error", "error": "--output is required when using --source"}))
+            raise typer.Exit(1)
+        source_kind, resolved_account, resolved_password, resolved_email = _resolve_source_auth_inputs(
+            source_url=source,
+            account=account,
+            password=password,
+            email=email,
+        )
+        payload = client.extract_source(
+            source_url=source,
+            output_dir=output,
+            company=company,
+            account=resolved_account,
+            password=resolved_password,
+            email=resolved_email,
+            max_depth=max_depth,
+            context=ctx,
+        )
+        if (
+            source_kind == "docsend"
+            and payload.get("status") != "ok"
+            and not resolved_password
+            and _looks_password_required(payload)
+            and _is_interactive()
+        ):
+            entered_password = typer.prompt("DocSend password", hide_input=True, confirmation_prompt=False)
+            entered_password = entered_password.strip()
+            if entered_password:
+                payload = client.extract_source(
+                    source_url=source,
+                    output_dir=output,
+                    company=company,
+                    account=resolved_account,
+                    password=entered_password,
+                    email=resolved_email,
+                    max_depth=max_depth,
+                    context=ctx,
+                )
+    else:
+        payload = client.extract_files(file_paths=file, context=ctx)
 
-@app.command()
-def archive(
-    manifest: str = typer.Option(..., help="Parse manifest JSON"),
-    context: Optional[str] = typer.Option(None, help="Inline JSON context"),
-    context_file: Optional[str] = typer.Option(None, help="Path to JSON file with context"),
-) -> None:
-    """Archive raw files to R2."""
-    client = _client()
-    ctx = _read_context(context, context_file)
-    payload = client.archive(manifest, context=ctx)
     print(dump_json(payload))
     if payload.get("status") != "ok":
         raise typer.Exit(1)
@@ -111,68 +279,40 @@ def archive(
 @app.command()
 def ingest(
     manifest: str = typer.Option(..., help="Download manifest JSON"),
-    context: Optional[str] = typer.Option(None, help="Inline JSON context"),
-    context_file: Optional[str] = typer.Option(None, help="Path to JSON file with context"),
 ) -> None:
-    """Run parse/embed/archive for local files."""
-    client = _client()
-    ctx = _read_context(context, context_file)
-    payload = client.ingest(manifest, context=ctx)
-    print(dump_json(payload))
-    if payload.get("status") != "ok":
-        raise typer.Exit(1)
+    """Deprecated alias for parse (extraction-only mode)."""
+    print(dump_json({"status": "warning", "warning": "ingest is deprecated; use parse or extract"}))
+    parse(manifest=manifest)
 
 
 @app.command()
 def search(
     query: Optional[str] = typer.Argument(None, help="Search query"),
-    mode: str = typer.Option("hybrid", help="Search mode: hybrid, dense, sparse"),
-    limit: int = typer.Option(10, "-k", "--limit", help="Max results"),
-    threshold: float = typer.Option(0.3, help="Similarity threshold (0-1)"),
-    stats: bool = typer.Option(False, help="Show index statistics"),
 ) -> None:
-    """Search indexed documents."""
-    client = _client()
-    if stats:
-        payload = client.search_stats()
-    elif query:
-        payload = client.search(query=query, mode=mode, limit=limit, threshold=threshold)
-    else:
-        print(dump_json({"status": "error", "error": "Query or --stats required"}))
-        raise typer.Exit(1)
-    print(dump_json(payload))
+    """Disabled in extraction-only mode."""
+    _ = query
+    print(dump_json({"status": "error", "error": "search is disabled in extraction-only mode"}))
+    raise typer.Exit(1)
 
 
 @app.command()
 def status(
     source: str = typer.Option(..., help="Source URL or file hash"),
 ) -> None:
-    """Check existing archive status."""
-    client = _client()
-    payload = client.status(source)
-    print(dump_json(payload))
-    if payload.get("status") != "ok":
-        raise typer.Exit(1)
+    """Disabled in extraction-only mode."""
+    _ = source
+    print(dump_json({"status": "error", "error": "status is disabled in extraction-only mode"}))
+    raise typer.Exit(1)
 
 
 @app.command()
 def fetch(
     chunk_id: int = typer.Option(..., help="Chunk ID from search results"),
-    reducto: bool = typer.Option(False, help="Include full Reducto parse/extract payload"),
-    download: Optional[str] = typer.Option(None, help="Download original file to this path or directory"),
-    overwrite: bool = typer.Option(False, help="Overwrite destination when downloading"),
 ) -> None:
-    """Fetch full Reducto output or download original file for a chunk result."""
-    client = _client()
-    payload = client.fetch(
-        chunk_id=chunk_id,
-        include_reducto=reducto,
-        download_to=download,
-        overwrite=overwrite,
-    )
-    print(dump_json(payload))
-    if payload.get("status") != "ok":
-        raise typer.Exit(1)
+    """Disabled in extraction-only mode."""
+    _ = chunk_id
+    print(dump_json({"status": "error", "error": "fetch is disabled in extraction-only mode"}))
+    raise typer.Exit(1)
 
 
 if __name__ == "__main__":

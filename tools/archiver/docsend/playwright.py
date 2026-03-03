@@ -36,10 +36,37 @@ from browser_use_sdk import AsyncBrowserUse
 # Configuration
 DEFAULT_EMAIL = "ricardo@paradigm.xyz"
 OUTPUT_DIR = Path("./docsend_output")
-API_KEY = os.environ.get("PARCHIVER_BROWSER_USE_API_KEY")
-BROWSER_USE_PROXY_COUNTRY = os.environ.get("PARCHIVER_BROWSER_USE_PROXY_COUNTRY")
-BROWSER_USE_PROFILE_ID = os.environ.get("PARCHIVER_BROWSER_USE_PROFILE_ID")
+API_KEY = os.environ.get("BROWSER_USE_API_KEY")
+BROWSER_USE_PROXY_COUNTRY = os.environ.get("BROWSER_USE_PROXY_COUNTRY")
+BROWSER_USE_PROFILE_ID = os.environ.get("BROWSER_USE_PROFILE_ID")
 MAX_PARALLEL = 5
+
+
+def _session_value(session: object, *keys: str) -> object | None:
+    for key in keys:
+        if isinstance(session, dict) and key in session:
+            return session[key]
+        if hasattr(session, key):
+            return getattr(session, key)
+    return None
+
+
+async def _create_browser_session(client: AsyncBrowserUse, **kwargs):
+    browsers = client.browsers
+    if hasattr(browsers, "create_browser_session"):
+        return await browsers.create_browser_session(**kwargs)
+    return await browsers.create(**kwargs)
+
+
+async def _stop_browser_session(client: AsyncBrowserUse, session_id: str) -> None:
+    browsers = client.browsers
+    if hasattr(browsers, "update_browser_session"):
+        await browsers.update_browser_session(session_id=session_id, action="stop")
+        return
+    if hasattr(browsers, "stop"):
+        await browsers.stop(session_id)
+        return
+    await browsers.update(session_id, action="stop")
 
 
 class ScrapeStatus(Enum):
@@ -418,7 +445,7 @@ async def scrape_docsend(
                     session_kwargs["proxy_country_code"] = BROWSER_USE_PROXY_COUNTRY.lower()
                 if BROWSER_USE_PROFILE_ID:
                     session_kwargs["profile_id"] = BROWSER_USE_PROFILE_ID
-                return await bu_client.browsers.create_browser_session(**session_kwargs)
+                return await _create_browser_session(bu_client, **session_kwargs)
 
             try:
                 browser_session = await retry_async(
@@ -433,9 +460,16 @@ async def scrape_docsend(
                 print(f"[ERROR] {company}: {result.error}")
                 return result
 
-            cdp_url = browser_session.cdp_url
+            cdp_url = _session_value(browser_session, "cdp_url", "cdpUrl")
+            session_id = _session_value(browser_session, "id", "session_id", "sessionId")
+            live_url = _session_value(browser_session, "live_url", "liveUrl")
+            if not cdp_url or not session_id:
+                result.status = ScrapeStatus.ERROR
+                result.error = "Browser session missing required fields (cdp_url/session_id)"
+                print(f"[ERROR] {company}: {result.error}")
+                return result
             print(f"[CLOUD] {company}: CDP URL: {cdp_url}")
-            print(f"[LIVE] {company}: {browser_session.live_url}")
+            print(f"[LIVE] {company}: {live_url}")
 
             # Step 2: Connect Playwright to cloud browser
             async with async_playwright() as p:
@@ -640,11 +674,10 @@ async def scrape_docsend(
 
             if browser_session:
                 try:
-                    await bu_client.browsers.update_browser_session(
-                        session_id=browser_session.id,
-                        action="stop"
-                    )
-                    print(f"[CLEANUP] {company}: Browser session stopped")
+                    session_id = _session_value(browser_session, "id", "session_id", "sessionId")
+                    if session_id:
+                        await _stop_browser_session(bu_client, str(session_id))
+                        print(f"[CLEANUP] {company}: Browser session stopped")
                 except Exception as e:
                     print(f"[WARN] {company}: Failed to stop session: {e}")
 
@@ -690,7 +723,7 @@ async def main():
             u["url"],
             u["company"],
             OUTPUT_DIR,
-            EMAIL,
+            DEFAULT_EMAIL,
             semaphore,
             password=u.get("password"),
         )
