@@ -5,6 +5,9 @@ class ParadigmDBClient:
     """Client for Paradigm's internal databases and Shift notes."""
 
     def _ensure_tunnel(self) -> None:
+        import os
+        if os.getenv("RESHIFT_DB_DSN"):
+            return  # Direct connection, no tunnel needed
         from .database import is_tunnel_running, start_persistent_tunnel
         if not is_tunnel_running():
             start_persistent_tunnel()

@@ -253,23 +253,31 @@ class Database:
     def connect(self) -> psycopg.Connection:
         """Get or create a database connection.
 
-        Uses external tunnel if available, else starts one.
+        Connection priority:
+        1. RESHIFT_DB_DSN env var — direct connection, no tunnel (for Docker/prod)
+        2. External tunnel already running on localhost:54321
+        3. Start a new gcloud SSH tunnel (requires gcloud CLI — local dev only)
         """
         if self._conn is None or self._conn.closed:
-            # Check for existing external tunnel first
-            if self._check_external_tunnel():
-                local_port = SSHTunnel.DEFAULT_PORT
+            direct_dsn = os.getenv("RESHIFT_DB_DSN")
+            if direct_dsn:
+                self._conn = psycopg.connect(direct_dsn, row_factory=dict_row)
+                self._using_external_tunnel = True
+            elif self._check_external_tunnel():
+                dsn = (
+                    f"postgresql://{self.db_user}:{self.db_password}"
+                    f"@127.0.0.1:{SSHTunnel.DEFAULT_PORT}/{self.db_name}"
+                )
+                self._conn = psycopg.connect(dsn, row_factory=dict_row)
                 self._using_external_tunnel = True
             else:
                 tunnel = self._start_tunnel()
-                local_port = tunnel.local_bind_port
+                dsn = (
+                    f"postgresql://{self.db_user}:{self.db_password}"
+                    f"@127.0.0.1:{tunnel.local_bind_port}/{self.db_name}"
+                )
+                self._conn = psycopg.connect(dsn, row_factory=dict_row)
                 self._using_external_tunnel = False
-
-            dsn = (
-                f"postgresql://{self.db_user}:{self.db_password}"
-                f"@127.0.0.1:{local_port}/{self.db_name}"
-            )
-            self._conn = psycopg.connect(dsn, row_factory=dict_row)
         return self._conn
 
     def close(self):

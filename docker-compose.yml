@@ -78,6 +78,10 @@ services:
       FIREWALL_HOST: firewall
       AGENT_NETWORK: ai_v2_agent_net
       FIREWALL_CERTS_VOLUME: firewall-certs
+      # paradigmdb: connect to Shift Postgres via host-side SSH tunnel on :54321
+      RESHIFT_DB_DSN: ${RESHIFT_DB_DSN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - default
       - secrets_net
