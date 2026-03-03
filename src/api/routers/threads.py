@@ -1046,6 +1046,28 @@ async def stream_thread_ui(
                         yield f"data: {json.dumps({'type': 'finish-step'})}\n\n"
                 start_index = last_event_indices.get(turn_id, 0)
                 turn_had_chunks = False
+                # Pre-scan: detect turns that already contain text-producing
+                # events so the per-event loop can skip duplicate result events.
+                if turn_id not in turns_with_text_chunks and events:
+                    for ev in events:
+                        if not isinstance(ev, dict):
+                            continue
+                        et = ev.get("type")
+                        if et == "assistant":
+                            content = (ev.get("message") or {}).get("content") or []
+                            if any(
+                                isinstance(b, dict)
+                                and b.get("type") == "text"
+                                and (b.get("text") or "").strip()
+                                for b in content
+                            ):
+                                turns_with_text_chunks.add(turn_id)
+                                break
+                        elif et == "item.completed":
+                            item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+                            if (item.get("text") or "").strip():
+                                turns_with_text_chunks.add(turn_id)
+                                break
                 if start_index < len(events):
                     for index in range(start_index, len(events)):
                         event = events[index]
@@ -1119,30 +1141,6 @@ async def stream_thread_ui(
                                 yield f"data: {json.dumps({'type': 'data-agent-status', 'data': {'text': 'Writing response...'}, 'transient': True})}\n\n"
                         yield f"data: {json.dumps({'type': 'finish-step'})}\n\n"
                 last_event_indices[turn_id] = len(events)
-
-                if turn_id not in turns_with_text_chunks and events:
-                    for ev in events:
-                        if not isinstance(ev, dict):
-                            continue
-                        et = ev.get("type")
-                        if et == "assistant":
-                            content = (ev.get("message") or {}).get("content") or []
-                            if any(
-                                isinstance(b, dict)
-                                and b.get("type") == "text"
-                                and (b.get("text") or "").strip()
-                                for b in content
-                            ):
-                                turns_with_text_chunks.add(turn_id)
-                                break
-                        elif et == "result" and (ev.get("result") or "").strip():
-                            turns_with_text_chunks.add(turn_id)
-                            break
-                        elif et == "item.completed":
-                            item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
-                            if (item.get("text") or "").strip():
-                                turns_with_text_chunks.add(turn_id)
-                                break
 
                 if (
                     turn.get("result")
