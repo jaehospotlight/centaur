@@ -261,14 +261,16 @@ class Database:
         if self._conn is None or self._conn.closed:
             direct_dsn = os.getenv("RESHIFT_DB_DSN")
             if direct_dsn:
-                self._conn = psycopg.connect(direct_dsn, row_factory=dict_row)
+                self._conn = psycopg.connect(
+                    direct_dsn, row_factory=dict_row, autocommit=True
+                )
                 self._using_external_tunnel = True
             elif self._check_external_tunnel():
                 dsn = (
                     f"postgresql://{self.db_user}:{self.db_password}"
                     f"@127.0.0.1:{SSHTunnel.DEFAULT_PORT}/{self.db_name}"
                 )
-                self._conn = psycopg.connect(dsn, row_factory=dict_row)
+                self._conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
                 self._using_external_tunnel = True
             else:
                 tunnel = self._start_tunnel()
@@ -276,7 +278,7 @@ class Database:
                     f"postgresql://{self.db_user}:{self.db_password}"
                     f"@127.0.0.1:{tunnel.local_bind_port}/{self.db_name}"
                 )
-                self._conn = psycopg.connect(dsn, row_factory=dict_row)
+                self._conn = psycopg.connect(dsn, row_factory=dict_row, autocommit=True)
                 self._using_external_tunnel = False
         return self._conn
 
