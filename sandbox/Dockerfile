@@ -4,7 +4,7 @@ FROM ubuntu:24.04
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    git curl wget ca-certificates gnupg lsb-release \
+    git curl wget ca-certificates gnupg lsb-release sudo \
     build-essential pkg-config cmake ninja-build \
     libssl-dev libclang-dev protobuf-compiler \
     ripgrep fd-find jq tree tmux unzip xz-utils gettext-base \
@@ -23,7 +23,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && apt-get update && apt-get install -y gh nodejs
 
 # ── Non-root agent user ─────────────────────────────────────────────────────
-RUN useradd -m -s /bin/bash agent
+RUN useradd -m -s /bin/bash agent \
+    && echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/agent
 USER agent
 WORKDIR /home/agent
 
