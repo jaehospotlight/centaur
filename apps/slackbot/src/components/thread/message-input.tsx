@@ -45,17 +45,15 @@ export function MessageInput({ mode, onSend, onStop, className }: MessageInputPr
   const hasText = value.trim().length > 0;
   const showStop = mode === "running" && !hasText && !!onStop;
 
-  async function handleSend() {
+  function handleSend() {
     const text = value.trim();
     if (!text || submitting) return;
-    setSubmitting(true);
-    try {
-      await onSend(text);
-      setValue("");
-    } finally {
-      setSubmitting(false);
-      textareaRef.current?.focus();
-    }
+    setValue("");
+    // Fire-and-forget: onSend triggers the agent and opens the SSE stream,
+    // which stays open until the agent finishes. We don't want to block the
+    // input on that — just clear and refocus immediately.
+    void onSend(text);
+    textareaRef.current?.focus();
   }
 
   async function handleStop() {
