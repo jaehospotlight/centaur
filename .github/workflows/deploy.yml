@@ -3,6 +3,9 @@ name: Deploy
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+    types: [closed]
   workflow_dispatch:
 
 concurrency:
@@ -11,6 +14,12 @@ concurrency:
 
 jobs:
   deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.merged == true &&
+       github.event.pull_request.base.ref == 'main') ||
+      (github.event_name == 'push' && github.event.pusher.name != 'web-flow')
     runs-on: [self-hosted, linux, x64, docker]
     env:
       OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
@@ -50,13 +59,30 @@ jobs:
         id: changes
         working-directory: ${{ github.workspace }}
         run: |
-          BEFORE="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "scope=all" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BEFORE="${{ github.event.pull_request.base.sha }}"
+            AFTER="${{ github.event.pull_request.merge_commit_sha }}"
+          else
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+          fi
+
+          if [ -z "$AFTER" ]; then
+            echo "scope=all" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             echo "scope=all" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          DIFF=$(git diff --name-only "$BEFORE" ${{ github.sha }} 2>/dev/null || echo "")
+          DIFF=$(git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null || echo "")
           if [ -z "$DIFF" ]; then
             echo "scope=all" >> "$GITHUB_OUTPUT"
             exit 0
