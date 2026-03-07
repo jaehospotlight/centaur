@@ -5,6 +5,8 @@ services:
       POSTGRES_DB: ai_v2
       POSTGRES_USER: tempo
       POSTGRES_PASSWORD: tempo_dev
+    ports:
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
