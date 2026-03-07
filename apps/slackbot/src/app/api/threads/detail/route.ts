@@ -41,7 +41,7 @@ export async function GET(request: Request) {
     // Enrich with live pipe status (best-effort)
     try {
       const pipeRes = await resilientFetch(
-        `${API_URL}/pipe/status?key=${encodeURIComponent(key)}`,
+        `${API_URL}/agent/status?key=${encodeURIComponent(key)}`,
         { timeoutMs: 3000, signal: request.signal },
       );
       if (pipeRes.ok) {

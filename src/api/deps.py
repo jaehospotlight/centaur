@@ -30,7 +30,7 @@ _NGINX_RESOLVE_TTL_S = max(5, int(os.environ.get("NGINX_RESOLVE_TTL_S", "60")))
 _nginx_ips_cache_lock = threading.Lock()
 _nginx_ips_cache: tuple[str, ...] = tuple(sorted(_NGINX_TRUSTED_IPS))
 _nginx_ips_cache_expires_at = 0.0
-_SANDBOX_ALLOWED_PATH_PREFIXES = ("/pipe", "/tools")
+_SANDBOX_ALLOWED_PATH_PREFIXES = ("/agent", "/pipe", "/tools")
 _TRUSTED_SERVICE_HOSTS = tuple(
     host.strip() for host in os.environ.get("TRUSTED_SERVICE_HOSTS", "nginx,slackbot,auth").split(",") if host.strip()
 )

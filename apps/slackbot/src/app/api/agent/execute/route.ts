@@ -51,7 +51,7 @@ export async function POST(request: Request) {
 
   let upstream: Response;
   try {
-    upstream = await resilientFetch(`${API_URL}/pipe/execute`, {
+    upstream = await resilientFetch(`${API_URL}/agent/execute`, {
       method: "POST",
       body: JSON.stringify({
         thread_key: slackThreadKey,
