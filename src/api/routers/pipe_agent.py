@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 from api.deps import verify_api_key
 from api.pipe_agent import get_or_spawn, get_status, stop_session, stream_exec
+from api.warm_pool import pool_status
+from api.warm_pool import replenish as replenish_pool
 
 router = APIRouter(
     prefix="/agent",
@@ -50,3 +52,16 @@ async def stop(req: StopRequest):
 @router.get("/status")
 async def status(key: str):
     return await get_status(key)
+
+
+@router.get("/pool")
+async def pool():
+    """Return warm pool diagnostics."""
+    return pool_status()
+
+
+@router.post("/pool/replenish")
+async def pool_replenish():
+    """Manually trigger pool replenishment."""
+    spawned = await replenish_pool()
+    return {"spawned": spawned, **pool_status()}

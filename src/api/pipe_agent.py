@@ -172,8 +172,15 @@ def _create_container(
     thread_key: str,
     harness: str,
     engine: str,
+    *,
+    warm: bool = False,
 ) -> Any:
-    """Create and start a labeled agent container. Returns the container object."""
+    """Create and start a labeled agent container. Returns the container object.
+
+    If warm=True, the container is part of the pre-warmed pool (not yet assigned
+    to a thread). It gets an ``ai2.warm=true`` label and is excluded from session
+    recovery until claimed.
+    """
     repos_dir = os.path.abspath(_repos_host_dir())
     env = _container_env()
 
@@ -191,6 +198,9 @@ def _create_container(
         "ai2.harness": harness,
         "ai2.engine": engine,
     }
+    if warm:
+        labels["ai2.warm"] = "true"
+
     volumes: dict[str, dict[str, str]] = {
         repos_dir: {"bind": "/home/agent/github", "mode": "ro"},
     }
@@ -315,6 +325,9 @@ def _recover_sync() -> dict[str, Any]:
         return {"recovered": 0, "error": str(exc)}
 
     for container in containers:
+        # Skip warm-pool containers — they are managed by warm_pool.py
+        if container.labels.get("ai2.warm") == "true":
+            continue
         thread_key = container.labels.get("ai2.thread", "")
         if not thread_key or thread_key in _sessions:
             continue
@@ -337,7 +350,10 @@ def _recover_sync() -> dict[str, Any]:
 
 
 async def get_or_spawn(thread_key: str, harness: str = "amp") -> PipeSession:
-    """Get existing session or spawn a new container."""
+    """Get existing session or spawn a new container.
+
+    Tries (in order): existing session → warm pool → cold spawn.
+    """
     session = _sessions.get(thread_key)
     if session:
         # Verify container is still alive
@@ -349,6 +365,14 @@ async def get_or_spawn(thread_key: str, harness: str = "amp") -> PipeSession:
         except NotFound:
             pass
         _sessions.pop(thread_key, None)
+
+    # Try claiming a pre-warmed container (instant, no startup cost)
+    from api.warm_pool import claim_container
+
+    claimed = await asyncio.to_thread(claim_container, thread_key, harness)
+    if claimed:
+        _sessions[thread_key] = claimed
+        return claimed
 
     return await asyncio.to_thread(_spawn_sync, thread_key, harness)
 

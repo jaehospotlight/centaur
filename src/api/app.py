@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse, Response
 from api.pipe_agent import recover_sessions
 from api.routers import admin, health
 from api.routers import pipe_agent as pipe_router_mod
+from api.warm_pool import start_replenish_loop, stop_replenish_loop
 from shared.config import settings
 from shared.db import close_pool, create_pool
 from shared.tool_manager import ToolManager
@@ -88,9 +89,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     result = await recover_sessions()
     log.info("pipe_sessions_recovered", **result)
     watcher_task = asyncio.create_task(_watch_tools(tool_manager))
+    await start_replenish_loop()
     try:
         yield
     finally:
+        await stop_replenish_loop()
         watcher_task.cancel()
         with suppress(asyncio.CancelledError):
             await watcher_task
