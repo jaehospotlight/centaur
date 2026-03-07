@@ -20,13 +20,13 @@ export const Timeline = memo(function Timeline({
           {entries.map((entry, i) => (
             <li key={i} className="mb-4 ml-4 last:mb-0">
               <div className="absolute -left-1.5 mt-1.5 h-3 w-3 rounded-full border-2 border-background bg-muted-foreground" />
-              <time className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+              <time className="text-3xs font-medium text-muted-foreground uppercase tracking-wide">
                 {entry.date}
               </time>
               <div className="mt-0.5 flex items-center gap-2">
                 <p className="text-sm font-medium text-foreground">{entry.title}</p>
                 {entry.badge && (
-                  <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                  <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-3xs font-medium ${
                     {
                       default: "bg-secondary text-secondary-foreground",
                       success: "bg-primary/10 text-primary",

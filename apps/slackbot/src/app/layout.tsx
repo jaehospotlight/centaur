@@ -51,19 +51,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <nav aria-label="Main" className="z-50 hidden h-11 shrink-0 items-center gap-6 border-b border-border/90 bg-background/95 px-6 font-sans backdrop-blur-sm md:flex">
               <Link
                 href="/"
-                className="rounded-md px-1.5 py-1 text-[13px] font-semibold tracking-tight text-foreground no-underline transition-colors duration-[var(--dur-fast)] hover:bg-accent/55"
+                className="rounded-md px-1.5 py-1 text-label font-semibold tracking-tight text-foreground no-underline transition-colors duration-fast hover:bg-accent/55"
               >
                 AI2
               </Link>
               <Link
                 href="/"
-                className="rounded-md px-1.5 py-1 text-[13px] font-medium text-muted-foreground no-underline transition-colors duration-[var(--dur-fast)] hover:bg-accent/55 hover:text-foreground"
+                className="rounded-md px-1.5 py-1 text-label font-medium text-muted-foreground no-underline transition-colors duration-fast hover:bg-accent/55 hover:text-foreground"
               >
                 Threads
               </Link>
               <Link
                 href="/portfolio"
-                className="rounded-md px-1.5 py-1 text-[13px] font-medium text-muted-foreground no-underline transition-colors duration-[var(--dur-fast)] hover:bg-accent/55 hover:text-foreground"
+                className="rounded-md px-1.5 py-1 text-label font-medium text-muted-foreground no-underline transition-colors duration-fast hover:bg-accent/55 hover:text-foreground"
               >
                 Portfolio
               </Link>

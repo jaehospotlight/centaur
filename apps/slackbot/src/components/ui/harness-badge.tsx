@@ -22,7 +22,7 @@ export function HarnessBadge({ harness, className, ...props }: HarnessBadgeProps
   return (
     <Badge
       className={cn(
-        "rounded-sm text-[10px] font-semibold uppercase tracking-wider inline-flex items-center gap-1",
+        "rounded-sm text-3xs font-semibold uppercase tracking-wider inline-flex items-center gap-1",
         HARNESS_STYLES[harness] ?? "bg-secondary text-muted-foreground",
         className,
       )}

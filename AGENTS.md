@@ -2,7 +2,11 @@
 
 ## ⚠️ Production Box — Hands Off
 
-**NEVER SSH into, deploy to, restart, rebuild, or run any command on the production box (svc-ai.paradigm.xyz) unless the user explicitly tells you to.** This includes `docker compose`, `systemctl`, `scp`, or any remote command. Always do work locally first and let CI handle deploys, or wait for explicit instruction.
+**NEVER SSH into, deploy to, restart, rebuild, or run any command on the production box unless the user explicitly tells you to.** This includes `docker compose`, `systemctl`, `scp`, or any remote command. Always do work locally first and let CI handle deploys, or wait for explicit instruction.
+
+**SSH access**: Always use the IP address: `ssh ubuntu@206.223.235.69`. Never SSH via hostname.
+
+**Remote API calls**: Use the hostname `svc-ai.paradigm.xyz` for all remote API/HTTP calls (e.g., `curl https://svc-ai.paradigm.xyz/...`).
 
 ## Architecture Overview
 

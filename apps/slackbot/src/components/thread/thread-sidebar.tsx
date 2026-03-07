@@ -311,7 +311,7 @@ export const ThreadSidebar = forwardRef<ThreadSidebarHandle, ThreadSidebarProps>
             autoComplete="off"
             className="h-8 rounded-none border-x-0 border-t-0 border-b border-border/40 bg-transparent pl-8 pr-7 text-xs shadow-none focus-visible:ring-0 focus-visible:border-border/60"
           />
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-muted-foreground/50">
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-3xs font-mono text-muted-foreground/50">
             /
           </span>
         </div>

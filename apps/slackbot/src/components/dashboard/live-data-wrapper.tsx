@@ -24,7 +24,7 @@ export const LiveDataWrapper = memo(function LiveDataWrapper({
   return (
     <div className="relative">
       {isRefreshing && (
-        <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full bg-background/80 px-2 py-0.5 text-[10px] text-muted-foreground backdrop-blur-sm">
+        <div className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-full bg-background/80 px-2 py-0.5 text-3xs text-muted-foreground backdrop-blur-sm">
           <RefreshCw className="size-3 animate-spin" />
           Refreshing
         </div>
