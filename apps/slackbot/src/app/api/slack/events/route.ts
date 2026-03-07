@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { after } from "next/server";
 import { verifySlackSignature } from "@/lib/slack-client";
 import { getBot, getSlackBootstrapState } from "@/lib/bot";
-import { maybeShadow } from "@/lib/shadow";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -69,16 +67,6 @@ export async function POST(request: NextRequest) {
       { status: 503 },
     );
   }
-
-  // Shadow v1 bot mentions (same as existing webhook route)
-  const clonedBody = body;
-  after(async () => {
-    try {
-      await maybeShadow(clonedBody);
-    } catch {
-      /* ignore shadow errors */
-    }
-  });
 
   // Reconstruct a Request for the Chat SDK handler (it needs to re-read the body)
   const sdkRequest = new Request(request.url, {

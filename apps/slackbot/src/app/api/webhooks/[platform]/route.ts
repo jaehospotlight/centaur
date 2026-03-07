@@ -1,6 +1,4 @@
-import { after } from "next/server";
 import { getBot, getSlackBootstrapState } from "@/lib/bot";
-import { maybeShadow } from "@/lib/shadow";
 
 export async function POST(
   request: Request,
@@ -36,18 +34,7 @@ export async function POST(
     return new Response(`Unknown platform: ${platform}`, { status: 404 });
   }
 
-  // Clone body before the Chat SDK consumes it so we can check for shadows
-  if (platform === "slack") {
-    const cloned = request.clone();
-    after(async () => {
-      try {
-        const body = await cloned.json();
-        await maybeShadow(body);
-      } catch {
-        /* ignore parse errors */
-      }
-    });
-  }
+
 
   try {
     return await handler(request, {
