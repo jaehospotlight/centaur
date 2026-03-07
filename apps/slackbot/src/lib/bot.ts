@@ -454,8 +454,9 @@ function createBot() {
         message = `[budget: ${budgetMode}]\n\n${message}`;
       }
 
+      const viewerUrl = `${THREAD_VIEWER_URL}/${encodeURIComponent(normalizeThreadKey(threadKey))}`;
       const liveReply = new SlackLiveReply(channel, threadTs);
-      await liveReply.start("⏳ Working...");
+      await liveReply.start("⏳ Working...", { viewerUrl });
       const tracker = new ProgressTracker();
       const executionStartedAt = Date.now();
 

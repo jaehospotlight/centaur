@@ -609,11 +609,6 @@ function finalizeDrafts(drafts: SlackDraft[], metadata?: SlackReplyMetadata): Sl
     drafts[0].blocks.unshift(firstContext);
   }
 
-  const actionBlock = viewerActions(metadata);
-  if (actionBlock) {
-    drafts[drafts.length - 1].blocks.push(actionBlock);
-  }
-
   return drafts
     .filter((draft) => draft.blocks.length > 0 || draft.attachments.length > 0)
     .map((draft) => ({

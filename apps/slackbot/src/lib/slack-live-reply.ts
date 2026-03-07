@@ -20,13 +20,30 @@ export class SlackLiveReply {
     this.flushIntervalMs = opts?.flushIntervalMs ?? 2500;
   }
 
-  async start(initialText: string): Promise<void> {
-    const res = await this.slackApi("chat.postMessage", {
+  async start(initialText: string, opts?: { viewerUrl?: string }): Promise<void> {
+    const payload: Record<string, unknown> = {
       channel: this.channel,
       thread_ts: this.threadTs,
       text: initialText,
       unfurl_links: false,
-    });
+    };
+    if (opts?.viewerUrl) {
+      payload.blocks = [
+        { type: "section", text: { type: "mrkdwn", text: initialText } },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Thread Viewer", emoji: true },
+              url: opts.viewerUrl,
+              action_id: "open_thread_viewer",
+            },
+          ],
+        },
+      ];
+    }
+    const res = await this.slackApi("chat.postMessage", payload);
     if (res.ok && res.ts) {
       this.messageTs = res.ts;
     }
