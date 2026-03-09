@@ -57,8 +57,8 @@ services:
       OP_VAULT: Paradigm AI Secrets & API Keys
       SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
     networks:
-      - default
       - secrets_net
+      - secrets_egress
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8100/health"]
       interval: 5s
@@ -72,10 +72,12 @@ services:
     environment:
       SECRET_MANAGER_URL: http://secrets:8100
       SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
+      FIREWALL_API_URL: http://api:8000
     networks:
       - default
       - secrets_net
       - agent_net
+      - control_net
     volumes:
       - firewall-certs:/certs
     healthcheck:
@@ -89,34 +91,58 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
+      AUTH_TYPE: trust
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 200
+      DEFAULT_POOL_SIZE: 25
+    networks:
+      - data_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "localhost", "-p", "5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   api:
     build: .
     env_file:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
+      DATABASE_URL: postgresql://tempo@pgbouncer:5432/ai_v2
       SLACKBOT_URL: http://slackbot:3001
       AI_V2_LOG_LEVEL: info
-      SECRET_MANAGER_URL: http://secrets:8100
       REPOS_HOST_DIR: ${HOME}/github
       FIREWALL_HOST: firewall
       AGENT_NETWORK: ai_v2_agent_net
-      FIREWALL_CERTS_VOLUME: firewall-certs
+      FIREWALL_CERTS_VOLUME: ai_v2_firewall-certs
       # paradigmdb: connect to Shift Postgres via host-side SSH tunnel on :54321
       RESHIFT_DB_DSN: ${RESHIFT_DB_DSN:-}
       GOOGLE_APPLICATION_CREDENTIALS: /gcloud/adc.json
-      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
       NGINX_TRUSTED_CIDRS: "172.16.0.0/12"
       DOCKER_HOST: tcp://docker-socket-proxy:2375
+      API_SECRET_KEY: ${API_SECRET_KEY:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      HTTPS_PROXY: http://firewall:8080
+      REQUESTS_CA_BUNDLE: /firewall-certs/ca-cert.pem
+      SSL_CERT_FILE: /firewall-certs/ca-cert.pem
+      NO_PROXY: localhost,127.0.0.1,postgres,pgbouncer,redis,slackbot,api,auth,nginx,docker-socket-proxy,secrets,firewall,grafana,prometheus,victorialogs,promtail
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - default
-      - secrets_net
       - agent_net
       - app_net
       - data_net
+      - control_net
     volumes:
       - ./tools:/app/tools
       - ./tools-paradigm:/app/tools-paradigm
@@ -129,10 +155,8 @@ services:
       retries: 3
       start_period: 30s
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
-      secrets:
-        condition: service_started
       firewall:
         condition: service_healthy
       docker-socket-proxy:
@@ -145,20 +169,22 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       AI_V2_API_URL: http://api:8000
-      SECRET_MANAGER_URL: http://secrets:8100
-      DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
-      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
+      DATABASE_URL: postgresql://tempo@pgbouncer:5432/ai_v2
+      SLACK_BOT_TOKEN: SLACK_BOT_TOKEN
+      HTTPS_PROXY: http://firewall:8080
+      NODE_EXTRA_CA_CERTS: /firewall-certs/ca-cert.pem
+      NO_PROXY: localhost,127.0.0.1,postgres,pgbouncer,redis,api,auth,nginx
+    volumes:
+      - firewall-certs:/firewall-certs:ro
     networks:
       - default
-      - secrets_net
       - app_net
       - data_net
+      - agent_net
     depends_on:
       api:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      secrets:
         condition: service_healthy
     restart: unless-stopped
 
@@ -167,34 +193,25 @@ services:
       context: apps/web
     environment:
       AI_V2_API_URL: http://api:8000
-      SECRET_MANAGER_URL: http://secrets:8100
-      DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
-      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
+      DATABASE_URL: postgresql://tempo@pgbouncer:5432/ai_v2
     ports:
       - "127.0.0.1:3001:3001"
     networks:
       - default
-      - secrets_net
       - app_net
       - data_net
     depends_on:
       api:
-        condition: service_healthy
-      secrets:
         condition: service_healthy
     restart: unless-stopped
 
   auth:
     build: services/auth
     environment:
-      SECRET_MANAGER_URL: http://secrets:8100
-      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
+      API_SECRET_KEY: ${API_SECRET_KEY:-}
+      UI_PASSWORD: ${UI_PASSWORD:-}
     networks:
       - default
-      - secrets_net
-    depends_on:
-      secrets:
-        condition: service_healthy
     restart: unless-stopped
 
   nginx:
@@ -292,6 +309,9 @@ volumes:
 networks:
   secrets_net:
     internal: true
+  secrets_egress:
+    # Non-internal: gives the secret manager outbound internet access
+    # for 1Password SDK calls. Only the secrets container uses this.
   agent_net:
     internal: true
   app_net:
@@ -302,4 +322,6 @@ networks:
   data_net:
     internal: true
   obs_net:
+    internal: true
+  control_net:
     internal: true
