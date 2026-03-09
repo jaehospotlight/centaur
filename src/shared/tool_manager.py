@@ -236,32 +236,22 @@ def _load_env_file(path: Path) -> dict[str, str]:
 
 
 def load_plugins_config(config_path: Path) -> list[Path]:
-    """Read a plugins.yaml and return resolved plugin directory paths.
+    """Read a tools.toml and return resolved plugin directory paths.
 
-    The YAML file is expected to contain a single ``plugin_dirs`` key whose value
-    is a list of directory paths (strings).  Relative paths are resolved against
-    the config file's parent directory.  Returns an empty list when the file does
-    not exist.
+    The TOML file is expected to contain a ``plugin_dirs`` key whose value is a
+    list of directory paths (strings).  Relative paths are resolved against the
+    config file's parent directory.  Returns an empty list when the file does not
+    exist.
     """
     if not config_path.exists():
         return []
     base = config_path.parent
+    with open(config_path, "rb") as f:
+        data = tomllib.load(f)
     dirs: list[Path] = []
-    in_list = False
-    for raw_line in config_path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("plugin_dirs"):
-            in_list = True
-            continue
-        if in_list:
-            if line.startswith("- "):
-                entry = line[2:].strip().strip("'\"")
-                p = Path(entry)
-                dirs.append(p if p.is_absolute() else (base / p).resolve())
-            else:
-                break
+    for entry in data.get("plugin_dirs", []):
+        p = Path(entry)
+        dirs.append(p if p.is_absolute() else (base / p).resolve())
     return dirs
 
 

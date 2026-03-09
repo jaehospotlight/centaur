@@ -124,8 +124,8 @@ app.include_router(admin.router)
 _app_root = Path(__file__).resolve().parent.parent.parent
 _tools_dir = Path(os.environ.get("PLUGINS_DIR", _app_root / "tools"))
 
-_plugins_yaml = _app_root / "plugins.yaml"
-_plugin_dirs = load_plugins_config(_plugins_yaml)
+_plugins_config = _app_root / "tools.toml"
+_plugin_dirs = load_plugins_config(_plugins_config)
 _tools_dirs: list[Path] = _plugin_dirs if _plugin_dirs else [_tools_dir]
 
 tool_manager = ToolManager(_tools_dirs, root_env_path=_app_root / ".env")

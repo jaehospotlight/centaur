@@ -119,6 +119,7 @@ services:
       - data_net
     volumes:
       - ./tools:/app/tools
+      - ./tools-paradigm:/app/tools-paradigm
       - firewall-certs:/firewall-certs:ro
       - ${HOME}/.config/gcloud/application_default_credentials.json:/gcloud/adc.json:ro
     healthcheck:

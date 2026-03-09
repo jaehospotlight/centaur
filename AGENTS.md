@@ -97,7 +97,8 @@ ai_v2/
 │   ├── entrypoint.sh     # Writes harness configs, signals readiness
 │   ├── SYSTEM_PROMPT.md  # Baked as ~/AGENTS.md — tells harness to curl the API
 │   └── call.sh           # Helper for tool calls from inside the container
-├── tools/                # 73 tool integrations (slack, twitter, dune, etherscan, ...)
+├── tools/                # Open-source tools (alchemy, dune, etherscan, coingecko, ...)
+├── tools-paradigm/       # Paradigm-private tools (slack, bloomberg, coinbase, ...)
 ├── pi-plugins/           # TypeScript plugins (handoff, tool-harness, system-prompt)
 ├── migrations/           # Alembic migration versions
 ├── monitoring/           # nginx.conf, Grafana dashboards, Prometheus, Loki, Promtail
@@ -131,7 +132,7 @@ uv run mypy src/api src/etl src/shared
 
 ## Tool Conventions
 
-Every tool: `tools/<name>/` with `client.py` (class + `_client()` factory), `pyproject.toml` (`[tool.ai-v2] module = "client.py"`), optional `cli.py`.
+Tools live in `tools/` (open-source) or `tools-paradigm/` (Paradigm-private). Both directories are listed in `tools.toml` and auto-discovered. Every tool: `<dir>/<name>/` with `client.py` (class + `_client()` factory), `pyproject.toml` (`[tool.ai-v2] module = "client.py"`), optional `cli.py`.
 
 - `client.py`: NO `load_dotenv()`. Secrets via `os.getenv()` or `secret()`.
 - `cli.py`: YES `load_dotenv()` at top. Thin typer wrapper.
@@ -186,14 +187,14 @@ All deploys happen automatically via GitHub Actions on merge to `main`. **Never 
 
 | Change | Deploy action |
 |--------|--------------|
-| `tools/**` only | Zero-downtime hot-reload (file watcher auto-detects, no restart) |
+| `tools/**` or `tools-paradigm/**` only | Zero-downtime hot-reload (file watcher auto-detects, no restart) |
 | `src/**` | `docker compose up -d --build api` |
 | `src/etl/` or `src/shared/` | `docker compose up -d --build etl` |
 | `apps/slackbot/**` | `docker compose up -d --build slackbot` |
 | `sandbox/**` | `docker build -t agent2:latest sandbox/` |
 | `Dockerfile`, `pyproject.toml`, `uv.lock`, `docker-compose.yml`, `migrations/` | Rebuild API + ETL |
 
-**Tool hot-reload:** The API watches the bind-mounted `tools/` directory via `watchfiles`. When `git pull` updates tool files, the API auto-reloads within seconds — no container restart needed.
+**Tool hot-reload:** The API watches both bind-mounted `tools/` and `tools-paradigm/` directories via `watchfiles`. When `git pull` updates tool files, the API auto-reloads within seconds — no container restart needed.
 
 **Admin endpoint:** `POST /admin/reload-tools` is available as a manual fallback.
 
