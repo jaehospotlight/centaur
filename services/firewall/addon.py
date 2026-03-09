@@ -18,16 +18,21 @@ key-name placeholders that the replacement logic resolves.
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
 import logging
+import math
 import os
+import re
 import socket
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -133,6 +138,92 @@ ALLOWED_OUTBOUND_HEADERS: frozenset[str] = frozenset({
 
 FIXED_USER_AGENT = "ai-v2-sandbox/1.0"
 
+RATE_LIMIT = int(os.environ.get("FIREWALL_RATE_LIMIT", "500"))
+RATE_WINDOW = 60  # seconds
+
+BODY_INSPECTION_ENABLED = os.environ.get("FIREWALL_BODY_INSPECTION", "0") == "1"
+
+# ---------------------------------------------------------------------------
+# Unicode normalization (anti-homoglyph bypass)
+# ---------------------------------------------------------------------------
+
+_HOMOGLYPH_MAP: dict[str, str] = {
+    "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p",
+    "\u0441": "c", "\u0443": "y", "\u0445": "x", "\u0456": "i",
+    "\u0458": "j", "\u04bb": "h", "\u0455": "s", "\u0460": "w",
+    "\u0501": "d", "\u051b": "q", "\u051d": "w",
+    # Greek lookalikes
+    "\u03bf": "o", "\u03b1": "a", "\u03b5": "e", "\u03c1": "p",
+    "\u03b9": "i", "\u03ba": "k", "\u03bd": "v", "\u03c4": "t",
+}
+
+_ZERO_WIDTH_RE = re.compile(
+    "[\u200b-\u200f\u2028-\u202e\ufeff\u00ad\u2060\u180e]"
+)
+
+
+def _normalize_text(text: str) -> str:
+    """NFKC + strip combining marks + zero-width chars + homoglyph map."""
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = _ZERO_WIDTH_RE.sub("", text)
+    return text.translate(str.maketrans(_HOMOGLYPH_MAP))
+
+
+# ---------------------------------------------------------------------------
+# Prompt injection patterns (audit-only body inspection)
+# ---------------------------------------------------------------------------
+
+_INJECTION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    "injection": [
+        re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.I),
+        re.compile(r"\[SYSTEM\]", re.I),
+        re.compile(r"jailbreak", re.I),
+        re.compile(r"you\s+are\s+now\s+(in\s+)?DAN\b", re.I),
+        re.compile(r"disregard\s+(all\s+)?(prior|above)\s+", re.I),
+    ],
+    "execution": [
+        re.compile(r"curl\s.*\|\s*(ba)?sh", re.I),
+        re.compile(r"rm\s+-rf\s+/", re.I),
+        re.compile(r"\beval\s*\(", re.I),
+        re.compile(r"subprocess\.", re.I),
+    ],
+    "encoding": [
+        re.compile(r"base64\s+-d", re.I),
+        re.compile(r"\$\(.*\)", re.I),
+    ],
+}
+
+_PATTERN_WEIGHTS: dict[str, float] = {
+    "injection": 4.0,
+    "execution": 3.0,
+    "encoding": 2.0,
+}
+
+
+class _LRUCache:
+    """Thread-safe LRU cache with max size."""
+
+    def __init__(self, maxsize: int = 5000) -> None:
+        self._cache: OrderedDict[str, object] = OrderedDict()
+        self._maxsize = maxsize
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> object | None:
+        with self._lock:
+            if key not in self._cache:
+                return None
+            self._cache.move_to_end(key)
+            return self._cache[key]
+
+    def put(self, key: str, value: object) -> None:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = value
+            if len(self._cache) > self._maxsize:
+                self._cache.popitem(last=False)
+
 # Amp provider proxy rewriting: ampcode.com/api/provider/{provider}/...
 # is rewritten to call the real API directly with key-name placeholders.
 # prefix_to_strip → (real_host, header_name, header_value_template)
@@ -166,6 +257,14 @@ class CredentialInjector:
         self._known_keys: set[str] = set()
         self._canonicalize_google_key = False
         self._keys_lock = threading.Lock()
+        # Rate limiting: source_ip → list of timestamps
+        self._rate_tracker: dict[str, list[float]] = {}
+        self._rate_lock = threading.Lock()
+        # Reverse secret map for response scanning: secret_value → key_name
+        self._reverse_secrets: dict[str, str] = {}
+        self._reverse_lock = threading.Lock()
+        # Body inspection LRU cache
+        self._body_cache = _LRUCache(5000)
         log.info("credential injector started (stateless header-value replacement)")
         log.info("secret injection allowlist: %s", SECRET_INJECTION_HOSTS)
         self._start_health_server()
@@ -240,6 +339,15 @@ class CredentialInjector:
             if canonicalize_google_key:
                 log.info("canonicalizing GOOGLE_API_KEY to GEMINI_API_KEY for header injection")
             log.info("refreshed known keys: %d keys", len(keys))
+
+            # Build reverse map (secret_value → key_name) for response scanning
+            reverse: dict[str, str] = {}
+            for key_name in keys:
+                secret = self._get_secret(key_name)
+                if secret and len(secret) >= 8:
+                    reverse[secret] = key_name
+            with self._reverse_lock:
+                self._reverse_secrets = reverse
         except Exception:
             log.warning("failed to refresh known keys from secret manager")
 
@@ -273,10 +381,20 @@ class CredentialInjector:
     # ------------------------------------------------------------------
 
     def _replace_key_names(self, value: str) -> str:
-        """Replace any known key names in a header value with real secrets."""
+        """Replace any known key names in a header value with real secrets.
+
+        Applies unicode normalization before matching to defeat homoglyph
+        and zero-width character bypass attempts.
+        """
         with self._keys_lock:
             keys = self._known_keys
             canonicalize_google_key = self._canonicalize_google_key
+
+        # Normalize to catch homoglyph/zero-width smuggling
+        normalized = _normalize_text(value)
+        if normalized != value:
+            log.warning("unicode normalization changed header value (possible bypass attempt)")
+            value = normalized
 
         if canonicalize_google_key and "GOOGLE_API_KEY" in value:
             value = value.replace("GOOGLE_API_KEY", "GEMINI_API_KEY")
@@ -435,11 +553,151 @@ class CredentialInjector:
             del flow.request.headers[header_name]
 
     # ------------------------------------------------------------------
+    # Rate limiting (sliding window per source IP)
+    # ------------------------------------------------------------------
+
+    def _check_rate_limit(self, flow: http.HTTPFlow) -> bool:
+        """Return True and set 429 response if source exceeds rate limit."""
+        source_ip = flow.client_conn.peername[0] if flow.client_conn.peername else "unknown"
+        now = time.monotonic()
+        with self._rate_lock:
+            timestamps = self._rate_tracker.get(source_ip, [])
+            cutoff = now - RATE_WINDOW
+            timestamps = [t for t in timestamps if t > cutoff]
+            if len(timestamps) >= RATE_LIMIT:
+                self._rate_tracker[source_ip] = timestamps
+                flow.response = http.Response.make(
+                    429,
+                    b"Rate limit exceeded",
+                    {"content-type": "text/plain", "retry-after": "60"},
+                )
+                log.warning(
+                    "rate_limited",
+                    extra={"event": "rate_limited", "source_ip": source_ip,
+                           "count": len(timestamps)},
+                )
+                return True
+            timestamps.append(now)
+            self._rate_tracker[source_ip] = timestamps
+        return False
+
+    # ------------------------------------------------------------------
+    # Response body secret scanning
+    # ------------------------------------------------------------------
+
+    _SCANNABLE_CONTENT_TYPES = frozenset({
+        "application/json", "text/plain", "text/event-stream",
+        "text/html", "application/x-ndjson",
+    })
+
+    def _scan_response_body(self, flow: http.HTTPFlow) -> None:
+        """Scan LLM API response bodies for leaked secret values and redact."""
+        if not flow.response or not flow.response.content:
+            return
+        host = flow.request.pretty_host.lower().rstrip(".")
+        if host not in SECRET_INJECTION_HOSTS:
+            return
+        content_type = flow.response.headers.get("content-type", "").split(";")[0].strip()
+        if content_type not in self._SCANNABLE_CONTENT_TYPES:
+            return
+
+        with self._reverse_lock:
+            reverse = self._reverse_secrets.copy()
+        if not reverse:
+            return
+
+        body = flow.response.content
+        try:
+            text = body.decode("utf-8", errors="replace")
+        except Exception:
+            return
+
+        modified = False
+        for secret_value, key_name in reverse.items():
+            if secret_value in text:
+                text = text.replace(secret_value, f"[REDACTED:{key_name}]")
+                modified = True
+                log.warning(
+                    "secret_leaked_in_response",
+                    extra={"event": "secret_leaked_in_response", "key": key_name,
+                           "host": host, "path": flow.request.path[:200]},
+                )
+        if modified:
+            flow.response.content = text.encode("utf-8")
+
+    # ------------------------------------------------------------------
+    # Request body inspection (audit-only prompt injection detection)
+    # ------------------------------------------------------------------
+
+    def _inspect_request_body(self, flow: http.HTTPFlow) -> None:
+        """Scan LLM request bodies for prompt injection patterns. Audit only."""
+        if not BODY_INSPECTION_ENABLED:
+            return
+        if flow.request.method != "POST":
+            return
+        host = flow.request.pretty_host.lower().rstrip(".")
+        if host not in SECRET_INJECTION_HOSTS:
+            return
+        content_type = flow.request.headers.get("content-type", "").split(";")[0].strip()
+        if content_type != "application/json":
+            return
+        if not flow.request.content:
+            return
+
+        body_hash = hashlib.sha256(flow.request.content).hexdigest()
+        cache_key = f"body:{body_hash}"
+        cached = self._body_cache.get(cache_key)
+        if cached is not None:
+            return  # Already scanned this exact body
+
+        try:
+            text = flow.request.content.decode("utf-8", errors="replace")
+        except Exception:
+            return
+
+        normalized = _normalize_text(text)
+        risk_score = 0.0
+        detected: list[str] = []
+
+        for category, patterns in _INJECTION_PATTERNS.items():
+            match_count = 0
+            for pat in patterns:
+                if pat.search(normalized):
+                    match_count += 1
+                    detected.append(f"{category}:{pat.pattern[:60]}")
+            if match_count > 0:
+                cat_score = _PATTERN_WEIGHTS[category] * (1 + math.log(match_count))
+                risk_score += min(cat_score, _PATTERN_WEIGHTS[category] * 3)
+
+        self._body_cache.put(cache_key, risk_score)
+
+        if risk_score >= 2.0:
+            source_ip = (
+                flow.client_conn.peername[0] if flow.client_conn.peername else "unknown"
+            )
+            log.warning(
+                "prompt_injection_detected",
+                extra={
+                    "event": "prompt_injection_detected",
+                    "risk_score": round(risk_score, 2),
+                    "patterns": detected,
+                    "host": host,
+                    "path": flow.request.path[:200],
+                    "container_ip": source_ip,
+                    "text_sample": normalized[:100],
+                },
+            )
+
+    # ------------------------------------------------------------------
     # mitmproxy request hook
     # ------------------------------------------------------------------
 
     def request(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host.lower().rstrip(".")
+
+        # 0. Rate limiting (before any processing)
+        if self._check_rate_limit(flow):
+            return
 
         # 1. Strip sensitive inbound headers from sandbox requests
         for h in SENSITIVE_INBOUND_HEADERS:
@@ -480,18 +738,20 @@ class CredentialInjector:
             # Strip any key placeholders from headers for non-allowlisted hosts
             self._strip_key_placeholders(flow)
 
+        # 7. Audit-only body inspection for prompt injection patterns
+        self._inspect_request_body(flow)
+
     # ------------------------------------------------------------------
     # mitmproxy response hook — block redirects to internal IPs
     # ------------------------------------------------------------------
 
     def response(self, flow: http.HTTPFlow) -> None:
-        """Block redirects to internal/private IPs and audit-log every request."""
+        """Block redirects, scan for leaked secrets, and audit-log every request."""
         if flow.response and flow.response.status_code in (301, 302, 303, 307, 308):
             location = flow.response.headers.get("location", "")
             if location:
                 try:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(location)
+                    parsed = urllib.parse.urlparse(location)
                     if parsed.hostname and self._is_blocked_host(parsed.hostname):
                         flow.response = http.Response.make(
                             403,
@@ -502,10 +762,51 @@ class CredentialInjector:
                 except Exception:
                     pass
 
-        # Audit log: record every proxied request (no secret values)
+        # Scan response body for leaked secret values and redact
+        self._scan_response_body(flow)
+
+        # Structured audit log with risk scoring
         req = flow.request
         resp = flow.response
-        content_length = len(resp.content) if resp and resp.content else 0
+        host = req.pretty_host.lower().rstrip(".")
+        status = resp.status_code if resp else 0
+        req_bytes = len(req.content) if req.content else 0
+        resp_bytes = len(resp.content) if resp and resp.content else 0
+
+        # Compute risk score
+        risk_score = 0
+        if req.method.upper() not in SAFE_METHODS:
+            risk_score += 1
+        if host in SECRET_INJECTION_HOSTS:
+            risk_score += 2
+        if req_bytes > 100_000:
+            risk_score += 1
+        if 400 <= status < 600:
+            risk_score += 3
+
+        # Categorize
+        if host in SECRET_INJECTION_HOSTS:
+            category = "llm_api"
+        elif host in UNRESTRICTED_METHOD_HOSTS:
+            category = "github"
+        else:
+            category = "general"
+
+        source_ip = (
+            flow.client_conn.peername[0] if flow.client_conn.peername else "unknown"
+        )
+
+        # Duration
+        duration_ms = None
+        if (
+            resp
+            and hasattr(resp, "timestamp_end")
+            and resp.timestamp_end
+            and hasattr(req, "timestamp_start")
+            and req.timestamp_start
+        ):
+            duration_ms = round((resp.timestamp_end - req.timestamp_start) * 1000)
+
         log.info(
             "proxy_audit",
             extra={
@@ -513,9 +814,13 @@ class CredentialInjector:
                 "method": req.method,
                 "host": req.pretty_host,
                 "path": req.path[:200],
-                "status": resp.status_code if resp else 0,
-                "resp_bytes": content_length,
-                "req_bytes": len(req.content) if req.content else 0,
+                "status": status,
+                "resp_bytes": resp_bytes,
+                "req_bytes": req_bytes,
+                "risk_score": risk_score,
+                "category": category,
+                "container_ip": source_ip,
+                "duration_ms": duration_ms,
             },
         )
 
