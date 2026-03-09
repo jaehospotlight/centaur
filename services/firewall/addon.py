@@ -361,9 +361,25 @@ class CredentialInjector:
 
     def _start_keys_refresh(self) -> None:
         def loop() -> None:
+            # Fast retry on startup until both keys and injection map are loaded,
+            # then settle into the normal refresh interval.  This makes the
+            # firewall tolerant of any service startup order.
+            backoff = 2
             while True:
                 self._refresh_keys()
+                with self._injection_map_lock:
+                    map_loaded = bool(self._injection_map)
+                with self._keys_lock:
+                    keys_loaded = bool(self._known_keys)
+                if map_loaded and keys_loaded:
+                    break
+                log.info("waiting for keys/injection-map, retrying in %ds", backoff)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+            # Steady-state refresh
+            while True:
                 time.sleep(KEYS_REFRESH_INTERVAL)
+                self._refresh_keys()
 
         threading.Thread(target=loop, daemon=True).start()
 
@@ -617,6 +633,30 @@ class CredentialInjector:
             replaced = self._replace_key_names_filtered(value, host, allowed_keys, source_ip)
             if replaced != value:
                 flow.request.headers[header_name] = replaced
+
+    def _replace_in_url(self, flow: http.HTTPFlow) -> None:
+        """Scan URL path and query for key name placeholders and replace with real secrets.
+
+        Some APIs (e.g. Alchemy) embed the API key in the URL path rather than
+        a header.  This method applies the same replacement logic as
+        ``_replace_in_headers`` but to the request URL.
+        """
+        with self._keys_lock:
+            keys = self._known_keys
+        if not keys:
+            return
+
+        url = flow.request.url
+        has_key = any(k in url for k in keys)
+        if not has_key:
+            return
+
+        host = flow.request.pretty_host.lower().rstrip(".")
+        allowed_keys = self._get_allowed_keys_for_host(host)
+        source_ip = flow.client_conn.peername[0] if flow.client_conn.peername else "unknown"
+        replaced = self._replace_key_names_filtered(url, host, allowed_keys, source_ip)
+        if replaced != url:
+            flow.request.url = replaced
 
     def _strip_key_placeholders(self, flow: http.HTTPFlow) -> None:
         """Remove any header values that contain known key placeholders."""
@@ -949,6 +989,7 @@ class CredentialInjector:
         #    real credentials.  This avoids maintaining a static host allowlist
         #    that breaks whenever a new provider or tool API is added.
         self._replace_in_headers(flow)
+        self._replace_in_url(flow)
 
         # 7. Audit-only body inspection for prompt injection patterns
         self._inspect_request_body(flow)
