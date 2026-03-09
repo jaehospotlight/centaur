@@ -109,6 +109,14 @@ _PRIVATE_NETWORKS = (
     ipaddress.ip_network("169.254.0.0/16"),
 )
 
+# Internal hosts that sandboxes are allowed to reach despite resolving to
+# private IPs.  These are Docker-internal service names on agent_net.
+TRUSTED_INTERNAL_HOSTS: frozenset[str] = frozenset(
+    h.strip().lower()
+    for h in os.environ.get("FIREWALL_TRUSTED_INTERNAL_HOSTS", "api").split(",")
+    if h.strip()
+)
+
 SENSITIVE_INBOUND_HEADERS: frozenset[str] = frozenset(
     {"x-api-key", "x-forwarded-user"}
 )
@@ -478,7 +486,14 @@ class CredentialInjector:
         return any(_is_private_ip(addr) for addr in resolved)
 
     def _block_private_ip(self, flow: http.HTTPFlow, host: str) -> bool:
-        """Resolve host and block if any resolved IP is private/internal."""
+        """Resolve host and block if any resolved IP is private/internal.
+
+        Trusted internal hosts (e.g. the API service) are exempt — sandboxes
+        are allowed to reach them even though they resolve to private IPs.
+        """
+        if host in TRUSTED_INTERNAL_HOSTS:
+            return False
+
         if _is_private_ip(host):
             flow.response = http.Response.make(
                 403,
@@ -741,10 +756,10 @@ class CredentialInjector:
         host = flow.request.pretty_host.lower().rstrip(".")
 
         # 5. HTTP method filtering: hosts not in the unrestricted set are
-        #    limited to safe methods only (GET/HEAD/OPTIONS).  LLM API hosts
-        #    and essential services (github, ampcode) are unrestricted.
+        #    limited to safe methods only (GET/HEAD/OPTIONS).  LLM API hosts,
+        #    trusted internal services, and essential services are unrestricted.
         #    Skip if we just rewrote the request (it's now targeting an LLM host).
-        if not rewritten and host not in SECRET_INJECTION_HOSTS and host not in UNRESTRICTED_METHOD_HOSTS:
+        if not rewritten and host not in SECRET_INJECTION_HOSTS and host not in UNRESTRICTED_METHOD_HOSTS and host not in TRUSTED_INTERNAL_HOSTS:
             method = flow.request.method.upper()
             if method not in SAFE_METHODS:
                 flow.response = http.Response.make(
