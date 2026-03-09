@@ -24,7 +24,7 @@ from api.routers import pipe_agent as pipe_router_mod
 from api.warm_pool import start_replenish_loop, stop_replenish_loop
 from shared.config import settings
 from shared.db import close_pool, create_pool
-from shared.tool_manager import ToolManager
+from shared.tool_manager import ToolManager, load_plugins_config
 
 # ---------------------------------------------------------------------------
 # Structlog configuration — JSON in prod (non-tty), console in dev
@@ -67,12 +67,13 @@ def _warm_tool_caches() -> None:
 
 
 async def _watch_tools(pm: ToolManager) -> None:
-    """Watch the tools directory and auto-reload when files change."""
+    """Watch all plugin directories and auto-reload when files change."""
     from starlette.concurrency import run_in_threadpool
     from watchfiles import awatch
 
-    log.info("tool_watcher_started", path=str(pm.tools_dir))
-    async for changes in awatch(pm.tools_dir):
+    watch_dirs = [d for d in pm.tools_dirs if d.exists()]
+    log.info("tool_watcher_started", paths=[str(d) for d in watch_dirs])
+    async for changes in awatch(*watch_dirs):
         changed_files = [str(p) for _, p in changes]
         log.info("tool_files_changed", files=changed_files)
         try:
@@ -123,7 +124,11 @@ app.include_router(admin.router)
 _app_root = Path(__file__).resolve().parent.parent.parent
 _tools_dir = Path(os.environ.get("PLUGINS_DIR", _app_root / "tools"))
 
-tool_manager = ToolManager(_tools_dir)
+_plugins_yaml = _app_root / "plugins.yaml"
+_plugin_dirs = load_plugins_config(_plugins_yaml)
+_tools_dirs: list[Path] = _plugin_dirs if _plugin_dirs else [_tools_dir]
+
+tool_manager = ToolManager(_tools_dirs, root_env_path=_app_root / ".env")
 tool_manager.discover()
 app.state.tool_manager = tool_manager
 app.include_router(tool_manager.create_rest_router())

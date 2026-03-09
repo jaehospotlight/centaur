@@ -235,54 +235,110 @@ def _load_env_file(path: Path) -> dict[str, str]:
     return secrets
 
 
+def load_plugins_config(config_path: Path) -> list[Path]:
+    """Read a plugins.yaml and return resolved plugin directory paths.
+
+    The YAML file is expected to contain a single ``plugin_dirs`` key whose value
+    is a list of directory paths (strings).  Relative paths are resolved against
+    the config file's parent directory.  Returns an empty list when the file does
+    not exist.
+    """
+    if not config_path.exists():
+        return []
+    base = config_path.parent
+    dirs: list[Path] = []
+    in_list = False
+    for raw_line in config_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("plugin_dirs"):
+            in_list = True
+            continue
+        if in_list:
+            if line.startswith("- "):
+                entry = line[2:].strip().strip("'\"")
+                p = Path(entry)
+                dirs.append(p if p.is_absolute() else (base / p).resolve())
+            else:
+                break
+    return dirs
+
+
 class ToolManager:
     def __init__(
         self,
-        tools_dir: Path,
+        tools_dir: Path | list[Path],
         root_env_path: Path | None = None,
     ):
-        self.tools_dir = tools_dir
+        if isinstance(tools_dir, list):
+            self.tools_dirs: list[Path] = list(tools_dir)
+        else:
+            self.tools_dirs = [tools_dir]
+        self.tools_dir = self.tools_dirs[0]
         self.tools: dict[str, LoadedTool] = {}
         self.load_failures: list[dict[str, str]] = []
         self._reload_lock = threading.Lock()
         # Load root .env once — all tools inherit these secrets
         self._root_secrets: dict[str, str] = {}
         if root_env_path is None:
-            # Default: .env at the repo root (parent of tools_dir)
-            root_env_path = tools_dir.parent / ".env"
+            # Default: .env at the repo root (parent of primary tools_dir)
+            root_env_path = self.tools_dir.parent / ".env"
         self._root_secrets = _load_env_file(root_env_path)
 
     def _collect_tools(self, enabled: set[str] | None) -> list[tuple[Path, dict]]:
-        """Read pyproject.toml from each tool dir, optionally filtering."""
-        tools = []
-        for tool_dir in sorted(self.tools_dir.iterdir()):
-            if not tool_dir.is_dir() or tool_dir.name.startswith((".", "_")):
+        """Read pyproject.toml from each tool dir, optionally filtering.
+
+        Directories in ``self.tools_dirs`` are scanned in order.  When the same
+        tool name appears in a later directory it shadows the earlier one (useful
+        for private-overrides-public).
+        """
+        seen: dict[str, int] = {}
+        tools: list[tuple[Path, dict]] = []
+        for dir_idx, base_dir in enumerate(self.tools_dirs):
+            if not base_dir.exists():
                 continue
+            for tool_dir in sorted(base_dir.iterdir()):
+                if not tool_dir.is_dir() or tool_dir.name.startswith((".", "_")):
+                    continue
 
-            pyproject_path = tool_dir / "pyproject.toml"
-            if not pyproject_path.exists():
-                continue
+                pyproject_path = tool_dir / "pyproject.toml"
+                if not pyproject_path.exists():
+                    continue
 
-            with open(pyproject_path, "rb") as f:
-                pyproject = tomllib.load(f)
+                with open(pyproject_path, "rb") as f:
+                    pyproject = tomllib.load(f)
 
-            project = pyproject.get("project", {})
-            tool_conf = pyproject.get("tool", {}).get("ai-v2", {})
+                project = pyproject.get("project", {})
+                tool_conf = pyproject.get("tool", {}).get("ai-v2", {})
 
-            name = tool_dir.name
-            if enabled is not None and name not in enabled:
-                log.debug("tool_skipped", tool=name)
-                continue
+                name = tool_dir.name
+                if enabled is not None and name not in enabled:
+                    log.debug("tool_skipped", tool=name)
+                    continue
 
-            meta = {
-                "name": name,
-                "description": project.get("description", ""),
-                "dependencies": project.get("dependencies", []),
-                "scripts": project.get("scripts", {}),
-                "module": tool_conf.get("module", "tools.py"),
-                "cli_module": tool_conf.get("cli_module", "cli.py"),
-            }
-            tools.append((tool_dir, meta))
+                meta = {
+                    "name": name,
+                    "description": project.get("description", ""),
+                    "dependencies": project.get("dependencies", []),
+                    "scripts": project.get("scripts", {}),
+                    "module": tool_conf.get("module", "tools.py"),
+                    "cli_module": tool_conf.get("cli_module", "cli.py"),
+                }
+
+                if name in seen:
+                    prev_idx = seen[name]
+                    prev_pos = next(i for i, (_, m) in enumerate(tools) if m["name"] == name)
+                    log.info(
+                        "tool_shadowed",
+                        tool=name,
+                        shadowed_dir=str(self.tools_dirs[prev_idx]),
+                        by_dir=str(base_dir),
+                    )
+                    tools[prev_pos] = (tool_dir, meta)
+                else:
+                    tools.append((tool_dir, meta))
+                seen[name] = dir_idx
         return tools
 
     def discover(
@@ -290,9 +346,10 @@ class ToolManager:
         only_names: set[str] | None = None,
     ) -> list[LoadedTool]:
         """Discover and load all tools."""
-        if not self.tools_dir.exists():
+        existing = [d for d in self.tools_dirs if d.exists()]
+        if not existing:
             self.load_failures = []
-            log.info("tools_dir_missing", path=str(self.tools_dir))
+            log.info("tools_dirs_missing", paths=[str(d) for d in self.tools_dirs])
             return []
 
         enabled = only_names
