@@ -146,6 +146,7 @@ services:
       NGINX_TRUSTED_CIDRS: "172.16.0.0/12"
       DOCKER_HOST: tcp://docker-socket-proxy:2375
       HTTPS_PROXY: http://firewall:8080
+      HTTP_PROXY: http://firewall:8080
       REQUESTS_CA_BUNDLE: /firewall-certs/ca-cert.pem
       SSL_CERT_FILE: /firewall-certs/ca-cert.pem
       NO_PROXY: localhost,127.0.0.1,postgres,pgbouncer,redis,slackbot,api,auth,nginx,docker-socket-proxy,secrets,firewall,grafana,prometheus,victorialogs,promtail
