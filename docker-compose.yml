@@ -95,7 +95,7 @@ services:
     image: edoburu/pgbouncer:latest
     environment:
       DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
-      AUTH_TYPE: trust
+      AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 200
       DEFAULT_POOL_SIZE: 25
@@ -117,7 +117,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: postgresql://tempo@pgbouncer:5432/ai_v2
+      DATABASE_URL: postgresql://tempo:tempo_dev@pgbouncer:5432/ai_v2
       SLACKBOT_URL: http://slackbot:3001
       AI_V2_LOG_LEVEL: info
       REPOS_HOST_DIR: ${HOME}/github
@@ -153,7 +153,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 60s
+      start_period: 30s
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -169,7 +169,7 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       AI_V2_API_URL: http://api:8000
-      DATABASE_URL: postgresql://tempo@pgbouncer:5432/ai_v2
+      DATABASE_URL: postgresql://tempo:tempo_dev@pgbouncer:5432/ai_v2
       SLACK_BOT_TOKEN: SLACK_BOT_TOKEN
       HTTPS_PROXY: http://firewall:8080
       NODE_EXTRA_CA_CERTS: /firewall-certs/ca-cert.pem
@@ -193,7 +193,7 @@ services:
       context: apps/web
     environment:
       AI_V2_API_URL: http://api:8000
-      DATABASE_URL: postgresql://tempo@pgbouncer:5432/ai_v2
+      DATABASE_URL: postgresql://tempo:tempo_dev@pgbouncer:5432/ai_v2
     ports:
       - "127.0.0.1:3001:3001"
     networks:
