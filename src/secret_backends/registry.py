@@ -26,7 +26,8 @@ def auto_configure() -> SecretBackend:
     from secret_backends.http import HttpBackend
 
     url = os.environ.get("SECRET_MANAGER_URL", "")
-    backend = CompositeBackend([EnvBackend(), HttpBackend(url)]) if url else EnvBackend()
+    token = os.environ.get("SECRET_MANAGER_TOKEN", "")
+    backend = CompositeBackend([EnvBackend(), HttpBackend(url, token=token)]) if url else EnvBackend()
     configure(backend)
     return backend
 

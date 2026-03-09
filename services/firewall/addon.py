@@ -18,9 +18,11 @@ key-name placeholders that the replacement logic resolves.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import os
+import socket
 import threading
 import time
 import urllib.parse
@@ -36,11 +38,32 @@ CACHE_TTL = int(os.environ.get("FIREWALL_CACHE_TTL", "30"))
 HEALTH_PORT = int(os.environ.get("HEALTH_PORT", "8081"))
 KEYS_REFRESH_INTERVAL = int(os.environ.get("KEYS_REFRESH_INTERVAL", "60"))
 
-BLOCKED_HOSTS: frozenset[str] = frozenset(
-    {
-        "secrets",
-        "169.254.169.254",
-    }
+_DEFAULT_INJECTION_HOSTS = (
+    "api.openai.com,"
+    "api.anthropic.com,"
+    "api.together.ai,"
+    "api.exa.ai,"
+    "generativelanguage.googleapis.com,"
+    "api.x.ai"
+)
+SECRET_INJECTION_HOSTS: frozenset[str] = frozenset(
+    h.strip().lower()
+    for h in os.environ.get(
+        "FIREWALL_SECRET_INJECTION_HOSTS", _DEFAULT_INJECTION_HOSTS
+    ).split(",")
+    if h.strip()
+)
+
+_PRIVATE_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+)
+
+SENSITIVE_INBOUND_HEADERS: frozenset[str] = frozenset(
+    {"x-api-key", "x-forwarded-user"}
 )
 
 # Amp provider proxy rewriting: ampcode.com/api/provider/{provider}/...
@@ -53,6 +76,22 @@ _PROVIDER_REWRITES: dict[str, tuple[str, str, str]] = {
 }
 
 
+def _is_private_ip(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in _PRIVATE_NETWORKS)
+
+
+def _resolve_host(host: str) -> list[str]:
+    try:
+        results = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        return list({r[4][0] for r in results})
+    except socket.gaierror:
+        return []
+
+
 class CredentialInjector:
     def __init__(self) -> None:
         self._cache: dict[str, tuple[str | None, float]] = {}
@@ -61,6 +100,7 @@ class CredentialInjector:
         self._canonicalize_google_key = False
         self._keys_lock = threading.Lock()
         log.info("credential injector started (stateless header-value replacement)")
+        log.info("secret injection allowlist: %s", SECRET_INJECTION_HOSTS)
         self._start_health_server()
         self._start_keys_refresh()
 
@@ -216,6 +256,56 @@ class CredentialInjector:
             if replaced != value:
                 flow.request.headers[header_name] = replaced
 
+    def _strip_key_placeholders(self, flow: http.HTTPFlow) -> None:
+        """Remove any header values that contain known key placeholders."""
+        with self._keys_lock:
+            keys = self._known_keys
+        if not keys:
+            return
+
+        for header_name in list(flow.request.headers.keys()):
+            value = flow.request.headers[header_name]
+            if any(k in value for k in keys):
+                log.warning(
+                    "stripping header %s containing secret placeholder for non-allowlisted host",
+                    header_name,
+                )
+                del flow.request.headers[header_name]
+
+    # ------------------------------------------------------------------
+    # SSRF protection
+    # ------------------------------------------------------------------
+
+    def _is_blocked_host(self, hostname: str) -> bool:
+        """Return True if hostname is or resolves to a private/internal IP."""
+        if _is_private_ip(hostname):
+            return True
+        resolved = _resolve_host(hostname)
+        return any(_is_private_ip(addr) for addr in resolved)
+
+    def _block_private_ip(self, flow: http.HTTPFlow, host: str) -> bool:
+        """Resolve host and block if any resolved IP is private/internal."""
+        if _is_private_ip(host):
+            flow.response = http.Response.make(
+                403,
+                b"Blocked by SSRF protection: private IP",
+                {"content-type": "text/plain"},
+            )
+            log.warning("SSRF blocked: direct private IP %s", host)
+            return True
+
+        resolved = _resolve_host(host)
+        for addr in resolved:
+            if _is_private_ip(addr):
+                flow.response = http.Response.make(
+                    403,
+                    b"Blocked by SSRF protection: hostname resolves to private IP",
+                    {"content-type": "text/plain"},
+                )
+                log.warning("SSRF blocked: %s resolves to private IP %s", host, addr)
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # Provider rewriting
     # ------------------------------------------------------------------
@@ -267,21 +357,49 @@ class CredentialInjector:
     def request(self, flow: http.HTTPFlow) -> None:
         host = flow.request.pretty_host.lower().rstrip(".")
 
-        if host in BLOCKED_HOSTS:
-            flow.response = http.Response.make(
-                403,
-                b"Blocked by security policy",
-                {"content-type": "text/plain"},
-            )
-            log.warning("blocked request to %s", host)
+        # 1. Strip sensitive inbound headers from sandbox requests
+        for h in SENSITIVE_INBOUND_HEADERS:
+            if h in flow.request.headers:
+                del flow.request.headers[h]
+
+        # 2. SSRF protection: resolve destination IP, block if private/internal
+        if self._block_private_ip(flow, host):
             return
 
-        # Check for amp provider proxy rewrite first
+        # 3. Check for amp provider proxy rewrite
         self._try_provider_rewrite(flow, host)
 
-        # Replace key names in ALL header values (including any just set
-        # by provider rewrite above)
-        self._replace_in_headers(flow)
+        # Re-read host after potential provider rewrite
+        host = flow.request.pretty_host.lower().rstrip(".")
+
+        # 4. Secret injection: only inject for allowlisted hosts
+        if host in SECRET_INJECTION_HOSTS:
+            self._replace_in_headers(flow)
+        else:
+            # Strip any key placeholders from headers for non-allowlisted hosts
+            self._strip_key_placeholders(flow)
+
+    # ------------------------------------------------------------------
+    # mitmproxy response hook — block redirects to internal IPs
+    # ------------------------------------------------------------------
+
+    def response(self, flow: http.HTTPFlow) -> None:
+        """Block redirects to internal/private IPs."""
+        if flow.response and flow.response.status_code in (301, 302, 303, 307, 308):
+            location = flow.response.headers.get("location", "")
+            if location:
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(location)
+                    if parsed.hostname and self._is_blocked_host(parsed.hostname):
+                        flow.response = http.Response.make(
+                            403,
+                            b"Redirect to blocked destination",
+                            {"content-type": "text/plain"},
+                        )
+                        log.warning("blocked redirect to %s", parsed.hostname)
+                except Exception:
+                    pass
 
 
 addons = [CredentialInjector()]

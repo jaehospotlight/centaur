@@ -18,11 +18,12 @@ import asyncio
 import logging
 import os
 import re
+import secrets as _secrets_mod
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from onepassword.client import Client
 
 logging.basicConfig(
@@ -45,6 +46,9 @@ _last_refresh_error: str | None = None
 
 # SDK client — initialised once at startup
 _client: Client | None = None
+
+# Optional Bearer token for authenticating requests to sensitive endpoints.
+_SECRET_MANAGER_TOKEN = os.environ.get("SECRET_MANAGER_TOKEN", "")
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +266,22 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Secret Manager", version="0.1.0", lifespan=lifespan)
 
 
+async def verify_internal_token(
+    authorization: str | None = Header(None),
+) -> None:
+    """Require a valid Bearer token on sensitive endpoints.
+
+    If SECRET_MANAGER_TOKEN is not set, auth is skipped (backwards compatible).
+    """
+    if not _SECRET_MANAGER_TOKEN:
+        return
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization[7:]
+    if not _secrets_mod.compare_digest(token, _SECRET_MANAGER_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -271,20 +291,20 @@ def health() -> dict:
     }
 
 
-@app.get("/keys")
+@app.get("/keys", dependencies=[Depends(verify_internal_token)])
 def list_keys() -> dict:
     """List all cached key names (values are never exposed)."""
     return {"keys": sorted(_cache.keys()), "count": len(_cache)}
 
 
-@app.post("/reload")
+@app.post("/reload", dependencies=[Depends(verify_internal_token)])
 async def reload_secrets() -> dict:
     """Force an immediate refresh from 1Password."""
     count = await _load_all()
     return {"status": "ok", "cached_keys": count}
 
 
-@app.get("/secrets/{key}")
+@app.get("/secrets/{key}", dependencies=[Depends(verify_internal_token)])
 async def get_secret(key: str) -> dict:
     value = _cache.get(key)
     if value is None:

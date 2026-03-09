@@ -18,6 +18,11 @@ import {
 import { ApiError } from "./api-client";
 import { executeStreamingWithBusyRetries, reconnectStreamingWithRetries } from "./modes";
 import { truncateSlackText } from "./slack-text";
+import {
+  getThreadConfig,
+  setThreadConfig as setThreadConfigRedis,
+  type ThreadConfig,
+} from "./thread-mode-store";
 import { SlackLiveReply } from "./slack-live-reply";
 import { ProgressTracker } from "./progress-tracker";
 import { HandoffDetector } from "./handoff-detection";
@@ -69,18 +74,11 @@ function looksIncomplete(text: string): boolean {
 }
 
 const THREAD_VIEWER_URL = process.env.THREAD_VIEWER_URL || "https://svc-ai.paradigm.xyz";
-const MAX_TRACKED_THREAD_MODES = 500;
 const MAX_TRACKED_MENTION_DELIVERIES = 5000;
 const MENTION_DELIVERY_TTL_MS = 10 * 60 * 1000;
 const SLACK_BOT_USERNAME = process.env.SLACK_BOT_USERNAME || "paradigm-ai";
 
 type MarkdownNode = Root | Root["children"][number];
-type ThreadConfig = {
-  harness: Harness;
-  engine: Engine | null;
-  model: string | null;
-  budgetMode: BudgetMode | null;
-};
 
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
 const REQUIRED_SLACK_ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"] as const;
@@ -276,7 +274,6 @@ function createBot() {
     state: process.env.REDIS_URL ? createRedisState() : createMemoryState(),
     onLockConflict: "force",
   } as ConstructorParameters<typeof Chat>[0]);
-  const threadConfigs = new Map<string, ThreadConfig>();
   const recentMentionDeliveries = new Map<string, number>();
 
   function claimMentionDelivery(
@@ -310,14 +307,9 @@ function createBot() {
   }
 
   function setThreadConfig(threadKey: string, config: ThreadConfig): void {
-    if (threadConfigs.has(threadKey)) {
-      threadConfigs.delete(threadKey);
-    }
-    if (!threadConfigs.has(threadKey) && threadConfigs.size >= MAX_TRACKED_THREAD_MODES) {
-      const oldestKey = threadConfigs.keys().next().value as string | undefined;
-      if (oldestKey) threadConfigs.delete(oldestKey);
-    }
-    threadConfigs.set(threadKey, config);
+    setThreadConfigRedis(threadKey, config).catch((err) => {
+      console.warn("setThreadConfig_redis_failed", { threadKey, error: String(err) });
+    });
   }
 
   function buildSessionContext(threadId: string, requesterUserId?: string): string {
@@ -357,7 +349,7 @@ function createBot() {
     const requestId = generateId();
     const rawThreadKey = thread.id;
     const threadKey = normalizeThreadKey(rawThreadKey);
-    const previous = threadConfigs.get(threadKey);
+    const previous = await getThreadConfig(threadKey);
     const files: FileAttachment[] = (attachments || [])
       .filter((a): a is { url: string; name: string } => !!a.url && !!a.name)
       .map((a) => ({ url: a.url, name: a.name }));

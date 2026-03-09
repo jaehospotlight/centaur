@@ -19,11 +19,17 @@ class HttpBackend(SecretBackend):
     network calls.
     """
 
-    def __init__(self, url: str, cache_ttl: float = 60.0) -> None:
+    def __init__(self, url: str, cache_ttl: float = 60.0, token: str = "") -> None:
         self._url = url.rstrip("/")
         self._cache_ttl = cache_ttl
+        self._token = token
         self._cache: dict[str, tuple[str, float]] = {}
         self._cache_lock = Lock()
+
+    def _headers(self) -> dict[str, str]:
+        if self._token:
+            return {"Authorization": f"Bearer {self._token}"}
+        return {}
 
     async def get(self, key: str) -> str | None:
         now = monotonic()
@@ -38,7 +44,11 @@ class HttpBackend(SecretBackend):
         try:
             import httpx
 
-            resp = httpx.get(f"{self._url}/secrets/{quote(key, safe='')}", timeout=5.0)
+            resp = httpx.get(
+                f"{self._url}/secrets/{quote(key, safe='')}",
+                headers=self._headers(),
+                timeout=5.0,
+            )
             if resp.status_code != 200:
                 return None
             value = resp.json()["value"]
@@ -54,7 +64,7 @@ class HttpBackend(SecretBackend):
         try:
             import httpx
 
-            resp = httpx.get(f"{self._url}/keys", timeout=5.0)
+            resp = httpx.get(f"{self._url}/keys", headers=self._headers(), timeout=5.0)
             if resp.status_code == 200:
                 return resp.json().get("keys", [])
         except Exception:

@@ -9,6 +9,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - data_net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tempo -d ai_v2"]
       interval: 5s
@@ -19,11 +21,29 @@ services:
     image: redis:7-alpine
     volumes:
       - redisdata:/data
+    networks:
+      - data_net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1
+      POST: 1
+      EXEC: 1
+      LOG: 1
+      IMAGES: 0
+      VOLUMES: 0
+    networks:
+      - default
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
 
   # ⚠️  NEVER manually recreate this container — it requires OP_SERVICE_ACCOUNT_TOKEN
   # which is only injected by CI (GitHub Actions).  Manual `docker compose up -d secrets`
@@ -35,6 +55,7 @@ services:
     environment:
       OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN:-}
       OP_VAULT: Paradigm AI Secrets & API Keys
+      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
     networks:
       - default
       - secrets_net
@@ -50,6 +71,7 @@ services:
     build: services/firewall
     environment:
       SECRET_MANAGER_URL: http://secrets:8100
+      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
     networks:
       - default
       - secrets_net
@@ -84,14 +106,18 @@ services:
       # paradigmdb: connect to Shift Postgres via host-side SSH tunnel on :54321
       RESHIFT_DB_DSN: ${RESHIFT_DB_DSN:-}
       GOOGLE_APPLICATION_CREDENTIALS: /gcloud/adc.json
+      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
+      NGINX_TRUSTED_CIDRS: "172.16.0.0/12"
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - default
       - secrets_net
       - agent_net
+      - app_net
+      - data_net
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ./tools:/app/tools
       - firewall-certs:/firewall-certs:ro
       - ${HOME}/.config/gcloud/application_default_credentials.json:/gcloud/adc.json:ro
@@ -108,6 +134,8 @@ services:
         condition: service_started
       firewall:
         condition: service_healthy
+      docker-socket-proxy:
+        condition: service_started
     restart: unless-stopped
 
   slackbot:
@@ -119,9 +147,11 @@ services:
       SECRET_MANAGER_URL: http://secrets:8100
       DATABASE_URL: postgresql://tempo:tempo_dev@postgres:5432/ai_v2
       PIPE_API_URL: http://api:8000
+      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
     networks:
       - default
       - secrets_net
+      - app_net
     depends_on:
       api:
         condition: service_healthy
@@ -135,6 +165,7 @@ services:
     build: services/auth
     environment:
       SECRET_MANAGER_URL: http://secrets:8100
+      SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}
     networks:
       - default
       - secrets_net
@@ -154,6 +185,9 @@ services:
       - api
       - slackbot
       - grafana
+    networks:
+      - default
+      - obs_net
     restart: unless-stopped
 
   grafana:
@@ -173,6 +207,9 @@ services:
     depends_on:
       - prometheus
       - loki
+    networks:
+      - default
+      - obs_net
     restart: unless-stopped
 
   prometheus:
@@ -180,6 +217,9 @@ services:
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheusdata:/prometheus
+    networks:
+      - default
+      - obs_net
     restart: unless-stopped
 
   loki:
@@ -187,6 +227,9 @@ services:
     volumes:
       - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
       - lokidata:/loki
+    networks:
+      - default
+      - obs_net
     restart: unless-stopped
 
   promtail:
@@ -196,6 +239,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - loki
+    networks:
+      - default
+      - obs_net
     restart: unless-stopped
 
 volumes:
@@ -220,4 +266,13 @@ networks:
   secrets_net:
     internal: true
   agent_net:
+    internal: true
+  app_net:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.10.20.0/24
+  data_net:
+    internal: true
+  obs_net:
     internal: true

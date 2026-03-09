@@ -23,6 +23,9 @@ log = structlog.get_logger()
 
 
 def _docker_client() -> docker.DockerClient:
+    docker_host = os.getenv("DOCKER_HOST")
+    if docker_host:
+        return docker.DockerClient(base_url=docker_host)
     return docker.from_env()
 
 
@@ -40,10 +43,14 @@ def _fetch_secret(key: str) -> str:
 
 def _sm_list_keys() -> list[str]:
     url = os.environ.get("SECRET_MANAGER_URL", "http://secrets:8100")
+    token = os.environ.get("SECRET_MANAGER_TOKEN", "")
     try:
         import httpx
 
-        resp = httpx.get(f"{url}/keys", timeout=5.0)
+        headers: dict[str, str] = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        resp = httpx.get(f"{url}/keys", timeout=5.0, headers=headers)
         if resp.status_code == 200:
             return resp.json().get("keys", [])
     except Exception:
@@ -177,7 +184,7 @@ class DockerSandboxBackend(SandboxBackend):
             detach=True,
             stdin_open=True,
             tty=False,
-            network_mode=os.getenv("AGENT_NETWORK", "ai_v2_default"),
+            network=os.getenv("AGENT_NETWORK", "ai_v2_agent_net"),
             mem_limit="4g",
             nano_cpus=int(2 * 1e9),
             environment=env,

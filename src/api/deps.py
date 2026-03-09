@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import ipaddress
+import json
 import os
 import secrets
 import socket
@@ -129,6 +133,63 @@ def _get_api_secret_key() -> str:
     return _sm_read("API_SECRET_KEY") or os.environ.get("API_SECRET_KEY", "")
 
 
+# ---------------------------------------------------------------------------
+# Scoped sandbox tokens (HMAC-SHA256, sbx1.* format)
+# ---------------------------------------------------------------------------
+
+
+def mint_sandbox_token(thread_key: str, container_id: str, ttl_s: int = 7200) -> str:
+    """Create a short-lived sandbox token signed with API_SECRET_KEY."""
+    api_key = _get_api_secret_key()
+    if not api_key:
+        raise RuntimeError("API_SECRET_KEY not configured")
+
+    now = int(time.time())
+    payload = {
+        "thread_key": thread_key,
+        "container_id": container_id,
+        "created_at": now,
+        "expires_at": now + ttl_s,
+    }
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+    sig = hmac.new(api_key.encode(), payload_b64.encode(), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).decode()
+    return f"sbx1.{payload_b64}.{sig_b64}"
+
+
+def verify_sandbox_token(token: str) -> dict | None:
+    """Validate signature and expiry of a sandbox token. Returns claims or None."""
+    api_key = _get_api_secret_key()
+    if not api_key:
+        return None
+
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "sbx1":
+        return None
+
+    payload_b64 = parts[1]
+    sig_b64 = parts[2]
+
+    expected_sig = hmac.new(api_key.encode(), payload_b64.encode(), hashlib.sha256).digest()
+    try:
+        provided_sig = base64.urlsafe_b64decode(sig_b64)
+    except Exception:
+        return None
+
+    if not hmac.compare_digest(expected_sig, provided_sig):
+        return None
+
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception:
+        return None
+
+    if time.time() > payload.get("expires_at", 0):
+        return None
+
+    return payload
+
+
 def _is_sandbox_allowed_path(path: str) -> bool:
     return path.startswith(_SANDBOX_ALLOWED_PATH_PREFIXES)
 
@@ -151,6 +212,13 @@ async def verify_api_key(
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             token = auth[7:]
+
+    # Scoped sandbox tokens (sbx1.* format)
+    if token and token.startswith("sbx1."):
+        claims = verify_sandbox_token(token)
+        if claims is not None:
+            return f"sandbox:{claims['container_id']}"
+        raise HTTPException(status_code=401, detail="Invalid or expired sandbox token")
 
     if not token or not secrets.compare_digest(token, api_key):
         raise HTTPException(status_code=401, detail="Invalid API key")
