@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Any, ClassVar, get_type_hints
 
 import structlog
 from click.testing import CliRunner
@@ -190,6 +190,8 @@ class LoadedTool:
         scripts: dict[str, str],
         ctx: ToolContext,
         methods: list[ToolMethod],
+        hosts: list[str] | None = None,
+        secrets_keys: list[str] | None = None,
     ):
         self.name = name
         self.description = description
@@ -198,6 +200,8 @@ class LoadedTool:
         self.scripts = scripts
         self.ctx = ctx
         self.methods = methods
+        self.hosts: list[str] = hosts or []
+        self.secrets_keys: list[str] = secrets_keys or []
 
     @property
     def cli_path(self) -> Path:
@@ -287,8 +291,6 @@ class ToolManager:
         self.tools: dict[str, LoadedTool] = {}
         self.load_failures: list[dict[str, str]] = []
         self._reload_lock = threading.Lock()
-        # All secrets come from the secret-manager HTTP sidecar.
-        self._root_secrets: dict[str, str] = _fetch_backend_secrets()
 
     def _collect_tools(self, enabled: set[str] | None) -> list[tuple[Path, dict]]:
         """Read pyproject.toml from each tool dir, optionally filtering.
@@ -321,6 +323,18 @@ class ToolManager:
                     log.debug("tool_skipped", tool=name)
                     continue
 
+                hosts = tool_conf.get("hosts", [])
+                secrets_keys = tool_conf.get("secrets", [])
+
+                # Validate host patterns
+                for h in hosts:
+                    if h in ("*", "*.com", "*.org", "*.net", "*.io"):
+                        log.warning("tool_invalid_host", tool=name, host=h,
+                                    reason="catch-all domain not allowed")
+                    elif re.match(r"^\d+\.\d+\.\d+\.\d+$", h):
+                        log.warning("tool_invalid_host", tool=name, host=h,
+                                    reason="IP addresses not allowed")
+
                 meta = {
                     "name": name,
                     "description": project.get("description", ""),
@@ -328,6 +342,8 @@ class ToolManager:
                     "scripts": project.get("scripts", {}),
                     "module": tool_conf.get("module", "tools.py"),
                     "cli_module": tool_conf.get("cli_module", "cli.py"),
+                    "hosts": hosts,
+                    "secrets_keys": secrets_keys,
                 }
 
                 if name in seen:
@@ -396,6 +412,35 @@ class ToolManager:
         )
         return loaded
 
+    # Hardcoded infrastructure entries for the injection map.
+    _INFRA_INJECTION_MAP: ClassVar[dict[str, list[str]]] = {
+        "api.anthropic.com": ["ANTHROPIC_API_KEY"],
+        "api.openai.com": ["OPENAI_API_KEY"],
+        "api.x.ai": ["XAI_API_KEY"],
+        "generativelanguage.googleapis.com": ["GEMINI_API_KEY"],
+        "ampcode.com": ["AMP_API_KEY"],
+        "github.com": ["GITHUB_TOKEN"],
+        "api.github.com": ["GITHUB_TOKEN"],
+        "*.slack.com": ["SLACK_BOT_TOKEN"],
+    }
+
+    def build_injection_map(self) -> dict[str, list[str]]:
+        """Build host→allowed_keys injection map from tool manifests + infra entries."""
+        result: dict[str, set[str]] = {}
+
+        # 1. Hardcoded infra entries
+        for host, keys in self._INFRA_INJECTION_MAP.items():
+            result.setdefault(host, set()).update(keys)
+
+        # 2. Dynamic tool entries
+        for lt in self.tools.values():
+            if not lt.hosts or not lt.secrets_keys:
+                continue
+            for host in lt.hosts:
+                result.setdefault(host, set()).update(lt.secrets_keys)
+
+        return {host: sorted(keys) for host, keys in sorted(result.items())}
+
     def reload(self) -> dict[str, Any]:
         """Reload all tools by clearing module caches and re-discovering."""
         with self._reload_lock:
@@ -412,7 +457,7 @@ class ToolManager:
     def _load_tool(self, tool_dir: Path, manifest: dict) -> LoadedTool | None:
         name = manifest["name"]
 
-        secrets: dict[str, str] = dict(self._root_secrets)
+        secrets: dict[str, str] = {}
 
         ctx = ToolContext(name=name, secrets=secrets)
 
@@ -486,6 +531,8 @@ class ToolManager:
             scripts=manifest.get("scripts", {}),
             ctx=ctx,
             methods=methods,
+            hosts=manifest.get("hosts", []),
+            secrets_keys=manifest.get("secrets_keys", []),
         )
         log.info(
             "tool_loaded",
@@ -887,6 +934,11 @@ class ToolManager:
             original_env[key] = os.environ.get(key)
             os.environ[key] = value
 
+        import time as _time
+
+        t0 = _time.monotonic()
+        log.info("tool_call_started", tool_name=tool_name, method_name=method_name)
+
         token = set_tool_context(method.ctx)
         try:
             if inspect.iscoroutinefunction(method.fn):
@@ -894,10 +946,27 @@ class ToolManager:
             else:
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, lambda: method.fn(**args))
+            duration_ms = round((_time.monotonic() - t0) * 1000)
+            log.info(
+                "tool_call_completed",
+                tool_name=tool_name,
+                method_name=method_name,
+                duration_ms=duration_ms,
+                success=True,
+            )
             if isinstance(result, str):
                 return result
             return _to_toon(result)
         except SystemExit as e:
+            duration_ms = round((_time.monotonic() - t0) * 1000)
+            log.warning(
+                "tool_call_completed",
+                tool_name=tool_name,
+                method_name=method_name,
+                duration_ms=duration_ms,
+                success=False,
+                error=f"sys.exit({e.code})",
+            )
             return json.dumps(
                 {
                     "error": f"Tool called sys.exit({e.code})",
@@ -906,6 +975,15 @@ class ToolManager:
                 }
             )
         except Exception as e:
+            duration_ms = round((_time.monotonic() - t0) * 1000)
+            log.warning(
+                "tool_call_completed",
+                tool_name=tool_name,
+                method_name=method_name,
+                duration_ms=duration_ms,
+                success=False,
+                error=str(e),
+            )
             return json.dumps({"error": str(e), "tool": tool_name, "method": method_name})
         finally:
             reset_tool_context(token)

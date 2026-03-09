@@ -20,7 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from api.pipe_agent import recover_sessions
-from api.routers import admin, health
+from api.routers import admin, health, internal
 from api.routers import pipe_agent as pipe_router_mod
 from api.warm_pool import start_replenish_loop, stop_replenish_loop
 from shared.config import settings
@@ -144,6 +144,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(pipe_router_mod.router)
 app.include_router(admin.router)
+app.include_router(internal.router)
 
 
 # Load tools
@@ -166,9 +167,7 @@ def get_tool_manager() -> ToolManager:
 
 # ---------------------------------------------------------------------------
 def _get_api_secret_key() -> str:
-    from shared.tool_sdk import _sm_read
-
-    return _sm_read("API_SECRET_KEY") or ""
+    return os.environ.get("API_SECRET_KEY", "")
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +178,7 @@ _SLACK_TIMESTAMP_MAX_AGE = 5 * 60  # 5 minutes
 
 
 def _get_slack_signing_secret() -> str:
-    from shared.tool_sdk import _sm_read
-
-    return _sm_read("SLACK_SIGNING_SECRET") or ""
+    return os.environ.get("SLACK_SIGNING_SECRET", "")
 
 
 def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> tuple[bool, str]:
