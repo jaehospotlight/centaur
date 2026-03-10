@@ -239,16 +239,21 @@ async def verify_api_key(
         )
         raise HTTPException(status_code=401, detail="Invalid or expired sandbox token")
 
-    # Root key check
+    # Root key check — any caller with the root key is fully trusted.
     if token and secrets.compare_digest(token, api_key):
         request.state.api_key_info = APIKeyInfo(
             id="root", name="root", key_prefix="root", scopes=["*"], created_by="system",
             source="root",
         )
-        if _is_trusted_service_ip(client_ip):
-            return token
-        if not _is_trusted_nginx_ip(client_ip) and not _is_sandbox_allowed_path(request.url.path):
-            raise HTTPException(status_code=403, detail="API key scope does not permit this route")
+        return token
+
+    # Service key (SLACKBOT_API_KEY) — shared by slackbot and web app.
+    svc_key = os.environ.get("SLACKBOT_API_KEY", "")
+    if token and svc_key and secrets.compare_digest(token, svc_key):
+        request.state.api_key_info = APIKeyInfo(
+            id="service", name="service", key_prefix="svc", created_by="system",
+            scopes=["agent", "threads:read"], source="service",
+        )
         return token
 
     # DB key lookup

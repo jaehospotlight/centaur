@@ -20,7 +20,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from api.agent import recover_sessions
-from api.api_keys import ensure_service_keys
 from api.routers import admin, health, internal
 from api.routers import agent as agent_router_mod
 from api.warm_pool import start_replenish_loop, stop_replenish_loop
@@ -140,8 +139,6 @@ async def _push_injection_map() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db_pool = await create_pool(settings.database_url)
-    svc_keys_result = await ensure_service_keys(app.state.db_pool)
-    log.info("service_keys_ensured", **svc_keys_result)
     _warm_tool_caches()
     await _push_injection_map()
     result = await recover_sessions()

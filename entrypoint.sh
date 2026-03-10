@@ -10,7 +10,7 @@ set -euo pipefail
 
 source /app/scripts/bootstrap-secrets.sh
 
-bootstrap_required_secrets DATABASE_URL API_SECRET_KEY SLACK_SIGNING_SECRET
+bootstrap_required_secrets DATABASE_URL API_SECRET_KEY SLACK_SIGNING_SECRET SLACKBOT_API_KEY
 
 # Canonical env aliases
 if [[ -z "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_TOKEN:-}" ]]; then
