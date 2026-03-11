@@ -29,7 +29,7 @@ from toon_format import encode as toon_encode
 from typer.main import get_command
 
 from api.deps import verify_api_key
-from shared.tool_sdk import ToolContext, reset_tool_context, set_tool_context
+from centaur_sdk.tool_sdk import ToolContext, reset_tool_context, set_tool_context
 
 log = structlog.get_logger()
 _MAX_INLINE_TOOL_BINARY_BYTES = max(

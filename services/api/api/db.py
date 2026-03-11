@@ -1,4 +1,4 @@
-"""Sandbox-specific DB schema — sandbox_sessions + chat_messages tables."""
+"""Database pool management and sandbox schema."""
 
 from __future__ import annotations
 
@@ -6,6 +6,21 @@ import asyncpg
 import structlog
 
 log = structlog.get_logger()
+
+
+async def create_pool(database_url: str) -> asyncpg.Pool:
+    pool = await asyncpg.create_pool(
+        database_url,
+        min_size=2,
+        max_size=10,
+        command_timeout=60,
+    )
+    assert pool is not None
+    return pool
+
+
+async def close_pool(pool: asyncpg.Pool) -> None:
+    await pool.close()
 
 
 async def ensure_sandbox_schema(pool: asyncpg.Pool) -> None:

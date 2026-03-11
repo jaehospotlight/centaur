@@ -23,10 +23,10 @@ from api.db import ensure_sandbox_schema
 from api.routers import admin, health, internal
 from api.routers import agent as agent_router_mod
 from api.warm_pool import start_replenish_loop, stop_replenish_loop
-from shared.config import settings
-from shared.db import close_pool, create_pool
-from shared.logging_config import configure_structlog
-from shared.tool_manager import ToolManager, load_plugins_config
+from api.config import settings
+from api.db import close_pool, create_pool
+from api.logging_config import configure_structlog
+from api.tool_manager import ToolManager, load_plugins_config
 
 configure_structlog()
 
