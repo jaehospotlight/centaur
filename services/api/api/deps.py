@@ -7,8 +7,6 @@ import ipaddress
 import json
 import os
 import secrets
-import socket
-import threading
 import time
 from collections.abc import Callable
 from typing import Annotated
@@ -25,64 +23,6 @@ log = structlog.get_logger()
 # present a valid API key.  The previous "all private IPs" bypass was
 # too broad and allowed sandboxes to hit admin/secrets endpoints.
 _TRUSTED_PREFIXES = ("127.",)
-
-# Trust X-Forwarded-User only when caller IP maps to nginx.
-_NGINX_TRUSTED_IPS = tuple(
-    ip.strip() for ip in os.environ.get("NGINX_TRUSTED_IPS", "").split(",") if ip.strip()
-)
-_NGINX_TRUSTED_IP_PREFIX = os.environ.get("NGINX_TRUSTED_IP_PREFIX", "").strip()
-_NGINX_TRUSTED_HOSTS = tuple(
-    host.strip()
-    for host in os.environ.get("NGINX_TRUSTED_HOSTS", "nginx").split(",")
-    if host.strip()
-)
-_NGINX_RESOLVE_TTL_S = max(5, int(os.environ.get("NGINX_RESOLVE_TTL_S", "60")))
-_nginx_ips_cache_lock = threading.Lock()
-_nginx_ips_cache: tuple[str, ...] = tuple(sorted(_NGINX_TRUSTED_IPS))
-_nginx_ips_cache_expires_at = 0.0
-_SANDBOX_ALLOWED_PATH_PREFIXES = ("/agent", "/pipe", "/tools")
-
-
-def _resolve_nginx_ips_uncached() -> tuple[str, ...]:
-    resolved: set[str] = set(_NGINX_TRUSTED_IPS)
-    for host in _NGINX_TRUSTED_HOSTS:
-        try:
-            infos = socket.getaddrinfo(host, None, family=socket.AF_UNSPEC)
-        except OSError:
-            continue
-        for info in infos:
-            sockaddr = info[4]
-            if isinstance(sockaddr, tuple) and sockaddr and isinstance(sockaddr[0], str):
-                resolved.add(sockaddr[0])
-    return tuple(sorted(resolved))
-
-
-def _resolved_nginx_ips() -> tuple[str, ...]:
-    global _nginx_ips_cache_expires_at, _nginx_ips_cache
-    now = time.monotonic()
-    with _nginx_ips_cache_lock:
-        if _nginx_ips_cache and now < _nginx_ips_cache_expires_at:
-            return _nginx_ips_cache
-        resolved = _resolve_nginx_ips_uncached()
-        if resolved:
-            _nginx_ips_cache = resolved
-            _nginx_ips_cache_expires_at = now + _NGINX_RESOLVE_TTL_S
-        else:
-            # Preserve last known-good addresses on transient DNS failures.
-            _nginx_ips_cache_expires_at = now + min(5, _NGINX_RESOLVE_TTL_S)
-        return _nginx_ips_cache
-
-
-def _is_trusted_nginx_ip(client_ip: str) -> bool:
-    if not client_ip:
-        return False
-    if client_ip in _resolved_nginx_ips():
-        return True
-    if not _NGINX_TRUSTED_IP_PREFIX:
-        return False
-    if _NGINX_TRUSTED_IP_PREFIX.endswith("."):
-        return client_ip.startswith(_NGINX_TRUSTED_IP_PREFIX)
-    return client_ip == _NGINX_TRUSTED_IP_PREFIX
 
 
 def _is_loopback_ip(client_ip: str) -> bool:
@@ -155,10 +95,6 @@ def verify_sandbox_token(token: str) -> dict | None:
     return payload
 
 
-def _is_sandbox_allowed_path(path: str) -> bool:
-    return path.startswith(_SANDBOX_ALLOWED_PATH_PREFIXES)
-
-
 async def verify_api_key(
     request: Request,
     x_api_key: Annotated[str | None, Header()] = None,
@@ -227,7 +163,7 @@ async def verify_api_key(
             name="service",
             key_prefix="svc",
             created_by="system",
-            scopes=["agent", "threads:read", "tools:archiver"],
+            scopes=["agent", "threads:read"],
             source="service",
         )
         return token
@@ -284,46 +220,6 @@ async def verify_operator_api_key(
 ) -> str:
     token = await verify_api_key(request, x_api_key)
     key_info = get_key_info(request)
-    if key_info.source == "localhost":
-        return token
-    client_ip = request.client.host if request.client else ""
-    if _is_trusted_nginx_ip(client_ip) and check_scope(key_info, "admin"):
-        return token
-    if check_scope(key_info, "admin"):
+    if key_info.source == "localhost" or check_scope(key_info, "admin"):
         return token
     raise HTTPException(status_code=403, detail="Operator route requires admin scope")
-
-
-async def verify_ui_or_api_key(
-    request: Request,
-    x_api_key: Annotated[str | None, Header()] = None,
-) -> str:
-    """Accept nginx-forwarded auth or an API key."""
-    client_ip = request.client.host if request.client else ""
-
-    if _is_loopback_ip(client_ip):
-        request.state.api_key_info = APIKeyInfo(
-            id="localhost",
-            name="localhost",
-            key_prefix="",
-            scopes=["*"],
-            created_by="system",
-            source="localhost",
-        )
-        return "localhost-bypass"
-
-    forwarded_user = request.headers.get("x-forwarded-user")
-    if forwarded_user and not _is_trusted_nginx_ip(client_ip):
-        raise HTTPException(status_code=403, detail="Untrusted forwarded identity header")
-    if forwarded_user and _is_trusted_nginx_ip(client_ip):
-        request.state.api_key_info = APIKeyInfo(
-            id="nginx",
-            name=forwarded_user,
-            key_prefix="",
-            scopes=["*"],
-            created_by="nginx",
-            source="nginx",
-        )
-        return "nginx"
-
-    return await verify_api_key(request, x_api_key)

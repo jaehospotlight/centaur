@@ -37,31 +37,18 @@ def _repos_host_dir() -> str:
     return os.getenv("REPOS_HOST_DIR", os.path.expanduser("~/github"))
 
 
-# Harness CLIs require non-empty API key env vars to initialize.
-# The firewall replaces these stubs with real credentials in-flight.
 _HARNESS_STUB_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AMP_API_KEY")
 
 
-def _container_env(
-    thread_key: str,
-    container_name: str,
-    engine: str,
-) -> list[str]:
+def _container_env(thread_key: str, container_name: str) -> list[str]:
     """Build env vars for sandbox containers."""
     local_dev = os.getenv("AGENT_LOCAL_DEV", "").lower() in ("1", "true")
 
-    # Mint a scoped, time-limited sandbox token instead of the root API key.
-    try:
-        api_key = mint_sandbox_token(thread_key, container_name)
-    except Exception:
-        # Fallback to root key if minting fails (e.g. API_SECRET_KEY not configured)
-        log.warning("sandbox_token_mint_failed, falling back to root key", thread_key=thread_key)
-        api_key = os.getenv("API_SECRET_KEY", "")
+    api_key = mint_sandbox_token(thread_key, container_name)
 
     env = [
         f"AI_V2_API_URL={os.getenv('AGENT_API_URL', 'http://api:8000')}",
         f"AI_V2_API_KEY={api_key}",
-        f"AGENT_ENGINE={engine}",
     ]
 
     if local_dev:
@@ -168,13 +155,12 @@ class DockerSandboxBackend(SandboxBackend):
         repos_dir = os.path.abspath(_repos_host_dir())
 
         container_name = f"pipe-{thread_key.replace(':', '-').replace('.', '-')[:40]}"
-        env = _container_env(thread_key, container_name, engine)
+        env = _container_env(thread_key, container_name)
         if persona:
             env.append(f"AGENT_PERSONA={persona}")
         if repo:
             env.append(f"AGENT_REPO={repo}")
 
-        # Remove stale container with same name
         with contextlib.suppress(Exception):
             stale = client.containers.get(container_name)
             stale.remove(force=True)
@@ -186,10 +172,6 @@ class DockerSandboxBackend(SandboxBackend):
             "ai2.harness": harness,
             "ai2.engine": engine,
         }
-        if persona:
-            labels["ai2.persona"] = persona
-        if repo:
-            labels["ai2.repo"] = repo
         if warm:
             labels["ai2.warm"] = "true"
 
@@ -268,7 +250,6 @@ class DockerSandboxBackend(SandboxBackend):
                     yield stripped
 
     def stop(self, session: SandboxSession) -> None:
-        # Send interrupt and close sockets
         with contextlib.suppress(Exception):
             self.write_stdin(session, {"type": "interrupt"})
         self.close_streams(session)
@@ -316,7 +297,6 @@ class DockerSandboxBackend(SandboxBackend):
         for container in containers:
             thread_key = container.labels.get("ai2.thread", "")
             is_warm = container.labels.get("ai2.warm") == "true"
-            # Skip truly warm (unclaimed) containers — managed by warm_pool.py
             if is_warm and thread_key.startswith("warm-"):
                 continue
             if not thread_key:
@@ -360,13 +340,21 @@ class DockerSandboxBackend(SandboxBackend):
             container = client.containers.get(session.sandbox_id)
             container.rename(new_name)
 
-    def refresh_token(self, session: SandboxSession, new_token: str) -> None:
-        """Write a fresh API token into a running sandbox container.
-
-        Uses an env var to pass the token safely, avoiding shell injection.
-        """
+    def rename_by_id(self, sandbox_id: str, new_name: str) -> None:
+        """Rename a container by ID (no session needed)."""
         client = self._get_client()
-        container = client.containers.get(session.sandbox_id)
+        with contextlib.suppress(Exception):
+            container = client.containers.get(sandbox_id)
+            container.rename(new_name)
+
+    def refresh_token(self, session: SandboxSession, new_token: str) -> None:
+        """Write a fresh API token into a running sandbox container."""
+        self.refresh_token_by_id(session.sandbox_id, new_token)
+
+    def refresh_token_by_id(self, sandbox_id: str, new_token: str) -> None:
+        """Write a fresh API token into a running container by ID."""
+        client = self._get_client()
+        container = client.containers.get(sandbox_id)
         exit_code, _ = container.exec_run(
             ["sh", "-c", 'printf "%s" "$_TOKEN" > /home/agent/.api_key'],
             environment={"_TOKEN": new_token},
@@ -375,7 +363,7 @@ class DockerSandboxBackend(SandboxBackend):
         if exit_code != 0:
             log.warning(
                 "sandbox_token_refresh_failed",
-                sandbox=session.sandbox_id[:12],
+                sandbox=sandbox_id[:12],
                 exit_code=exit_code,
             )
 
@@ -389,7 +377,6 @@ class DockerSandboxBackend(SandboxBackend):
             return sessions
         for container in containers:
             thread_key = container.labels.get("ai2.thread", "")
-            # Only recover truly unclaimed warm containers
             if not thread_key.startswith("warm-"):
                 continue
             if container.status != "running":
@@ -407,20 +394,3 @@ class DockerSandboxBackend(SandboxBackend):
                 )
             )
         return sessions
-
-    def verify_running(self, sandbox_id: str) -> bool:
-        """Check if a container is still running. Returns False if gone."""
-        client = self._get_client()
-        try:
-            container = client.containers.get(sandbox_id)
-            return container.status == "running"
-        except NotFound:
-            return False
-
-    def force_remove(self, sandbox_id: str) -> None:
-        """Force-remove a container by ID."""
-        client = self._get_client()
-        with contextlib.suppress(Exception):
-            c = client.containers.get(sandbox_id)
-            c.stop(timeout=3)
-            c.remove()

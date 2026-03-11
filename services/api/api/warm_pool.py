@@ -44,12 +44,6 @@ _pool: list[WarmContainer] = []
 _replenish_task: asyncio.Task | None = None
 
 
-def pool_size() -> int:
-    """Current number of warm sandboxes ready."""
-    with _pool_lock:
-        return len(_pool)
-
-
 def pool_status() -> dict:
     """Return pool diagnostics."""
     with _pool_lock:
@@ -68,11 +62,7 @@ def pool_status() -> dict:
 def _spawn_warm_container() -> WarmContainer | None:
     """Synchronously create one warm sandbox. Returns None on failure."""
     backend = get_backend()
-    if not backend.supports_warm_pool:
-        return None
-
-    engines = {"amp": "amp", "claude-code": "claude-code", "codex": "codex", "pi-mono": "pi-mono"}
-    engine = engines.get(POOL_HARNESS, "amp")
+    engine = POOL_HARNESS if POOL_HARNESS in {"amp", "claude-code", "codex"} else "amp"
 
     placeholder_key = f"warm-{int(time.time() * 1000)}-{id(threading.current_thread())}"
     try:
@@ -91,10 +81,6 @@ def _spawn_warm_container() -> WarmContainer | None:
 
 def _replenish_sync() -> int:
     """Spawn sandboxes until the pool reaches target size. Returns count spawned."""
-    backend = get_backend()
-    if not backend.supports_warm_pool:
-        return 0
-
     spawned = 0
     while True:
         with _pool_lock:
@@ -128,30 +114,19 @@ def claim_container(thread_key: str, harness: str = "amp") -> SandboxSession | N
 
     backend = get_backend()
 
-    # Verify sandbox is still running
-    dummy_session = SandboxSession(
-        sandbox_id=warm.sandbox_id,
-        thread_key="",
-        harness=warm.harness,
-        engine=warm.engine,
-        backend_name=backend.name,
-    )
-    st = backend.status(dummy_session)
+    st = backend.status_by_id(warm.sandbox_id)
     if st != "running":
         log.warning("warm_container_dead_on_claim", sandbox=warm.sandbox_id[:12])
         with contextlib.suppress(Exception):
-            backend.stop(dummy_session)
+            backend.stop_by_id(warm.sandbox_id)
         return None
 
-    # Rename sandbox to match the thread key
     new_name = f"pipe-{thread_key.replace(':', '-').replace('.', '-')[:40]}"
-    backend.rename(dummy_session, new_name)
+    backend.rename_by_id(warm.sandbox_id, new_name)
 
-    # Mint a fresh sandbox token and inject it into the container.
-    # The original token was created at pool-spawn time and may have expired.
     try:
         fresh_token = mint_sandbox_token(thread_key, new_name)
-        backend.refresh_token(dummy_session, fresh_token)
+        backend.refresh_token_by_id(warm.sandbox_id, fresh_token)
     except Exception:
         log.warning("warm_claim_token_refresh_failed", sandbox=warm.sandbox_id[:12])
 
@@ -161,7 +136,6 @@ def claim_container(thread_key: str, harness: str = "amp") -> SandboxSession | N
         harness=harness,
         engine=warm.engine,
         started_at=time.time(),
-        backend_name=backend.name,
     )
     _get_runtime(session.sandbox_id)
 
@@ -183,14 +157,7 @@ def _cleanup_pool_sync() -> int:
     backend = get_backend()
     for warm in to_clean:
         with contextlib.suppress(Exception):
-            dummy = SandboxSession(
-                sandbox_id=warm.sandbox_id,
-                thread_key="",
-                harness=warm.harness,
-                engine=warm.engine,
-                backend_name=backend.name,
-            )
-            backend.stop(dummy)
+            backend.stop_by_id(warm.sandbox_id)
             cleaned += 1
     return cleaned
 
@@ -211,9 +178,6 @@ async def cleanup_pool() -> int:
 def _recover_warm_sync() -> int:
     """Recover existing warm sandboxes from backend on API restart."""
     backend = get_backend()
-    if not backend.supports_warm_pool:
-        return 0
-
     recovered = 0
     sessions = backend.recover_warm(POOL_HARNESS)
     with _pool_lock:
@@ -236,11 +200,9 @@ async def start_replenish_loop() -> asyncio.Task:
     global _replenish_task
 
     async def _loop() -> None:
-        # Recover any surviving warm sandboxes from a previous run
         recovered = await asyncio.to_thread(_recover_warm_sync)
         if recovered:
             log.info("warm_pool_recovered", recovered=recovered)
-        # Fill the rest
         count = await replenish()
         if count:
             log.info("warm_pool_initial_fill", spawned=count, target=POOL_SIZE)

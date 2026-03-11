@@ -13,8 +13,6 @@ import structlog
 
 log = structlog.get_logger()
 
-# Prefix for generated keys so they're recognizable
-_KEY_PREFIX_LEN = 8
 _KEY_BYTES = 32  # 256-bit random keys
 
 
@@ -34,7 +32,7 @@ def generate_key() -> tuple[str, str, str]:
     """Generate a new API key. Returns (plaintext_key, key_prefix, key_hash)."""
     raw = secrets.token_urlsafe(_KEY_BYTES)
     key = f"aiv2_{raw}"
-    prefix = key[:_KEY_PREFIX_LEN]
+    prefix = key[:8]
     key_hash = hashlib.sha256(key.encode()).hexdigest()
     return key, prefix, key_hash
 
@@ -179,33 +177,16 @@ async def list_keys(pool: asyncpg.Pool) -> list[dict]:
 def check_scope(key_info: APIKeyInfo, required: str, resource: str = "") -> bool:
     """Check if a key's scopes permit the requested action.
 
-    Scope format examples:
-      - "*"                    → everything
-      - "admin"                → /admin routes
-      - "agent"                → all /agent routes
-      - "agent:execute"        → only /agent/execute
-      - "agent:execute,status" → /agent/execute and /agent/status
-      - "tools:*"              → all tools
-      - "tools:slack"          → only the slack tool
-      - "tools:slack,twitter"  → slack and twitter
-      - "threads"              → all thread viewer routes
-      - "threads:read"         → read-only thread access
+    Scope format: "*" (wildcard), "admin", "agent", "agent:execute",
+    "tools:*", "tools:<name>", "threads", "threads:read".
 
-    The `required` argument uses "category" or "category:action" format.
-    A scope of "agent" grants access to all agent sub-actions.
-    A scope of "agent:execute" only grants the execute sub-action.
-
-    Arguments:
-      required: the scope to check, e.g. "agent:execute", "admin", "tools"
-      resource: for tools scope, the tool name being accessed
+    A bare category scope (e.g. "agent") grants all sub-actions.
     """
     scopes = key_info.scopes
 
-    # Wildcard — full access
     if "*" in scopes:
         return True
 
-    # Parse required into category + optional action
     if ":" in required and not required.startswith("tools:"):
         category, action = required.split(":", 1)
     else:
@@ -216,26 +197,14 @@ def check_scope(key_info: APIKeyInfo, required: str, resource: str = "") -> bool
         for scope in scopes:
             if scope == "tools:*":
                 return True
-            if scope.startswith("tools:"):
-                allowed = {t.strip() for t in scope[6:].split(",")}
-                if resource in allowed:
-                    return True
+            if scope.startswith("tools:") and resource == scope[6:]:
+                return True
         return False
 
-    # For all other categories (admin, agent, threads, etc.):
-    # - Bare category scope (e.g. "agent") grants all sub-actions
-    # - Sub-scoped (e.g. "agent:execute") grants only that action
     for scope in scopes:
-        # Exact match: "agent" matches required "agent" or "agent:execute"
         if scope == category:
             return True
-        # Sub-scope match: "agent:execute" matches required "agent:execute"
         if action and scope == required:
             return True
-        # Comma-delimited sub-scope: "agent:execute,status" matches "agent:execute"
-        if action and scope.startswith(f"{category}:"):
-            allowed = {a.strip() for a in scope[len(category) + 1 :].split(",")}
-            if action in allowed:
-                return True
 
     return False

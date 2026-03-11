@@ -9,18 +9,9 @@ from api.deps import verify_operator_api_key
 router = APIRouter()
 
 
-@router.get("/health/live")
-async def health_live() -> dict:
-    return {"status": "ok"}
-
-
 @router.get("/health")
-async def health() -> dict:
-    return {"status": "ok"}
-
-
 @router.get("/health/ready")
-async def health_ready() -> dict:
+async def health() -> dict:
     return {"status": "ok"}
 
 

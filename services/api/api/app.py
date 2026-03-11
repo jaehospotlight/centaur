@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import sys
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -15,61 +12,21 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.db import ensure_sandbox_schema
-from api.routers import admin, health, internal
-from api.routers import agent as agent_router_mod
-from api.warm_pool import start_replenish_loop, stop_replenish_loop
 from api.config import settings
 from api.db import close_pool, create_pool
 from api.logging_config import configure_structlog
+from api.routers import admin, health, internal
+from api.routers import agent as agent_router_mod
 from api.tool_manager import ToolManager, load_plugins_config
+from api.warm_pool import start_replenish_loop, stop_replenish_loop
 
 configure_structlog()
 
 log = structlog.get_logger().bind(service="api")
 
-# ---------------------------------------------------------------------------
-# Uvicorn access/error log → JSON stdout (same schema as structlog)
-# ---------------------------------------------------------------------------
-
-
-class _UvicornJsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        return json.dumps(
-            {
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z",
-                "level": record.levelname.lower(),
-                "service": "api",
-                "event": "http_request",
-                "msg": record.getMessage(),
-            }
-        )
-
-
-for _uvi_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-    _uvi_logger = logging.getLogger(_uvi_name)
-    _uvi_logger.handlers = [logging.StreamHandler(sys.stdout)]
-    _uvi_logger.handlers[0].setFormatter(_UvicornJsonFormatter())
-    _uvi_logger.propagate = False
-
-
-def _warm_tool_caches() -> None:
-    """Pre-warm slow tool caches in background thread."""
-    import threading
-
-    def _warm() -> None:
-        try:
-            slack_tool = tool_manager.tools.get("slack")
-            if not slack_tool or not slack_tool.methods:
-                return
-            client = slack_tool.methods[0].fn.__self__
-            client._get_user_cache()
-            client.list_bot_channels()
-            log.info("slack_cache_warmed")
-        except Exception as e:
-            log.warning("slack_cache_warm_failed", error=str(e))
-
-    threading.Thread(target=_warm, daemon=True).start()
+# Suppress noisy uvicorn access logs (nginx already logs requests)
+for _uvi_name in ("uvicorn.access",):
+    logging.getLogger(_uvi_name).propagate = False
 
 
 async def _watch_tools(pm: ToolManager) -> None:
@@ -119,8 +76,6 @@ async def _push_injection_map() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db_pool = await create_pool(settings.database_url)
-    await ensure_sandbox_schema(app.state.db_pool)
-    _warm_tool_caches()
     await _push_injection_map()
     watcher_task = asyncio.create_task(_watch_tools(tool_manager))
     await start_replenish_loop()
