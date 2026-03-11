@@ -102,7 +102,7 @@ export function getSlackBootstrapState(): { ready: boolean; missingEnvKeys: stri
 }
 
 function isPersonaHarness(harness: Harness): boolean {
-  return harness === "legal" || harness === "eng" || harness === "invest";
+  return harness === "legal" || harness === "eng" || harness === "invest" || harness === "events";
 }
 
 type SlackReply = {

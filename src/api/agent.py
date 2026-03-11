@@ -44,6 +44,10 @@ _PERSONA_PROFILES: dict[str, dict[str, str]] = {
         "persona": "invest",
         "repo": os.getenv("INVEST_DEFAULT_REPO", "paradigmxyz/ai_v2"),
     },
+    "events": {
+        "engine": "amp",
+        "persona": "events",
+    },
 }
 
 

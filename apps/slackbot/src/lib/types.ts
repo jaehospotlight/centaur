@@ -6,7 +6,8 @@ export type Harness =
   | "eng"
   | "engineer"
   | "legal"
-  | "invest";
+  | "invest"
+  | "events";
 export type ThreadState = "running" | "idle" | "stopped" | "stopping" | "working" | "error";
 
 export type ThreadTokenUsage = {

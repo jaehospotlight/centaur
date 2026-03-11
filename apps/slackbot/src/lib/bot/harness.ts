@@ -4,7 +4,7 @@ import { getPool } from "@/lib/db";
 import { normalizeHarnessEvent, type CanonicalEvent } from "@/lib/normalize-harness-event";
 
 export type Engine = "amp" | "claude-code" | "codex" | "pi-mono";
-export type Harness = Engine | "eng" | "legal" | "invest";
+export type Harness = Engine | "eng" | "legal" | "invest" | "events";
 export type BudgetMode = "simple" | "auto" | "complex";
 export type FileAttachment = { url: string; name: string };
 export type ExecuteSource = "slack" | "thread_ui" | "api";
@@ -74,8 +74,8 @@ export function extractRunOptions(text: string, context: RunOptionContext = {}):
   let budgetExplicit = false;
   const activeHarness = context.activeHarness ?? null;
 
-  const isPersonaHarness = (value: Harness): value is "eng" | "legal" | "invest" =>
-    value === "eng" || value === "legal" || value === "invest";
+  const isPersonaHarness = (value: Harness): value is "eng" | "legal" | "invest" | "events" =>
+    value === "eng" || value === "legal" || value === "invest" || value === "events";
 
   const applyHarness = (value: Harness): void => {
     if (isPersonaHarness(value)) {
@@ -115,10 +115,17 @@ export function extractRunOptions(text: string, context: RunOptionContext = {}):
     cleaned = cleaned.replace(investRegex, " ");
     investRegex.lastIndex = 0;
   }
+  // --events flag -> harness="events"
+  const eventsRegex = /(^|\s)--events(?=\s|$)/gi;
+  if (eventsRegex.test(cleaned)) {
+    applyHarness("events");
+    cleaned = cleaned.replace(eventsRegex, " ");
+    eventsRegex.lastIndex = 0;
+  }
 
   // harness=<value> key-value
   const kvMatch = cleaned.match(
-    /\bharness\s*=\s*(amp|claude-code|codex|pi-mono|eng|legal|invest)\b/i
+    /\bharness\s*=\s*(amp|claude-code|codex|pi-mono|eng|legal|invest|events)\b/i
   );
   if (kvMatch) {
     applyHarness(kvMatch[1].toLowerCase() as Harness);
@@ -611,9 +618,11 @@ export async function fetchThreadRuntimeConfig(
         ? "legal"
         : rawHarness === "invest"
           ? "invest"
-        : rawHarness === "amp" || rawHarness === "claude-code" || rawHarness === "codex" || rawHarness === "pi-mono"
-          ? (rawHarness as Engine)
-          : null;
+          : rawHarness === "events"
+            ? "events"
+            : rawHarness === "amp" || rawHarness === "claude-code" || rawHarness === "codex" || rawHarness === "pi-mono"
+              ? (rawHarness as Engine)
+              : null;
   const engine: Engine | null =
     rawEngine === "amp" || rawEngine === "claude-code" || rawEngine === "codex" || rawEngine === "pi-mono"
       ? (rawEngine as Engine)
