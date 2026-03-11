@@ -85,6 +85,15 @@
 |Do NOT send a separate text message describing the chart AND then upload — one message only.
 |The file appearing in the thread IS the confirmation; never send a redundant "Uploaded ✅" follow-up.
 
+[Media generation]
+|For image generation or image edits, use `nano-banana`:
+|  `nano-banana generate "Prompt" --comment "What this image shows"`
+|  `nano-banana edit /home/agent/uploads/input.png "Edit prompt" --comment "Updated image"`
+|When `--comment` is provided, the helper saves the image locally and uploads it to the current Slack thread.
+|If you only want a local file, omit `--comment` and the helper will print the saved path under `/tmp/`.
+|Use `/home/agent/uploads/` for images the user attached in the current thread.
+|Do not use raw `call nano-banana ...` for normal Slack replies; that returns JSON/base64 intended for the helper.
+
 [API access — use `call` helper (returns TOON, saves tokens)]
 |call <tool> <method> [json_body] → e.g. call arkham get_transfers '{"address":"0x..."}'
 |call search <query> [limit]     → semantic+keyword search
@@ -245,4 +254,3 @@
 |    2025-01-02,3520
 |    2025-01-03,3480
 |```
-

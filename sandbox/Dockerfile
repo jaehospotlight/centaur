@@ -66,6 +66,7 @@ RUN mkdir -p ~/.amp/bin ~/.config/amp ~/.codex ~/.pi/agent ~/github ~/workspace 
 # ── Stable helpers (change rarely → cached) ──────────────────────────────────
 COPY --chmod=755 call.sh /usr/local/bin/call
 COPY --chmod=755 slack-upload.sh /usr/local/bin/slack-upload
+COPY --chmod=755 nano-banana.sh /usr/local/bin/nano-banana
 COPY --chmod=755 md2docx.py /usr/local/bin/md2docx
 
 # ── Entrypoint + adapter (change sometimes) ─────────────────────────────────

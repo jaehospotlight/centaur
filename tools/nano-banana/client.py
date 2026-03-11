@@ -1,39 +1,50 @@
-"""Nano Banana (Gemini Image Generation) client."""
+"""Nano Banana (Gemini image generation) client."""
 
-from io import BytesIO
+from __future__ import annotations
+
+import base64
+import json
+import mimetypes
+import time
 from pathlib import Path
+from typing import Any
 
 from google import genai
 from google.genai import types
-from PIL import Image
 from shared.tool_sdk import secret
 
 
-MODELS = {
-    "flash": "gemini-2.5-flash-image",
-    "pro": "gemini-3-pro-image-preview",
+MODELS: dict[str, dict[str, str]] = {
+    "flash": {
+        "id": "gemini-3.1-flash-image-preview",
+        "label": "Nano Banana 2",
+        "description": "Fast image generation/editing with thinking and search grounding.",
+    },
+    "pro": {
+        "id": "gemini-3-pro-image-preview",
+        "label": "Nano Banana Pro",
+        "description": "Higher-quality image generation/editing for polished assets.",
+    },
 }
 
 DEFAULT_MODEL = "flash"
+_DEFAULT_OUTPUT_MIME_TYPE = "image/png"
+_MIME_TYPE_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 
 class NanoBananaClient:
-    """Client for Google Gemini image generation (Nano Banana).
-
-    Supports both Gemini 2.5 Flash Image (fast) and Gemini 3 Pro Image Preview (high quality).
-    """
+    """Client for Google's Nano Banana image generation models."""
 
     def __init__(self, api_key: str | None = None):
-        """Initialize the Nano Banana client.
-
-        Args:
-            api_key: Optional API key. If not provided, will check GOOGLE_API_KEY env var.
-        """
         self._api_key = api_key
         self._client: genai.Client | None = None
 
     def _get_api_key(self) -> str:
-        """Get API key from instance or env var."""
         if self._api_key:
             return self._api_key
         key = secret("GOOGLE_API_KEY", "")
@@ -43,19 +54,149 @@ class NanoBananaClient:
 
     @property
     def client(self) -> genai.Client:
-        """Get or create the genai client."""
         if self._client is None:
-            api_key = self._get_api_key()
-            self._client = genai.Client(api_key=api_key)
+            self._client = genai.Client(api_key=self._get_api_key())
         return self._client
 
-    def list_models(self) -> dict[str, str]:
-        """List available image generation models.
+    def _resolve_model(self, model: str) -> tuple[str, dict[str, str]]:
+        key = (model or DEFAULT_MODEL).strip().lower()
+        if key in MODELS:
+            return key, MODELS[key]
+        return model, {"id": model, "label": model, "description": ""}
 
-        Returns:
-            Dictionary mapping short names to full model IDs.
-        """
-        return MODELS.copy()
+    def _build_generate_config(
+        self,
+        *,
+        aspect_ratio: str | None,
+        image_size: str | None,
+        person_generation: str | None,
+        output_mime_type: str | None,
+        output_compression_quality: int | None,
+        use_google_search: bool,
+        thinking_budget: int | None,
+        thinking_level: str | None,
+    ) -> types.GenerateContentConfig:
+        config_kwargs: dict[str, Any] = {
+            "response_modalities": ["TEXT", "IMAGE"],
+        }
+
+        image_config_kwargs: dict[str, Any] = {}
+        if aspect_ratio:
+            image_config_kwargs["aspect_ratio"] = aspect_ratio
+        if image_size:
+            image_config_kwargs["image_size"] = image_size
+        if person_generation:
+            image_config_kwargs["person_generation"] = person_generation.upper()
+        if output_mime_type:
+            image_config_kwargs["output_mime_type"] = output_mime_type
+        if output_compression_quality is not None:
+            image_config_kwargs["output_compression_quality"] = output_compression_quality
+        if image_config_kwargs:
+            config_kwargs["image_config"] = types.ImageConfig(**image_config_kwargs)
+
+        thinking_kwargs: dict[str, Any] = {}
+        if thinking_budget is not None:
+            thinking_kwargs["thinking_budget"] = thinking_budget
+        if thinking_level:
+            thinking_kwargs["thinking_level"] = thinking_level.upper()
+        if thinking_kwargs:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(**thinking_kwargs)
+
+        if use_google_search:
+            config_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+
+        return types.GenerateContentConfig(**config_kwargs)
+
+    def _infer_image_mime_type(self, path: Path) -> str:
+        guessed, _ = mimetypes.guess_type(path.name)
+        return guessed or _DEFAULT_OUTPUT_MIME_TYPE
+
+    def _build_image_part(
+        self,
+        *,
+        image_path: str | None,
+        image_base64: str | None,
+        image_mime_type: str | None,
+    ) -> types.Part:
+        if image_path and image_base64:
+            raise ValueError("Provide either image_path or image_base64, not both.")
+        if not image_path and not image_base64:
+            raise ValueError("Either image_path or image_base64 is required.")
+
+        if image_path:
+            path = Path(image_path)
+            if not path.exists():
+                raise FileNotFoundError(f"Image not found: {path}")
+            image_bytes = path.read_bytes()
+            mime_type = image_mime_type or self._infer_image_mime_type(path)
+        else:
+            try:
+                image_bytes = base64.b64decode(image_base64 or "", validate=True)
+            except Exception as exc:  # pragma: no cover - exact decoder error text is irrelevant
+                raise ValueError("image_base64 is not valid base64.") from exc
+            mime_type = image_mime_type or _DEFAULT_OUTPUT_MIME_TYPE
+
+        return types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+
+    def _extract_response_text(self, response: Any) -> str | None:
+        parts = getattr(response, "parts", None) or []
+        text_parts = [part.text.strip() for part in parts if getattr(part, "text", None)]
+        return "\n".join(text_parts) if text_parts else None
+
+    def _extract_generated_image(self, response: Any) -> tuple[bytes, str]:
+        parts = getattr(response, "parts", None) or []
+        for part in parts:
+            inline_data = getattr(part, "inline_data", None)
+            if inline_data is not None and getattr(inline_data, "data", None):
+                mime_type = getattr(inline_data, "mime_type", None) or _DEFAULT_OUTPUT_MIME_TYPE
+                return inline_data.data, mime_type
+
+        text_response = self._extract_response_text(response)
+        if text_response:
+            raise RuntimeError(f"No image was generated. Model response: {text_response}")
+        raise RuntimeError("No image was generated.")
+
+    def _default_filename(self, mime_type: str, prefix: str) -> str:
+        suffix = _MIME_TYPE_EXTENSIONS.get(
+            mime_type,
+            mimetypes.guess_extension(mime_type, strict=False) or ".png",
+        )
+        return f"{prefix}-{int(time.time())}{suffix}"
+
+    def _format_result(
+        self,
+        *,
+        image_bytes: bytes,
+        mime_type: str,
+        model_key: str,
+        model_info: dict[str, str],
+        filename: str | None,
+        text_response: str | None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "status": "ok",
+            "model": model_key,
+            "model_id": model_info["id"],
+            "mime_type": mime_type,
+            "filename": filename or self._default_filename(mime_type, "nano-banana"),
+            "size_bytes": len(image_bytes),
+            "content_base64": base64.b64encode(image_bytes).decode("ascii"),
+        }
+        if text_response:
+            payload["text_response"] = text_response
+        return json.dumps(payload, separators=(",", ":"))
+
+    def list_models(self) -> list[dict[str, str]]:
+        """List available Nano Banana models."""
+        return [
+            {
+                "name": name,
+                "id": info["id"],
+                "label": info["label"],
+                "description": info["description"],
+            }
+            for name, info in MODELS.items()
+        ]
 
     def generate(
         self,
@@ -63,111 +204,89 @@ class NanoBananaClient:
         model: str = DEFAULT_MODEL,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
-    ) -> Image.Image:
-        """Generate an image from a text prompt.
-
-        Args:
-            prompt: Text description of the image to generate.
-            model: Model to use - "flash" (fast) or "pro" (high quality).
-            aspect_ratio: Aspect ratio ("1:1", "3:4", "4:3", "9:16", "16:9").
-            image_size: Image size for pro model ("1K", "2K", "4K").
-
-        Returns:
-            PIL Image object.
-
-        Raises:
-            RuntimeError: If image generation fails.
-        """
-        model_id = MODELS.get(model, model)
-
-        config = {}
-        if aspect_ratio:
-            config["aspect_ratio"] = aspect_ratio
-        if image_size and model == "pro":
-            config["image_size"] = image_size
-
-        generate_config = types.GenerateContentConfig(
-            response_modalities=["image", "text"],
-            **({"generation_config": config} if config else {}),
-        )
-
+        person_generation: str | None = None,
+        output_mime_type: str | None = None,
+        output_compression_quality: int | None = None,
+        use_google_search: bool = False,
+        thinking_budget: int | None = None,
+        thinking_level: str | None = None,
+        filename: str | None = None,
+    ) -> str:
+        """Generate an image and return a JSON payload with base64 image bytes."""
+        model_key, model_info = self._resolve_model(model)
         response = self.client.models.generate_content(
-            model=model_id,
+            model=model_info["id"],
             contents=[prompt],
-            config=generate_config,
+            config=self._build_generate_config(
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                person_generation=person_generation,
+                output_mime_type=output_mime_type,
+                output_compression_quality=output_compression_quality,
+                use_google_search=use_google_search,
+                thinking_budget=thinking_budget,
+                thinking_level=thinking_level,
+            ),
         )
 
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
-                image_data = part.inline_data.data
-                return Image.open(BytesIO(image_data))
-
-        raise RuntimeError("No image was generated. The model returned only text.")
+        image_bytes, mime_type = self._extract_generated_image(response)
+        return self._format_result(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            model_key=model_key,
+            model_info=model_info,
+            filename=filename,
+            text_response=self._extract_response_text(response),
+        )
 
     def edit(
         self,
-        image_path: str | Path,
         prompt: str,
+        image_path: str | None = None,
+        image_base64: str | None = None,
+        image_mime_type: str | None = None,
         model: str = DEFAULT_MODEL,
         aspect_ratio: str | None = None,
-    ) -> Image.Image:
-        """Edit an existing image based on a text prompt.
-
-        Args:
-            image_path: Path to the input image.
-            prompt: Text description of the edit to make.
-            model: Model to use - "flash" (fast) or "pro" (high quality).
-            aspect_ratio: Aspect ratio for output ("1:1", "3:4", "4:3", "9:16", "16:9").
-
-        Returns:
-            PIL Image object with the edits applied.
-
-        Raises:
-            RuntimeError: If image editing fails.
-            FileNotFoundError: If the input image doesn't exist.
-        """
-        image_path = Path(image_path)
-        if not image_path.exists():
-            raise FileNotFoundError(f"Image not found: {image_path}")
-
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
-
-        suffix = image_path.suffix.lower()
-        mime_types = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-        }
-        mime_type = mime_types.get(suffix, "image/png")
-
-        model_id = MODELS.get(model, model)
-
-        config = {}
-        if aspect_ratio:
-            config["aspect_ratio"] = aspect_ratio
-
-        generate_config = types.GenerateContentConfig(
-            response_modalities=["image", "text"],
-            **({"generation_config": config} if config else {}),
+        image_size: str | None = None,
+        person_generation: str | None = None,
+        output_mime_type: str | None = None,
+        output_compression_quality: int | None = None,
+        use_google_search: bool = False,
+        thinking_budget: int | None = None,
+        thinking_level: str | None = None,
+        filename: str | None = None,
+    ) -> str:
+        """Edit an image and return a JSON payload with base64 image bytes."""
+        model_key, model_info = self._resolve_model(model)
+        image_part = self._build_image_part(
+            image_path=image_path,
+            image_base64=image_base64,
+            image_mime_type=image_mime_type,
         )
-
-        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-
         response = self.client.models.generate_content(
-            model=model_id,
+            model=model_info["id"],
             contents=[image_part, prompt],
-            config=generate_config,
+            config=self._build_generate_config(
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                person_generation=person_generation,
+                output_mime_type=output_mime_type,
+                output_compression_quality=output_compression_quality,
+                use_google_search=use_google_search,
+                thinking_budget=thinking_budget,
+                thinking_level=thinking_level,
+            ),
         )
 
-        for part in response.candidates[0].content.parts:
-            if part.inline_data is not None:
-                image_data = part.inline_data.data
-                return Image.open(BytesIO(image_data))
-
-        raise RuntimeError("No image was generated. The model returned only text.")
+        image_bytes, mime_type = self._extract_generated_image(response)
+        return self._format_result(
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            model_key=model_key,
+            model_info=model_info,
+            filename=filename,
+            text_response=self._extract_response_text(response),
+        )
 
 
 def _client() -> NanoBananaClient:
