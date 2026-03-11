@@ -13,28 +13,17 @@ Backend selection via ``SECRET_MANAGER_BACKEND`` env var:
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import secrets as _secrets_mod
-import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 
+from centaur_sdk.logging import configure_json_logging
 from secret_manager.backend import SecretManagerBackend
-from shared.json_logging import JsonFormatter, configure_json_logger
 
-log = configure_json_logger("secret_manager", "secret_manager")
-
-# Uvicorn access/error log → JSON stdout (same schema as app logs)
-_uvi_fmt = JsonFormatter("secret_manager")
-_uvi_handler = logging.StreamHandler(sys.stdout)
-_uvi_handler.setFormatter(_uvi_fmt)
-for _uvi_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-    _uvi_logger = logging.getLogger(_uvi_name)
-    _uvi_logger.handlers = [_uvi_handler]
-    _uvi_logger.propagate = False
+log = configure_json_logging("secret_manager", uvicorn=True)
 
 # ---------------------------------------------------------------------------
 # Configuration

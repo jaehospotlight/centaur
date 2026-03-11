@@ -5,7 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl jq && rm -
 RUN mkdir -p /certs && chown mitmproxy:mitmproxy /certs
 USER mitmproxy
 
-COPY addon.py /app/addon.py
+COPY centaur_sdk /app/centaur_sdk
+COPY services/firewall/addon.py /app/addon.py
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
 
 EXPOSE 8080 8081

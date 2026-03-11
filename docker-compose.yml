@@ -81,7 +81,9 @@ services:
     restart: unless-stopped
 
   firewall:
-    build: services/firewall
+    build:
+      context: .
+      dockerfile: services/firewall/Dockerfile
     environment:
       SECRET_MANAGER_URL: http://secrets:8100
       SECRET_MANAGER_TOKEN: ${SECRET_MANAGER_TOKEN:-}

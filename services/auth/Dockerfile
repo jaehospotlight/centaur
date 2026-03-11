@@ -1,6 +1,7 @@
 FROM python:3.11-alpine
 RUN apk add --no-cache curl jq bash
 RUN pip install --no-cache-dir starlette uvicorn[standard] python-multipart
+COPY centaur_sdk /app/centaur_sdk
 COPY services/auth/main.py /app/main.py
 COPY scripts/bootstrap-secrets.sh /app/bootstrap-secrets.sh
 COPY services/auth/entrypoint.sh /entrypoint.sh

@@ -15,38 +15,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
-import logging
 import os
 import secrets
-import sys
-from datetime import datetime, timezone
 
-class _JsonFormatter(logging.Formatter):
-    def format(self, record):
-        return json.dumps({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname.lower(),
-            "service": "auth",
-            "event": getattr(record, "event", record.funcName or record.name),
-            "msg": record.getMessage(),
-        }, default=str)
+from centaur_sdk.logging import configure_json_logging
 
-
-_handler = logging.StreamHandler(sys.stdout)
-_handler.setFormatter(_JsonFormatter())
-log = logging.getLogger("auth")
-log.handlers = [_handler]
-log.setLevel(logging.INFO)
-log.propagate = False
-
-# Uvicorn access/error log → JSON stdout (same schema as app logs)
-_uvi_handler = logging.StreamHandler(sys.stdout)
-_uvi_handler.setFormatter(_JsonFormatter())
-for _uvi_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-    _uvi_logger = logging.getLogger(_uvi_name)
-    _uvi_logger.handlers = [_uvi_handler]
-    _uvi_logger.propagate = False
+log = configure_json_logging("auth", uvicorn=True)
 
 from starlette.applications import Starlette
 from starlette.requests import Request

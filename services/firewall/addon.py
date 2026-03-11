@@ -21,54 +21,23 @@ import base64
 import hashlib
 import ipaddress
 import json
-import logging
 import math
 import os
 import re
 import socket
-import sys
 import threading
 import time
 import unicodedata
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from mitmproxy import http
 
+from centaur_sdk.logging import configure_json_logging
 
-class _JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, object] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname.lower(),
-            "service": "firewall",
-            "event": getattr(record, "event", record.funcName or record.name),
-            "msg": record.getMessage(),
-        }
-        for k, v in record.__dict__.items():
-            if k not in _RESERVED_LOG_KEYS and k not in payload:
-                payload[k] = v
-        if record.exc_info and record.exc_info[0] is not None:
-            payload["stack"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
-
-
-_RESERVED_LOG_KEYS = {
-    "name", "msg", "args", "created", "relativeCreated", "exc_info", "exc_text",
-    "stack_info", "lineno", "funcName", "pathname", "filename", "module",
-    "levelno", "levelname", "msecs", "thread", "threadName", "process",
-    "processName", "taskName", "message", "asctime",
-}
-
-_log_handler = logging.StreamHandler(sys.stdout)
-_log_handler.setFormatter(_JsonFormatter())
-log = logging.getLogger("firewall")
-log.handlers = [_log_handler]
-log.setLevel(logging.INFO)
-log.propagate = False
+log = configure_json_logging("firewall")
 
 SECRET_MANAGER_URL = os.environ.get("SECRET_MANAGER_URL", "http://secrets:8100")
 SECRET_MANAGER_TOKEN = os.environ.get("SECRET_MANAGER_TOKEN", "")
