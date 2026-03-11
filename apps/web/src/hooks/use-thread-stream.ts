@@ -151,15 +151,21 @@ export function useThreadStream(
         void refetch();
       }
     },
+    onError: (err) => {
+      console.warn("Chat stream error:", err);
+    },
   });
 
   useEffect(() => {
-    const stop = (chat as { stop?: () => void }).stop;
-    stopStreamRef.current = typeof stop === "function" ? stop : null;
-  }, [chat]);
+    stopStreamRef.current = typeof chat.stop === "function" ? chat.stop : null;
+  }, [chat.stop]);
 
-  const fetchThread = useCallback(async (options?: { abortPrevious?: boolean }): Promise<boolean> => {
+  const fetchThread = useCallback(async (options?: {
+    abortPrevious?: boolean;
+    suppressNotFound?: boolean;
+  }): Promise<boolean> => {
     const abortPrevious = options?.abortPrevious ?? true;
+    const suppressNotFound = options?.suppressNotFound ?? false;
     fetchInFlightRef.current += 1;
     setIsFetchingThread(true);
     if (abortPrevious) {
@@ -183,8 +189,10 @@ export function useThreadStream(
       if (fetchSeqRef.current !== requestSeq) return false;
       if (!res.ok) {
         if (res.status === 404) {
-          setThread(null);
-          setError(`Thread not found: ${threadKey}`);
+          if (!suppressNotFound) {
+            setThread(null);
+            setError(`Thread not found: ${threadKey}`);
+          }
         } else {
           setError(`Failed to fetch thread (${res.status})`);
         }
@@ -266,13 +274,17 @@ export function useThreadStream(
     // Fetch full thread from Postgres, then decide on SSE.
     // For freshly created ui: threads the session may not exist yet — retry briefly.
     void (async () => {
-      const ok = await fetchThread();
-      if (!ok && threadKey.startsWith("ui:") && !cancelled) {
+      const bootstrapUiThread = threadKey.startsWith("ui:");
+      const ok = await fetchThread({ suppressNotFound: bootstrapUiThread });
+      if (!ok && bootstrapUiThread && !cancelled) {
         for (let i = 0; i < 4; i++) {
           if (cancelled) return;
           await new Promise((r) => setTimeout(r, 1500));
           if (cancelled) return;
-          if (await fetchThread()) break;
+          if (await fetchThread({ suppressNotFound: true })) return;
+        }
+        if (!cancelled) {
+          void fetchThread();
         }
       }
     })();
@@ -378,6 +390,7 @@ export function useThreadStream(
   return {
     thread,
     error,
+    chatError: chat.error ?? null,
     fetchThread,
     isReconnecting: chat.status === "error" && isActiveState(thread?.state),
     agentStatus,

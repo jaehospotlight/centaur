@@ -276,7 +276,7 @@ export function ShellExecutionCard({
             </motion.div>
           </div>
           {!streaming && rows.length > PREVIEW_ROWS ? (
-            <div className="mt-1 text-[11px] text-muted-foreground/70">
+            <div className="mt-1 text-3xs text-muted-foreground/70">
               {rows.length} lines captured
             </div>
           ) : null}

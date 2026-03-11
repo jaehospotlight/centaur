@@ -15,6 +15,7 @@ import { ChevronUp, LoaderCircle, MessagesSquare } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import type { UIMessage } from "ai";
 import { Button } from "@/components/ui/button";
+import { TurnDivider } from "@/components/thread/turn-divider";
 
 import {
   Conversation,
@@ -95,8 +96,8 @@ export const ActivityFeedV2 = memo(function ActivityFeedV2({
       <ConversationContent
         className={
           compactMode
-            ? "gap-1 px-1.5 py-1.5 md:gap-2 md:px-3 md:py-2.5"
-            : "gap-1.5 px-2 py-2 md:gap-2.5 md:px-3 md:py-3"
+            ? "gap-2 px-2 py-2 md:gap-2 md:px-3 md:py-3"
+            : "gap-3 px-3 py-3 md:gap-4 md:px-4 md:py-4"
         }
       >
         {/* Sentinel for loading older messages on scroll-up */}
@@ -111,6 +112,7 @@ export const ActivityFeedV2 = memo(function ActivityFeedV2({
                 size="xs"
                 onClick={onLoadMore}
                 className="text-muted-foreground/60 hover:text-muted-foreground"
+                data-touch-target
               >
                 <ChevronUp className="size-3" />
                 Load earlier messages
@@ -136,32 +138,36 @@ export const ActivityFeedV2 = memo(function ActivityFeedV2({
             }
           />
         ) : (
-          messages.map((message) => (
-            <Message
-              key={message.id}
-              from={message.role === "user" ? "user" : "assistant"}
-              className={
-                message.role === "user"
-                  ? "group max-w-full rounded-md border border-border/40 bg-card/20 content-auto"
-                  : "group max-w-full content-auto"
-              }
-            >
-              <MessageContent
-                className={
-                  compactMode
-                    ? "space-y-1 px-1.5 py-1 md:px-2 md:py-1.5"
-                    : "space-y-1.5 px-2 py-1.5 md:space-y-2 md:px-2.5 md:py-2"
-                }
-              >
-                <UIMessageRenderer
-                  message={message}
-                  participantsById={participantsById}
-                  onSelectSubagent={onSelectSubagent}
-                  selectedSubagentKey={selectedSubagentKey}
-                />
-              </MessageContent>
-            </Message>
-          ))
+          messages.map((message, i) => {
+            const prev = i > 0 ? messages[i - 1] : null;
+            const showDivider = prev && prev.role === "assistant" && message.role === "user";
+            return (
+              <div key={message.id}>
+                {showDivider && (
+                  <TurnDivider timestamp={(message as { createdAt?: string }).createdAt} />
+                )}
+                <Message
+                  from={message.role === "user" ? "user" : "assistant"}
+                  className="group max-w-full content-auto"
+                >
+                  <MessageContent
+                    className={
+                      compactMode
+                        ? "space-y-1.5 px-2 py-1.5 md:px-2 md:py-2"
+                        : "space-y-2 px-2 py-1.5 md:px-2 md:py-2.5"
+                    }
+                  >
+                    <UIMessageRenderer
+                      message={message}
+                      participantsById={participantsById}
+                      onSelectSubagent={onSelectSubagent}
+                      selectedSubagentKey={selectedSubagentKey}
+                    />
+                  </MessageContent>
+                </Message>
+              </div>
+            );
+          })
         )}
       </ConversationContent>
       <ConversationScrollButton aria-label="Scroll to latest" />

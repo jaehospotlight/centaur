@@ -57,28 +57,36 @@ export const ThreadSummaryCard = memo(function ThreadSummaryCard({
       href={href}
       prefetch={false}
       ref={linkRef}
+      data-touch-target
       className={cn(
-        "thread-action-transition group block w-full no-underline text-inherit",
-        compact ? "px-3 py-2.5 md:px-4" : "px-3 py-3 md:px-4",
+        "thread-action-transition group relative block w-full no-underline text-inherit",
+        compact ? "px-3 py-3 md:px-4" : "px-3 py-3.5 md:px-4",
         "hover:bg-accent/40 active:bg-accent/50 focus-visible:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
         activeState && "bg-primary/5",
         thread.state === "error" && "bg-destructive/5",
-        isSelected && "bg-accent/50",
+        isSelected && "bg-accent/55",
         className,
       )}
       {...linkProps}
     >
+      <span
+        className={cn(
+          "absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary/70 opacity-0 transition-opacity",
+          (isSelected || activeState) && "opacity-100",
+          thread.state === "error" && "bg-destructive/70",
+        )}
+      />
       <div className="flex min-w-0 items-center gap-2">
         <StateDot state={thread.state} className="size-2 shrink-0" />
-        <span className="min-w-0 flex-1 truncate text-label font-medium text-foreground">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight text-foreground">
           {name}
         </span>
-        <span className="shrink-0 text-detail text-muted-foreground/70">
+        <span className="ui-caption shrink-0">
           <ThreadAge thread={thread} />
         </span>
       </div>
 
-      <div className="mt-1 flex items-center gap-1 pl-3 text-detail text-muted-foreground">
+      <div className="ui-meta mt-1 flex items-center gap-1 pl-3">
         <HarnessBadge harness={thread.harness} className="harness-badge-sm" />
         <span className="text-muted-foreground/45">·</span>
         <span>{thread.turn_count} turn{thread.turn_count === 1 ? "" : "s"}</span>
@@ -87,12 +95,12 @@ export const ThreadSummaryCard = memo(function ThreadSummaryCard({
       </div>
 
       {taskPreview ? (
-        <div className="mt-0.5 line-clamp-1 pl-3 text-detail leading-relaxed text-muted-foreground/70">
+        <div className="mt-1 line-clamp-1 pl-3 text-sm leading-5 text-foreground/78">
           {taskPreview}
         </div>
       ) : null}
       {resolvedStatusSubtitle ? (
-        <div className="mt-0.5 line-clamp-1 pl-3 text-detail text-muted-foreground">
+        <div className="ui-caption mt-1 line-clamp-1 pl-3">
           {activeState ? <TextReveal text={resolvedStatusSubtitle} /> : resolvedStatusSubtitle}
         </div>
       ) : null}

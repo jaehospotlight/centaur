@@ -211,22 +211,22 @@ export function StepGroup({
     <Collapsible
       open={isOpen}
       onOpenChange={handleToggle}
-      className="thread-surface-soft group rounded-md"
+      className="thread-surface-soft group rounded-[var(--radius-surface)]"
     >
       <CollapsibleTrigger
-        className="flex min-h-[40px] w-full cursor-pointer items-center gap-1.5 px-3 py-2 transition-colors hover:bg-accent/40 active:bg-accent/60 md:min-h-0"
+        className="flex min-h-11 w-full cursor-pointer items-center gap-2 px-3 py-2.5 transition-colors hover:bg-accent/40 active:bg-accent/60 md:min-h-0"
         data-touch-target
       >
         <ChevronRight className="size-3 text-muted-foreground/60 shrink-0 transition-transform duration-fast group-data-[state=open]:rotate-90" />
         <Icon className="size-3.5 text-muted-foreground shrink-0" />
-        <span className="truncate flex-1 min-w-0 text-left text-label text-foreground/80">
+        <span className="truncate flex-1 min-w-0 text-left text-sm font-medium text-foreground/88">
           {summary}
         </span>
-        <span className="hidden md:inline-flex text-[11px] text-muted-foreground shrink-0">
+        <span className="ui-caption hidden shrink-0 md:inline-flex">
           <StatusTitle active={loadingCount > 0} activeText={activeTitle} doneText={doneTitle} />
         </span>
         {statusLabel && (
-          <span className="text-[11px] font-mono text-muted-foreground tabular-nums shrink-0 inline-flex items-center gap-1">
+          <span className="text-detail font-mono text-muted-foreground tabular-nums shrink-0 inline-flex items-center gap-1">
             {loadingCount > 0 ? (
               <>
                 <AnimatedNumber value={doneCount} />
@@ -246,7 +246,7 @@ export function StepGroup({
         )}
         <GroupStatusIcon loading={loadingCount} error={errorCount} />
       </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-0.5 px-2 pb-2 md:px-3">
+      <CollapsibleContent className="space-y-1 px-3 pb-3">
         {calls.map((call) => (
           <ToolCallItem key={call.id} call={call} />
         ))}

@@ -14,7 +14,7 @@ function ChatTextarea({
         "chat-textarea flex-1 min-w-0 min-h-input-min resize-none",
         "text-input-base md:text-input-base",
         "border-none bg-transparent py-1.5 shadow-none outline-none",
-        "placeholder:text-muted-foreground/60 text-foreground",
+        "placeholder:text-muted-foreground/75 text-foreground",
         "focus-visible:outline-none",
         disabled && "opacity-50",
         className,

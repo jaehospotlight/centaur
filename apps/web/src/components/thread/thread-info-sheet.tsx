@@ -5,6 +5,7 @@ import { HarnessBadge } from "@/components/ui/harness-badge";
 import { StateDot } from "@/components/ui/state-dot";
 import { ParticipantAvatars } from "@/components/thread/participant-avatars";
 import { ResponsivePanel } from "@/components/ui/responsive-panel";
+import { useHaptics } from "@/components/haptics-provider";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
 import {
@@ -48,8 +49,8 @@ function Stat({
 }) {
   return (
     <div>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 text-sm font-mono tabular-nums text-foreground">
+      <dt className="ui-caption">{label}</dt>
+      <dd className="mt-1 text-sm font-medium tabular-nums text-foreground">
         {children}
       </dd>
     </div>
@@ -64,6 +65,7 @@ function ThreadInfoContent({
   onClose,
   showHandle,
 }: ThreadInfoContentProps) {
+  const { trigger } = useHaptics();
   const modelList = tokenUsageModelsList(tokenUsage);
   const breakdownLabel = tokenUsageBreakdownLabel(tokenUsage);
   const usageConfidence = tokenUsageConfidenceLabel(tokenUsage);
@@ -84,7 +86,7 @@ function ThreadInfoContent({
             >
               {thread.thread_name || thread.slack_thread_key}
             </h2>
-            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <div className="ui-meta mt-2 flex flex-wrap items-center gap-2">
               <HarnessBadge harness={thread.harness} />
               <span className="text-border/60">·</span>
               <span className="inline-flex items-center gap-1">
@@ -97,7 +99,7 @@ function ThreadInfoContent({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => { trigger("light"); onClose(); }}
             className="flex size-11 items-center justify-center rounded-lg ui-control-icon text-muted-foreground"
             aria-label="Close"
             data-touch-target
@@ -127,7 +129,7 @@ function ThreadInfoContent({
 
         {thread.participants && thread.participants.length > 0 && (
           <section className="thread-surface-soft mt-4 rounded-xl px-4 py-4">
-            <h3 className="mb-3 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <h3 className="ui-kicker mb-3 text-muted-foreground">
               Participants
             </h3>
             <ParticipantAvatars
@@ -140,13 +142,13 @@ function ThreadInfoContent({
         )}
 
         <section className="thread-surface-soft mt-4 rounded-xl px-4 py-4">
-          <h3 className="mb-3 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          <h3 className="ui-kicker mb-3 text-muted-foreground">
             Details
           </h3>
-          <div className="space-y-2 text-xs text-muted-foreground">
+          <div className="space-y-2 text-sm text-muted-foreground">
             <div>
-              <span className="font-medium text-foreground">Thread key</span>
-              <div className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+              <span className="ui-caption font-medium text-foreground">Thread key</span>
+              <div className="mt-1 break-all font-mono text-detail text-muted-foreground">
                 {thread.slack_thread_key}
               </div>
             </div>
@@ -154,7 +156,7 @@ function ThreadInfoContent({
         </section>
 
         <section className="thread-surface-soft mt-4 rounded-xl px-3 py-3">
-          <h3 className="mb-2 px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          <h3 className="ui-kicker mb-2 px-1 text-muted-foreground">
             Actions
           </h3>
           <div className="space-y-1">

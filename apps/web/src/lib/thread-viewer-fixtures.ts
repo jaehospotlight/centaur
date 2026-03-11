@@ -1,10 +1,10 @@
 import type { UIMessage } from "ai";
-import type { ToolCall, SubagentStep } from "@/lib/describe";
+import type { SubagentStep } from "@/lib/describe";
 import type { ThreadDetail, ThreadSummary, ThreadTokenUsage, Participant } from "@/lib/types";
 
 const FIXTURE_NOW_S = Date.UTC(2026, 2, 9, 18, 0, 0) / 1000;
 
-export const fixtureParticipants: Participant[] = [
+const fixtureParticipants: Participant[] = [
   { id: "U123", name: "Arjun", username: "arjun", avatar_url: null },
   { id: "U456", name: "Kit", username: "kit", avatar_url: null },
 ];
@@ -80,27 +80,6 @@ export const fixtureThreadSummaries: ThreadSummary[] = [
     first_message: "[publish] Refresh examples and fixture coverage",
     last_user_message: "Bring the UI kit up to date with the latest viewer.",
     participants: fixtureParticipants,
-  },
-];
-
-export const fixtureToolCalls: ToolCall[] = [
-  {
-    id: "tool-1",
-    name: "shell",
-    input: { command: "rg \"thread\" apps/slackbot/src" },
-    output: "apps/slackbot/src/components/thread/thread-detail-header.tsx\napps/slackbot/src/components/thread/activity-feed-v2.tsx",
-    rawOutput: "apps/slackbot/src/components/thread/thread-detail-header.tsx\napps/slackbot/src/components/thread/activity-feed-v2.tsx",
-    state: "done",
-    uiState: "output-available",
-  },
-  {
-    id: "tool-2",
-    name: "read_file",
-    input: { path: "apps/slackbot/src/components/thread/thread-detail-header.tsx" },
-    output: "Read thread-detail-header.tsx",
-    rawOutput: { summary: "Read thread-detail-header.tsx" },
-    state: "done",
-    uiState: "output-available",
   },
 ];
 
@@ -210,9 +189,9 @@ const rawFixtureThreadMessages = [
         type: "tool-grep",
         toolName: "Grep",
         toolCallId: "fixture-tool-grep",
-        input: { pattern: "ResponsivePanel|ThreadOverlayHost", path: "apps/slackbot/src" },
+        input: { pattern: "ResponsivePanel|ThreadOverlayHost", path: "apps/web/src" },
         output:
-          "apps/slackbot/src/components/ui/responsive-panel.tsx\napps/slackbot/src/components/thread/thread-overlay-host.tsx",
+          "apps/web/src/components/ui/responsive-panel.tsx\napps/web/src/components/thread/thread-overlay-host.tsx",
         state: "output-available",
       },
       {
@@ -220,7 +199,7 @@ const rawFixtureThreadMessages = [
         type: "tool-read",
         toolName: "Read",
         toolCallId: "fixture-tool-read",
-        input: { path: "apps/slackbot/src/components/ui/responsive-panel.tsx" },
+        input: { path: "apps/web/src/components/ui/responsive-panel.tsx" },
         output: "Read responsive-panel.tsx",
         state: "output-available",
       },
@@ -228,9 +207,9 @@ const rawFixtureThreadMessages = [
         id: "fixture-shell-stream",
         type: "data-shell-command",
         data: {
-          command: 'rg "ResponsivePanel|ThreadOverlayHost|data-context-message" apps/slackbot/src',
+          command: 'rg "ResponsivePanel|ThreadOverlayHost|data-context-message" apps/web/src',
           output:
-            "apps/slackbot/src/components/ui/responsive-panel.tsx\napps/slackbot/src/components/thread/thread-overlay-host.tsx\napps/slackbot/src/components/ai-elements/ui-message-renderer.tsx",
+            "apps/web/src/components/ui/responsive-panel.tsx\napps/web/src/components/thread/thread-overlay-host.tsx\napps/web/src/components/ai-elements/ui-message-renderer.tsx",
           status: "running",
         },
       },
@@ -307,9 +286,9 @@ const rawFixtureThreadMessages = [
         type: "data-file-changes",
         data: {
           changes: [
-            { path: "apps/slackbot/src/components/ui/responsive-panel.tsx", kind: "update" },
-            { path: "apps/slackbot/src/components/thread/thread-info-sheet.tsx", kind: "update" },
-            { path: "apps/slackbot/src/lib/thread-viewer-fixtures.ts", kind: "update" },
+            { path: "apps/web/src/components/ui/responsive-panel.tsx", kind: "update" },
+            { path: "apps/web/src/components/thread/thread-info-sheet.tsx", kind: "update" },
+            { path: "apps/web/src/lib/thread-viewer-fixtures.ts", kind: "update" },
           ],
         },
       },
@@ -339,7 +318,7 @@ const rawFixtureThreadMessages = [
         id: "fixture-shell-failed",
         type: "data-shell-command",
         data: {
-          command: 'rg "fixture|overlay|thread-viewer" apps/slackbot/src',
+          command: 'rg "fixture|overlay|thread-viewer" apps/web/src',
           output:
             "One fixture assumption drifted after the UIKit surface changed, so the example route had to be brought back into sync with the shipped viewer.",
           exitCode: 1,

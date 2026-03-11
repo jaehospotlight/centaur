@@ -998,6 +998,10 @@ function createBot() {
           threadKey: normalizeThreadKey(threadKey),
           harness,
           durationSeconds: Math.max(0, (Date.now() - executionStartedAt) / 1000),
+          toolCount: tracker.completedTools.length,
+          tokenCount: tracker.usage.totalTokens,
+          costUsd: tracker.usage.costUsd > 0 ? tracker.usage.costUsd : null,
+          usageEstimated: tracker.usage.costUsd <= 0,
           sourceLabel: "Paradigm AI",
         };
         const payloads = resultToSlackMessages(finalMessage, metadata);

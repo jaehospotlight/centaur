@@ -13,8 +13,10 @@ type ActiveCommand = { command: string; startedAt: number };
 type HandoffEntry = { goal: string; newThreadKey: string };
 type FileChange = { file: string; action: string };
 type UsageInfo = {
+  totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  costUsd: number;
   model: string | null;
 };
 
@@ -152,7 +154,7 @@ export class ProgressTracker {
   handoffs: HandoffEntry[] = [];
   fileChanges: FileChange[] = [];
   reasoningText = "";
-  usage: UsageInfo = { inputTokens: 0, outputTokens: 0, model: null };
+  usage: UsageInfo = { totalTokens: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, model: null };
   errorText = "";
   lastAssistantText = "";
   resultText = "";
@@ -271,9 +273,29 @@ export class ProgressTracker {
   private mergeUsage(usage: Record<string, unknown>, model?: string | null): void {
     const input = toNonNegativeInt(usage.input_tokens);
     const output = toNonNegativeInt(usage.output_tokens);
-    if (input > 0) this.usage.inputTokens += input;
-    if (output > 0) this.usage.outputTokens += output;
-    if (model) this.usage.model = model;
+    const total = toNonNegativeInt(usage.total_tokens) || input + output;
+    const cost =
+      typeof usage.cost_usd === "number" && Number.isFinite(usage.cost_usd) && usage.cost_usd > 0
+        ? usage.cost_usd
+        : 0;
+    const shouldReplace =
+      total > this.usage.totalTokens ||
+      (total === this.usage.totalTokens && cost > this.usage.costUsd);
+
+    if (shouldReplace) {
+      this.usage = {
+        totalTokens: total,
+        inputTokens: input,
+        outputTokens: output,
+        costUsd: cost,
+        model: model ?? this.usage.model,
+      };
+      return;
+    }
+
+    if (model && !this.usage.model) {
+      this.usage.model = model;
+    }
   }
 
   addHandoff(goal: string, newThreadKey: string): void {
@@ -305,8 +327,8 @@ export class ProgressTracker {
       if (this.fileChanges.length > 0) {
         parts.push(`${this.fileChanges.length} file ${this.fileChanges.length === 1 ? "change" : "changes"}`);
       }
-      if (this.usage.inputTokens + this.usage.outputTokens > 0) {
-        parts.push(formatTokens(this.usage.inputTokens + this.usage.outputTokens));
+      if (this.usage.totalTokens > 0) {
+        parts.push(formatTokens(this.usage.totalTokens));
       }
       const suffix = parts.length > 0 ? ` — ${parts.join(" · ")}` : "";
       if (this.errorText) {

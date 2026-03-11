@@ -29,7 +29,7 @@ import { subagentSelectionKey } from "@/lib/viewer/subagent-steps";
 export default function ThreadViewerUIKitPage() {
   const [infoOpen, setInfoOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [selectedSubagent, setSelectedSubagent] = useState<typeof fixtureSubagent | null>(fixtureSubagent);
+  const [selectedSubagent, setSelectedSubagent] = useState<typeof fixtureSubagent | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [quickActionState, setQuickActionState] = useState<"error" | "stopped">("error");
 
@@ -62,6 +62,7 @@ export default function ThreadViewerUIKitPage() {
             onInterrupt={() => toast("Demo: stop requested")}
             onRefresh={() => toast("Demo: refresh requested")}
             onOpenInfo={() => setInfoOpen(true)}
+            onOpenPalette={() => setPaletteOpen(true)}
             onOpenDrawer={() => toast("Demo: mobile drawer lives on the thread route")}
             sourceLabel="UIKit Fixture"
             onBack={() => toast("Demo: back navigation")}
@@ -141,7 +142,7 @@ export default function ThreadViewerUIKitPage() {
                   Mobile quick-action preview:{" "}
                   <span className="text-foreground">
                     {quickActionState === "error"
-                      ? "Retry, Retry with context"
+                      ? "Run again, Retry more thoroughly"
                       : "Resume"}
                   </span>
                 </div>

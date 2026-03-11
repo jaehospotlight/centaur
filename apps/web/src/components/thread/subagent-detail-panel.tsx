@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SurfaceBar } from "@/components/ui/surface-bar";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { useHaptics } from "@/components/haptics-provider";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { categorizeToolCall } from "@/lib/describe";
 import type { SubagentActivity, SubagentStep } from "@/lib/describe";
@@ -36,7 +37,7 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <Badge
       variant={subagentTone(status)}
-      className="text-3xs"
+      className="text-detail"
     >
       {subagentStatusLabel(status)}
     </Badge>
@@ -45,9 +46,9 @@ function StatusBadge({ status }: { status: string }) {
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="thread-surface-soft rounded-lg px-3 py-2">
-      <div className="text-detail uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-1 text-sm font-mono tabular-nums text-foreground/85">{value}</div>
+    <div className="thread-surface-soft rounded-[var(--radius-control)] px-3 py-2.5">
+      <div className="ui-caption font-medium text-muted-foreground">{label}</div>
+      <div className="mt-1.5 text-sm font-medium tabular-nums text-foreground/88">{value}</div>
     </div>
   );
 }
@@ -55,8 +56,8 @@ function StatCard({ label, value }: { label: string; value: string }) {
 function StatRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="stat-row-value truncate text-right text-xs font-mono tabular-nums text-foreground/82">
+      <span className="ui-caption">{label}</span>
+      <span className="stat-row-value truncate text-right text-detail font-medium tabular-nums text-foreground/82">
         {value}
       </span>
     </div>
@@ -65,7 +66,7 @@ function StatRow({ label, value }: { label: string; value: string }) {
 
 function MetaChip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-md border border-border/60 bg-background/40 px-2 py-1 text-detail text-muted-foreground">
+    <span className="ui-pill">
       {children}
     </span>
   );
@@ -106,7 +107,7 @@ function ActivityTimeline({
             <div className="min-w-0">
               <p className="text-sm leading-6 text-foreground/82">{act.description}</p>
               {act.toolName && (
-                <p className="mt-0.5 text-detail font-mono text-muted-foreground/75">
+                <p className="mt-1 text-detail font-mono text-muted-foreground/75">
                   {act.toolName}
                 </p>
               )}
@@ -146,7 +147,7 @@ const SubagentDetailContent = memo(function SubagentDetailContent({
           step.outputTokens !== undefined ||
           step.branchIndex !== undefined) && (
           <section>
-            <div className="mb-3 text-detail font-medium uppercase tracking-section text-muted-foreground">
+            <div className="ui-kicker mb-3 text-muted-foreground">
               Overview
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -181,7 +182,7 @@ const SubagentDetailContent = memo(function SubagentDetailContent({
 
         {activities.length > 0 && (
           <section>
-            <div className="mb-3 text-detail font-medium uppercase tracking-section text-muted-foreground">
+            <div className="ui-kicker mb-3 text-muted-foreground">
               Activity
             </div>
             <div className="thread-surface-soft rounded-xl px-3 py-3">
@@ -192,7 +193,7 @@ const SubagentDetailContent = memo(function SubagentDetailContent({
 
         {step.summary && (
           <section>
-            <div className="mb-3 text-detail font-medium uppercase tracking-section text-muted-foreground">
+            <div className="ui-kicker mb-3 text-muted-foreground">
               {isTerminal ? "Result" : "Progress"}
             </div>
             <div className="thread-surface-soft rounded-xl px-3 py-3">
@@ -203,7 +204,7 @@ const SubagentDetailContent = memo(function SubagentDetailContent({
 
         {step.error && (
           <section>
-            <div className="mb-3 text-detail font-medium uppercase tracking-section text-destructive">
+            <div className="ui-kicker mb-3 text-destructive">
               Error
             </div>
             <div className="rounded-xl border border-destructive/30 bg-destructive/8 px-3 py-3">
@@ -217,7 +218,7 @@ const SubagentDetailContent = memo(function SubagentDetailContent({
           step.branchIndex !== undefined ||
           step.isAcceptable !== undefined) && (
           <section>
-            <div className="mb-3 text-detail font-medium uppercase tracking-section text-muted-foreground">
+            <div className="ui-kicker mb-3 text-muted-foreground">
               Details
             </div>
             <div className="thread-surface-soft rounded-xl px-3 py-2">
@@ -254,6 +255,7 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   onClose: () => void;
 }) {
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const { trigger } = useHaptics();
   if (!step) return null;
 
   const IdentityIcon = subagentIdentityIcon(step);
@@ -263,7 +265,7 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
   const preview = getSubagentPreviewText(step);
 
   return (
-    <Sheet open={open} onOpenChange={(value) => !value && onClose()} modal={!isDesktop}>
+    <Sheet open={open} onOpenChange={(value) => { if (!value) { trigger("light"); onClose(); } }} modal={!isDesktop}>
       <SheetContent
         id="subagent-detail-panel"
         side={isDesktop ? "right" : "bottom"}
@@ -297,6 +299,7 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
                   size="icon"
                   className="ui-control-icon"
                   aria-label="Back to thread"
+                  data-touch-target
                 >
                   <ArrowLeft className="size-4" />
                 </Button>
@@ -306,7 +309,7 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
           )}
           <div className={cn("flex items-start gap-3", isDesktop ? "pr-8" : "")}>
             <div className="relative mt-0.5 shrink-0">
-              <div className="thread-surface-soft flex size-10 items-center justify-center rounded-xl text-muted-foreground">
+              <div className="thread-surface-soft flex size-10 items-center justify-center rounded-[var(--radius-control)] text-muted-foreground">
                 <IdentityIcon className="size-5" />
               </div>
               <span
@@ -337,7 +340,7 @@ export const SubagentDetailPanel = memo(function SubagentDetailPanel({
                 {step.isAcceptable && <MetaChip>Accepted</MetaChip>}
               </SheetDescription>
               {preview && (
-                <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                <div className="mt-2 text-sm leading-5 text-muted-foreground">
                   {isRunning ? <Shimmer duration={2}>{preview}</Shimmer> : preview}
                 </div>
               )}

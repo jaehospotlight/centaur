@@ -20,6 +20,7 @@ import { ThreadStatusTabs } from "@/components/thread/thread-status-tabs";
 import { ThreadSummaryCard } from "@/components/thread/thread-summary-card";
 import { type VisibleThreadStatusFilter } from "@/components/thread/thread-ui-constants";
 import { useThreadList } from "@/hooks/use-thread-list";
+import { useHaptics } from "@/components/haptics-provider";
 
 import { cn } from "@/lib/utils";
 import { detailHrefWithEntrySource, nextListQueryString } from "@/lib/viewer/thread-navigation";
@@ -56,6 +57,7 @@ export const ThreadSidebar = forwardRef<ThreadSidebarHandle, ThreadSidebarProps>
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { trigger } = useHaptics();
   const [focusedThreadKey, setFocusedThreadKey] = useState<string | null>(null);
   const filterId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -309,9 +311,9 @@ export const ThreadSidebar = forwardRef<ThreadSidebarHandle, ThreadSidebarProps>
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Filter… (/)"
             autoComplete="off"
-            className="h-8 rounded-none border-x-0 border-t-0 border-b border-border/40 bg-transparent pl-8 pr-7 text-xs shadow-none focus-visible:ring-0 focus-visible:border-border/60"
+            className="h-10 rounded-[var(--radius-control)] border-border/70 bg-card/35 pl-8 pr-7 text-sm shadow-none focus-visible:ring-[3px]"
           />
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-3xs font-mono text-muted-foreground/50">
+          <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-detail font-mono text-muted-foreground/55">
             /
           </span>
         </div>
@@ -388,6 +390,7 @@ export const ThreadSidebar = forwardRef<ThreadSidebarHandle, ThreadSidebarProps>
                         prefetchThread(thread.slack_thread_key);
                       },
                       onClick: () => {
+                        trigger("selection");
                         setFocusedThreadKey(thread.slack_thread_key);
                         onNavigate?.();
                       },

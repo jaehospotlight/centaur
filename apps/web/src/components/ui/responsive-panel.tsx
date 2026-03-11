@@ -3,6 +3,7 @@
 import type { ReactNode, Ref, TouchEvent } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { OverlayBackdrop, OverlayPanel } from "@/motion/primitives";
+import { useHaptics } from "@/components/haptics-provider";
 import { cn } from "@/lib/utils";
 
 type ResponsivePanelSide = "left" | "right" | "bottom";
@@ -33,10 +34,12 @@ export function ResponsivePanel({
   const internalPanelRef = useRef<HTMLDivElement | null>(null);
   const previousFocusedRef = useRef<HTMLElement | null>(null);
   const dragStartRef = useRef<number | null>(null);
+  const dragCrossStartRef = useRef<number | null>(null);
   const dragPendingRef = useRef(0);
   const dragRafRef = useRef<number>(0);
   const draggingRef = useRef(false);
-  const [dragY, setDragY] = useState(0);
+  const [dragOffset, setDragOffset] = useState(0);
+  const { trigger } = useHaptics();
 
   const setCombinedRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -53,49 +56,81 @@ export function ResponsivePanel({
 
   const handleTouchStart = useCallback(
     (event: TouchEvent<HTMLDivElement>) => {
-      if (side !== "bottom" || !dismissibleByDrag) return;
+      if ((side !== "bottom" && side !== "left") || !dismissibleByDrag) return;
       const panel = internalPanelRef.current;
       if (!panel) return;
-      const touchY = event.touches[0].clientY;
-      const fromTop = touchY - panel.getBoundingClientRect().top;
-      if (panel.scrollTop > 0 || fromTop > 80) {
-        dragStartRef.current = null;
-        draggingRef.current = false;
-        return;
+      if (side === "bottom") {
+        const touchY = event.touches[0].clientY;
+        const fromTop = touchY - panel.getBoundingClientRect().top;
+        if (panel.scrollTop > 0 || fromTop > 80) {
+          dragStartRef.current = null;
+          draggingRef.current = false;
+          return;
+        }
+        dragStartRef.current = touchY;
+        dragCrossStartRef.current = event.touches[0].clientX;
+      } else {
+        const panelRect = panel.getBoundingClientRect();
+        const touchX = event.touches[0].clientX;
+        const fromRight = panelRect.right - touchX;
+        if (fromRight > 48) {
+          dragStartRef.current = null;
+          dragCrossStartRef.current = null;
+          draggingRef.current = false;
+          return;
+        }
+        dragStartRef.current = touchX;
+        dragCrossStartRef.current = event.touches[0].clientY;
       }
-      dragStartRef.current = touchY;
       draggingRef.current = true;
     },
     [dismissibleByDrag, side],
   );
 
-  const handleTouchMove = useCallback((event: TouchEvent<HTMLDivElement>) => {
-    if (dragStartRef.current === null || !draggingRef.current) return;
-    const delta = event.touches[0].clientY - dragStartRef.current;
-    if (delta <= 0) return;
-    event.preventDefault();
-    dragPendingRef.current = delta;
-    if (dragRafRef.current) return;
-    dragRafRef.current = window.requestAnimationFrame(() => {
-      dragRafRef.current = 0;
-      setDragY(dragPendingRef.current);
-    });
-  }, []);
+  const handleTouchMove = useCallback(
+    (event: TouchEvent<HTMLDivElement>) => {
+      if (
+        dragStartRef.current === null ||
+        dragCrossStartRef.current === null ||
+        !draggingRef.current
+      ) {
+        return;
+      }
+      const currentPrimary = side === "left" ? event.touches[0].clientX : event.touches[0].clientY;
+      const currentCross = side === "left" ? event.touches[0].clientY : event.touches[0].clientX;
+      const delta =
+        side === "left"
+          ? dragStartRef.current - currentPrimary
+          : currentPrimary - dragStartRef.current;
+      const crossDelta = Math.abs(currentCross - dragCrossStartRef.current);
+      if (delta <= 0 || crossDelta > delta) return;
+      event.preventDefault();
+      dragPendingRef.current = delta;
+      if (dragRafRef.current) return;
+      dragRafRef.current = window.requestAnimationFrame(() => {
+        dragRafRef.current = 0;
+        setDragOffset(dragPendingRef.current);
+      });
+    },
+    [side],
+  );
 
   const handleTouchEnd = useCallback(() => {
-    const finalDragY = Math.max(dragY, dragPendingRef.current);
+    const finalDragOffset = Math.max(dragOffset, dragPendingRef.current);
     if (dragRafRef.current) {
       window.cancelAnimationFrame(dragRafRef.current);
       dragRafRef.current = 0;
     }
-    if (finalDragY > 100) {
+    if (finalDragOffset > 100) {
+      trigger("light");
       onClose();
     }
-    setDragY(0);
+    setDragOffset(0);
     dragStartRef.current = null;
+    dragCrossStartRef.current = null;
     dragPendingRef.current = 0;
     draggingRef.current = false;
-  }, [dragY, onClose]);
+  }, [dragOffset, onClose, trigger]);
 
   useEffect(() => {
     return () => {
@@ -107,7 +142,7 @@ export function ResponsivePanel({
 
   useEffect(() => {
     if (!open) {
-      setDragY(0);
+      setDragOffset(0);
       return;
     }
     const panel = internalPanelRef.current;
@@ -170,7 +205,8 @@ export function ResponsivePanel({
       document.body.style.overflow = previousOverflow;
       previousFocusedRef.current?.focus();
       previousFocusedRef.current = null;
-      setDragY(0);
+      setDragOffset(0);
+      dragCrossStartRef.current = null;
     };
   }, [onClose, open]);
 
@@ -179,17 +215,20 @@ export function ResponsivePanel({
   const preset = side === "bottom" ? "bottomSheet" : side === "left" ? "drawer" : "sidePanel";
   const panelClassName =
     side === "bottom"
-      ? "absolute inset-x-0 bottom-0 max-h-[82dvh] overflow-y-auto overscroll-contain rounded-t-[1.125rem] border-t border-border/80 thread-surface-overlay shadow-[0_-12px_36px_rgba(0,0,0,0.38)]"
+      ? "absolute inset-x-0 bottom-0 max-h-[82dvh] overflow-y-auto overscroll-contain rounded-t-[var(--radius-shell)] border-t border-border/80 thread-surface-overlay shadow-sheet"
       : side === "left"
-        ? "absolute inset-y-0 left-0 flex w-[360px] max-w-[92vw] flex-col overflow-y-auto overscroll-contain border-r border-border/80 thread-surface-sidebar shadow-[0_24px_80px_rgba(0,0,0,0.6),inset_-1px_0_0_rgba(255,255,255,0.04)]"
-        : "absolute inset-y-0 right-0 flex w-full max-w-[560px] flex-col overflow-y-auto overscroll-contain border-l border-border/80 thread-surface-overlay shadow-[0_24px_80px_rgba(0,0,0,0.55)]";
+        ? "absolute inset-y-0 left-0 flex w-[332px] max-w-[92vw] flex-col overflow-y-auto overscroll-contain border-r border-border/80 thread-surface-sidebar shadow-dialog"
+        : "absolute inset-y-0 right-0 flex w-full max-w-[520px] flex-col overflow-y-auto overscroll-contain border-l border-border/80 thread-surface-overlay shadow-dialog";
 
   return (
     <div className={cn("fixed inset-0 z-50", mobileOnly && "md:hidden")} aria-hidden={open ? undefined : true}>
       <OverlayBackdrop
         present={open}
         className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
-        onClick={onClose}
+        onClick={() => {
+          trigger("light");
+          onClose();
+        }}
       />
       <OverlayPanel
         present={open}
@@ -200,7 +239,13 @@ export function ResponsivePanel({
         describedBy={describedBy}
         className={cn(panelClassName, className)}
         tabIndex={-1}
-        style={dragY > 0 ? { transform: `translateY(${dragY}px)` } : undefined}
+        style={
+          dragOffset > 0
+            ? side === "left"
+              ? { transform: `translateX(-${dragOffset}px)` }
+              : { transform: `translateY(${dragOffset}px)` }
+            : undefined
+        }
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}

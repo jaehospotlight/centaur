@@ -7,6 +7,7 @@ import {
   filterAndSortThreads,
   getThreadFilterCounts,
   pickActiveThreadHref,
+  pickLatestThreadHref,
   type ThreadStatusFilter,
 } from "@/lib/viewer/thread-selectors";
 import { isActiveState } from "@/lib/viewer/thread-ordering";
@@ -73,6 +74,7 @@ function startSharedPolling(): void {
   if (sharedPollTimer !== null) return;
   void fetchSharedThreads(false);
   sharedPollTimer = window.setInterval(() => {
+    if (document.hidden) return;
     void fetchSharedThreads(false);
   }, THREADS_POLL_INTERVAL_MS);
 }
@@ -97,6 +99,7 @@ type ThreadListResult = {
   error: string | null;
   activeCount: number;
   activeThreadHref?: string;
+  latestThreadHref?: string;
   query: string;
   statusFilter: ThreadStatusFilter;
   setQuery: (value: string) => void;
@@ -141,6 +144,10 @@ export function useThreadList(initialState?: Partial<ThreadListState>): ThreadLi
       ).length,
     [sharedState.threads],
   );
+  const latestThreadHref = useMemo(
+    () => pickLatestThreadHref(sharedState.threads),
+    [sharedState.threads],
+  );
   const activeThreadHref = useMemo(
     () => pickActiveThreadHref(sharedState.threads),
     [sharedState.threads],
@@ -156,6 +163,7 @@ export function useThreadList(initialState?: Partial<ThreadListState>): ThreadLi
     error: sharedState.error,
     activeCount,
     activeThreadHref,
+    latestThreadHref,
     query,
     statusFilter,
     setQuery,

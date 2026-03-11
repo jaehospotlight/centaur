@@ -4,6 +4,7 @@ import { useMemo, useState, useRef, useCallback } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ColumnDef, CellRenderer } from "./types";
 import { formatValue } from "./format-value";
+import { ArrowUp, ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -266,7 +267,7 @@ export function DataTable({
           style={col.minWidth ? { minWidth: col.minWidth } : undefined}
         >
           {col.label}
-          {sortKey === col.key && <span className="ml-1">{sortDir === "asc" ? "▲" : "▼"}</span>}
+          {sortKey === col.key && (sortDir === "asc" ? <ArrowUp className="ml-1 inline size-3" /> : <ArrowDown className="ml-1 inline size-3" />)}
         </th>
       ))}
     </tr>

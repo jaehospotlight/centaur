@@ -41,8 +41,3 @@ export const motionSprings = {
     mass: 0.72,
   },
 } as const;
-
-export const motionOpacity = {
-  subtle: 0.72,
-  muted: 0.84,
-} as const;

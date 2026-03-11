@@ -20,8 +20,8 @@ type QuickActionChipsProps = {
 
 const CHIP_SETS: Record<string, ChipAction[]> = {
   error: [
-    { label: "Retry", value: "retry", variant: "default" },
-    { label: "Retry with context", value: "retry-context", variant: "default" },
+    { label: "Run again", value: "retry", variant: "default" },
+    { label: "Retry more thoroughly", value: "retry-thoroughly", variant: "default" },
   ],
   stopped: [
     { label: "Resume", value: "resume", variant: "default" },
@@ -53,25 +53,33 @@ export function QuickActionChips({ threadState, onAction, className }: QuickActi
     <SurfaceBar
       data-state={visibility}
       className={cn(
-        "border-t border-border/70 px-2.5 py-1.5",
+        "border-t border-border/70 px-2.5 py-2",
         "data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom-2 data-[state=open]:fade-in data-[state=open]:duration-base",
         "data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom-2 data-[state=closed]:fade-out data-[state=closed]:duration-fast",
         className,
       )}
     >
-      <Suggestions className="mx-auto max-w-[960px] rounded-lg border border-border/70 bg-card/45 p-1 shadow-chips">
+      <div className="mx-auto flex max-w-content-max flex-wrap items-center gap-2 rounded-[var(--radius-surface)] border border-border/70 bg-card/45 px-3 py-2.5 shadow-chips">
+        <span className="ui-caption font-medium text-muted-foreground">
+          Quick actions
+        </span>
+        <Suggestions className="min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 shadow-none">
         {renderedChips.map((chip) => (
           <Suggestion
             key={chip.value}
             suggestion={chip.value}
             variant={chip.variant ?? "outline"}
             onClick={(value) => { trigger("medium"); onAction(value); }}
-            className="min-h-touch rounded-lg border-border/70"
+            className={cn(
+              "min-h-touch rounded-full border-border/70 bg-background/70 px-3 text-sm",
+              chip.variant === "default" && "bg-primary/12 text-primary hover:bg-primary/16",
+            )}
           >
             {chip.label}
           </Suggestion>
         ))}
-      </Suggestions>
+        </Suggestions>
+      </div>
     </SurfaceBar>
   );
 }

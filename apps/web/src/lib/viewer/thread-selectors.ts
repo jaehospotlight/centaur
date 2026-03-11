@@ -1,6 +1,6 @@
 import { threadName } from "@/lib/viewer/thread-name";
 import { isActiveState, isRunningState, sortThreads } from "@/lib/viewer/thread-ordering";
-import type { ThreadState, ThreadSummary } from "@/lib/types";
+import type { ThreadSummary } from "@/lib/types";
 
 export type ThreadStatusFilter = "all" | "active" | "idle" | "error";
 
@@ -62,16 +62,25 @@ export function getThreadFilterCounts(threads: ThreadSummary[], query: string): 
   };
 }
 
-export function pickActiveThreadHref(threads: ThreadSummary[]): string | undefined {
-  const sorted = sortThreads(threads);
-  const running = sorted.find((thread) => isActiveState(thread.state));
-  const fallback = sorted[0];
-  const candidate = running ?? fallback;
-  return candidate ? `/${encodeURIComponent(candidate.slack_thread_key)}` : undefined;
+export function sortThreadsByRecency(threads: ThreadSummary[]): ThreadSummary[] {
+  return [...threads].sort((a, b) => {
+    const activityDelta = (b.last_activity ?? 0) - (a.last_activity ?? 0);
+    if (activityDelta !== 0) return activityDelta;
+
+    const createdDelta = (b.created_at ?? 0) - (a.created_at ?? 0);
+    if (createdDelta !== 0) return createdDelta;
+
+    return a.slack_thread_key.localeCompare(b.slack_thread_key);
+  });
 }
 
-function stateToFilter(state: ThreadState): ThreadStatusFilter {
-  if (state === "error") return "error";
-  if (isRunningState(state) || state === "stopping") return "active";
-  return "idle";
+export function pickActiveThreadHref(threads: ThreadSummary[]): string | undefined {
+  const active = sortThreadsByRecency(threads).find((thread) => isActiveState(thread.state));
+  return active ? `/${encodeURIComponent(active.slack_thread_key)}` : undefined;
+}
+
+export function pickLatestThreadHref(threads: ThreadSummary[]): string | undefined {
+  const sorted = sortThreadsByRecency(threads);
+  const candidate = sorted[0];
+  return candidate ? `/${encodeURIComponent(candidate.slack_thread_key)}` : undefined;
 }

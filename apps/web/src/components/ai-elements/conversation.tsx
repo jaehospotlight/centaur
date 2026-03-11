@@ -3,6 +3,7 @@
 import type { ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
+import { useHaptics } from "@/components/haptics-provider";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
 import { ArrowDownIcon } from "lucide-react";
@@ -80,23 +81,26 @@ export const ConversationScrollButton = ({
   ...props
 }: ConversationScrollButtonProps) => {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
+  const { trigger } = useHaptics();
 
   const handleScrollToBottom = useCallback(() => {
+    trigger("light");
     scrollToBottom();
-  }, [scrollToBottom]);
+  }, [scrollToBottom, trigger]);
 
   return (
     !isAtBottom && (
       <Button
         aria-label="Scroll to bottom"
         className={cn(
-          "absolute bottom-4 left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted",
+          "absolute bottom-[calc(1rem+env(safe-area-inset-bottom))] left-[50%] translate-x-[-50%] rounded-full dark:bg-background dark:hover:bg-muted",
           className
         )}
         onClick={handleScrollToBottom}
         size="icon"
         type="button"
         variant="outline"
+        data-touch-target
         {...props}
       >
         <ArrowDownIcon className="size-4" />

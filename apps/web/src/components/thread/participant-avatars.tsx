@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Participant } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -41,6 +42,48 @@ function participantLabel(participant: Participant): string {
   return id;
 }
 
+export function ParticipantAvatar({
+  participant,
+  label,
+  size = 20,
+  className,
+}: {
+  participant?: Participant | null;
+  label: string;
+  size?: number;
+  className?: string;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const avatarUrl =
+    !imageFailed && typeof participant?.avatar_url === "string" && participant.avatar_url.trim().length > 0
+      ? participant.avatar_url.trim()
+      : null;
+
+  return (
+    <span
+      className={cn(
+        "ring-2 ring-background rounded-full shrink-0 overflow-hidden flex items-center justify-center text-xs font-semibold",
+        !avatarUrl && colorForId(participant?.id || label),
+        className,
+      )}
+      style={{ width: size, height: size }}
+    >
+      {avatarUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={avatarUrl}
+          alt=""
+          loading="lazy"
+          className="h-full w-full object-cover"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        initials(label)
+      )}
+    </span>
+  );
+}
+
 export function ParticipantAvatars({
   participants,
   max = 3,
@@ -69,25 +112,7 @@ export function ParticipantAvatars({
         return (
           <Tooltip key={participant.id}>
             <TooltipTrigger asChild>
-              <span
-                className={cn(
-                  "ring-2 ring-background rounded-full shrink-0 overflow-hidden flex items-center justify-center text-xs font-semibold",
-                  !participant.avatar_url && colorForId(participant.id),
-                )}
-                style={{ width: size, height: size }}
-              >
-                {participant.avatar_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={participant.avatar_url}
-                    alt=""
-                    loading="lazy"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  initials(label)
-                )}
-              </span>
+              <ParticipantAvatar participant={participant} label={label} size={size} />
             </TooltipTrigger>
             <TooltipContent>{label}</TooltipContent>
           </Tooltip>

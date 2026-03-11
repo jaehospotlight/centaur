@@ -12,6 +12,7 @@ import { useThreadStream } from "@/hooks/use-thread-stream";
 import { useThreadDetailActions } from "@/hooks/use-thread-detail-actions";
 import { useThreadDetailShortcuts } from "@/hooks/use-thread-detail-shortcuts";
 import { useElapsed } from "@/hooks/use-elapsed";
+import { useFaviconStatus } from "@/hooks/use-favicon-status";
 import { useStableStatus } from "@/hooks/use-stable-status";
 import { isActiveState, isRunningState } from "@/lib/viewer/thread-ordering";
 import { asList, asRecord, asString } from "@/lib/parse-utils";
@@ -26,8 +27,13 @@ import {
   parseEntrySource,
 } from "@/lib/viewer/thread-navigation";
 import { BASE } from "@/lib/constants";
+import type { Participant } from "@/lib/types";
 
 const TAIL_SIZE = 40;
+
+function fallbackParticipantName(userId: string): string {
+  return /^U[A-Z0-9]+$/.test(userId) ? `User ${userId.slice(-4)}` : userId;
+}
 
 function parseSubagentActivities(value: unknown): SubagentStep["activities"] {
   const activities = asList(value)
@@ -71,10 +77,13 @@ export function useThreadDetailScreenModel(threadKey: string) {
   const [compactMode, setCompactMode] = useState(false);
   const [selectedSubagentKey, setSelectedSubagentKey] = useState<string | null>(null);
   const initialMessageSent = useRef(false);
+  const initialDocumentTitleRef = useRef<string | null>(null);
+  const [bootstrapMessagePending, setBootstrapMessagePending] = useState(false);
   const { threads } = useThreadList();
 
   useEffect(() => {
     if (!threadKey) return;
+    if (bootstrapMessagePending) return;
     let cancelled = false;
     setHasOlderMessages(false);
     void fetch(`${BASE}/api/messages?key=${encodeURIComponent(threadKey)}&limit=${TAIL_SIZE}`)
@@ -90,7 +99,7 @@ export function useThreadDetailScreenModel(threadKey: string) {
     return () => {
       cancelled = true;
     };
-  }, [threadKey, setMessages]);
+  }, [bootstrapMessagePending, threadKey, setMessages]);
 
   const loadOlderMessages = useCallback(async () => {
     if (isLoadingOlder || !hasOlderMessages || chatMessages.length === 0) return;
@@ -121,10 +130,13 @@ export function useThreadDetailScreenModel(threadKey: string) {
     const initialMessage = searchParams.get("initial_message");
     if (!initialMessage || initialMessageSent.current) return;
     initialMessageSent.current = true;
+    setBootstrapMessagePending(true);
     const url = new URL(window.location.href);
     url.searchParams.delete("initial_message");
     window.history.replaceState({}, "", url.pathname + url.search);
-    void sendThreadMessage(initialMessage);
+    void sendThreadMessage(initialMessage).finally(() => {
+      setBootstrapMessagePending(false);
+    });
   }, [searchParams, sendThreadMessage]);
 
   const humanName = thread?.thread_name || threadName(threadKey);
@@ -156,10 +168,13 @@ export function useThreadDetailScreenModel(threadKey: string) {
   const upHref = listQuery ? `/?${listQuery}` : "/";
   const backHref = listHrefWithAnchor(listQuery, entryAnchor);
   const isEngineer = thread?.harness === "engineer" || thread?.harness === "eng";
-  const isRunning = thread ? isActiveState(thread.state) : false;
   const isStreaming = chatStatus === "submitted" || chatStatus === "streaming";
-  const canInterrupt = !!thread && !isEngineer && isRunningState(thread.state);
+  const isRunning = thread ? isActiveState(thread.state) || isStreaming : false;
+  const effectiveThreadState =
+    thread && isStreaming && !isActiveState(thread.state) ? "running" : thread?.state;
+  const canInterrupt = !!thread && !isEngineer && (isRunningState(thread.state) || isStreaming);
   const liveElapsed = useElapsed(thread?.last_activity ?? null, Boolean(isRunning));
+  useFaviconStatus(effectiveThreadState);
   const stableStatus = useStableStatus(agentStatus);
   const phases = useMemo(() => {
     const result: string[] = [];
@@ -222,6 +237,46 @@ export function useThreadDetailScreenModel(threadKey: string) {
     return map;
   }, [chatMessages]);
   const selectedSubagentSnapshot = selectedSubagentKey ? subagentStepsByKey.get(selectedSubagentKey) ?? null : null;
+  const participants = useMemo(() => {
+    const map = new Map<string, Participant>();
+    for (const participant of thread?.participants ?? []) {
+      map.set(participant.id, participant);
+    }
+    for (const msg of chatMessages) {
+      const metadata =
+        msg.metadata && typeof msg.metadata === "object"
+          ? (msg.metadata as Record<string, unknown>)
+          : null;
+      const metadataUserId = asString(metadata?.user_id).trim();
+      if (metadataUserId && !map.has(metadataUserId)) {
+        map.set(metadataUserId, {
+          id: metadataUserId,
+          name: fallbackParticipantName(metadataUserId),
+          username: asString(metadata?.username).trim() || null,
+          avatar_url: asString(metadata?.avatar_url).trim() || null,
+        });
+      }
+
+      for (const part of msg.parts ?? []) {
+        const p = part as Record<string, unknown>;
+        const type = asString(p.type);
+        if (type !== "data-user-message" && type !== "data-context-message") continue;
+        const data = asRecord(p.data);
+        const userId = asString(data.user_id).trim();
+        if (!userId || map.has(userId)) continue;
+        map.set(userId, {
+          id: userId,
+          name:
+            asString(data.user_name).trim() ||
+            asString(data.name).trim() ||
+            fallbackParticipantName(userId),
+          username: asString(data.username).trim() || null,
+          avatar_url: asString(data.avatar_url).trim() || null,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [chatMessages, thread?.participants]);
   const latestUserMessage = thread?.last_user_message?.trim() ?? "";
   const retryMessage = latestUserMessage || "Please retry the previous request.";
   const slackDeepLink = useMemo(() => {
@@ -243,6 +298,7 @@ export function useThreadDetailScreenModel(threadKey: string) {
     threadKey,
     isEngineer,
     canInterrupt,
+    isStreaming,
     fetchThread,
     sendThreadMessage,
     retryMessage,
@@ -277,19 +333,27 @@ export function useThreadDetailScreenModel(threadKey: string) {
   });
 
   useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (initialDocumentTitleRef.current === null) {
+      initialDocumentTitleRef.current = document.title;
+    }
+    return () => {
+      if (initialDocumentTitleRef.current) {
+        document.title = initialDocumentTitleRef.current;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!thread) return;
-    const previousTitle = document.title;
-    if (thread.state === "working" || thread.state === "running") {
+    if (isRunning) {
       document.title = `Working - ${humanName}`;
     } else if (thread.state === "error") {
       document.title = `Error - ${humanName}`;
     } else {
       document.title = `Done - ${humanName}`;
     }
-    return () => {
-      document.title = previousTitle;
-    };
-  }, [humanName, thread]);
+  }, [humanName, isRunning, thread]);
 
   useEffect(() => {
     if (!handoffTarget) return;
@@ -326,8 +390,10 @@ export function useThreadDetailScreenModel(threadKey: string) {
     isReconnecting,
     isStreaming,
     isRunning,
+    effectiveThreadState,
     isEngineer,
     tokenUsage,
+    participants,
     liveElapsed,
     stableStatus,
     phases,

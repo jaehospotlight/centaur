@@ -25,6 +25,9 @@ export type SlackReplyMetadata = {
   harness?: string;
   durationSeconds?: number;
   toolCount?: number;
+  tokenCount?: number;
+  costUsd?: number | null;
+  usageEstimated?: boolean;
   sourceLabel?: string;
 };
 
@@ -194,12 +197,29 @@ function compactDuration(seconds?: number): string | null {
   return `${Math.round(seconds)}s`;
 }
 
+function compactTokenCount(total?: number, estimated?: boolean): string | null {
+  if (!total || !Number.isFinite(total) || total <= 0) return null;
+  const prefix = estimated ? "~" : "";
+  if (total >= 1_000_000) return `${prefix}${(total / 1_000_000).toFixed(1)}M tok`;
+  if (total >= 1_000) return `${prefix}${(total / 1_000).toFixed(1)}k tok`;
+  return `${prefix}${Math.round(total)} tok`;
+}
+
+function compactCost(costUsd?: number | null): string | null {
+  if (costUsd === null || costUsd === undefined || !Number.isFinite(costUsd) || costUsd <= 0) {
+    return null;
+  }
+  return `$${costUsd.toFixed(4)}`;
+}
+
 function metadataContext(metadata?: SlackReplyMetadata): SlackBlock | null {
   if (!metadata) return null;
   const parts = [
     metadata.sourceLabel || "Paradigm AI",
     metadata.harness || null,
     compactDuration(metadata.durationSeconds),
+    compactTokenCount(metadata.tokenCount, metadata.usageEstimated),
+    compactCost(metadata.costUsd),
     metadata.toolCount ? `${metadata.toolCount} tool ${metadata.toolCount === 1 ? "call" : "calls"}` : null,
   ].filter((value): value is string => Boolean(value));
   if (parts.length === 0) return null;
@@ -670,6 +690,8 @@ function buildAccessibleText(draft: SlackDraft, metadata?: SlackReplyMetadata): 
     metadata?.sourceLabel || "Paradigm AI",
     metadata?.harness || null,
     compactDuration(metadata?.durationSeconds),
+    compactTokenCount(metadata?.tokenCount, metadata?.usageEstimated),
+    compactCost(metadata?.costUsd),
     metadata?.toolCount ? `${metadata.toolCount} tool ${metadata.toolCount === 1 ? "call" : "calls"}` : null,
   ].filter((value): value is string => Boolean(value));
 

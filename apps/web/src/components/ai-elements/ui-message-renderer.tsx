@@ -32,6 +32,7 @@ import {
 } from "@/components/ai-elements/reasoning";
 import { ShellExecutionCard } from "@/components/ai-elements/shell-execution-card";
 import { SubagentCard } from "@/components/thread/subagent-card";
+import { ParticipantAvatar } from "@/components/thread/participant-avatars";
 import type { SubagentStep } from "@/lib/describe";
 import { normalizeSubagentStatus, subagentSelectionKey } from "@/lib/viewer/subagent-steps";
 import {
@@ -77,13 +78,6 @@ function sourceLabel(source?: string): string {
   if (normalized === "slack") return "Slack";
   if (normalized === "api") return "API";
   return normalized.replace(/_/g, " ");
-}
-
-function initials(name: string): string {
-  const words = name.trim().replace(/^@/, "").split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "?";
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return `${words[0][0]}${words[1][0]}`.toUpperCase();
 }
 
 function parseSubagentActivities(
@@ -169,15 +163,40 @@ export function UIMessageRenderer({
 }) {
   const parts = message.parts ?? [];
 
-  // For user messages, render the text content
   if (message.role === "user") {
     const textParts = parts.filter(isTextUIPart);
     const raw = textParts.map((p) => p.text).join("\n").trim();
     if (!raw) return null;
     const text = cleanMessageText(raw, participantsById);
+    const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+    const userId = asString(metadata.user_id);
+    const source = asString(metadata.source);
+    const participant = userId ? participantsById.get(userId) : undefined;
+    const displayName = participant
+      ? participantDisplayName(participant, userId, "User")
+      : userId
+        ? participantDisplayName(undefined, userId, "User")
+        : source === "thread_ui"
+          ? "You"
+          : source === "slack"
+            ? "Slack user"
+            : undefined;
+
     return (
-      <div className="rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-2">
-        <div className="whitespace-pre-wrap text-sm text-foreground">{text}</div>
+      <div>
+        {displayName ? (
+          <div className="ui-meta mb-2 flex items-center gap-2">
+            <ParticipantAvatar
+              participant={participant}
+              label={displayName}
+              size={18}
+              className="text-[9px] font-medium"
+            />
+            <span className="text-sm font-medium text-foreground">{displayName}</span>
+            {source ? <span className="ui-pill">{sourceLabel(source)}</span> : null}
+          </div>
+        ) : null}
+        <div className="whitespace-pre-wrap text-sm leading-6 text-foreground">{text}</div>
       </div>
     );
   }
@@ -209,7 +228,7 @@ function AssistantParts({
   const elements = useMemo(() => buildElements(parts), [parts]);
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       {elements.map((el) => (
         <PartElement
           key={el.key}
@@ -466,11 +485,12 @@ function PartElement({
   switch (element.kind) {
     case "text":
       return (
-        <div className="rounded-lg border border-border/50 bg-card/30 px-2.5 py-2">
-          <MessageActions className="mb-1">
+        <div className="rounded-[var(--radius-surface)] border border-border/60 bg-card/30 px-3 py-3">
+          <MessageActions className="mb-2 pointer-events-auto opacity-100 transition-opacity duration-fast md:pointer-events-none md:opacity-0 md:group-hover:pointer-events-auto md:group-hover:opacity-100 md:focus-within:pointer-events-auto md:focus-within:opacity-100">
             <MessageAction
               tooltip="Copy result"
               onClick={() => copyToClipboard(element.text, "Result copied")}
+              data-touch-target
             >
               <CopyIcon className="size-3.5" />
             </MessageAction>
@@ -599,22 +619,20 @@ function PartElement({
       const displayName = participantDisplayName(participant, userId, "User");
       const msgText = cleanMessageText(asString(d.text), participantsById);
       return (
-        <div className="rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-2">
-          <div className="mb-1.5 flex items-center gap-2 text-xs text-muted-foreground">
-            {participant?.avatar_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={participant.avatar_url} alt={displayName} loading="lazy" className="size-[18px] rounded-full" />
-            ) : (
-              <div className="flex size-[18px] items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground">
-                {initials(displayName)}
-              </div>
-            )}
+        <div className="rounded-[var(--radius-surface)] border border-border/65 bg-card/48 px-3 py-3">
+          <div className="ui-meta mb-2 flex items-center gap-2">
+            <ParticipantAvatar
+              participant={participant}
+              label={displayName}
+              size={18}
+              className="text-[9px] font-medium"
+            />
             <span className="text-sm font-medium text-foreground">{displayName}</span>
-            <span className="rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-xs">
+            <span className="ui-pill">
               {sourceLabel(asString(d.source))}
             </span>
           </div>
-          <div className="whitespace-pre-wrap text-sm text-foreground">{msgText}</div>
+          <div className="whitespace-pre-wrap text-sm leading-6 text-foreground">{msgText}</div>
         </div>
       );
     }
@@ -626,20 +644,18 @@ function PartElement({
       const displayName = participantDisplayName(participant, userId, "Thread participant");
       const msgText = cleanMessageText(asString(d.text), participantsById);
       return (
-        <div className="rounded-md border border-border/50 bg-background px-2 py-1.5">
-          <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
-            {participant?.avatar_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={participant.avatar_url} alt={displayName} loading="lazy" className="size-[16px] rounded-full" />
-            ) : (
-              <div className="flex size-[16px] items-center justify-center rounded-full bg-muted text-3xs font-medium text-muted-foreground">
-                {initials(displayName)}
-              </div>
-            )}
-            <span className="text-foreground">{displayName}</span>
+        <div className="rounded-[var(--radius-surface)] border border-border/60 bg-card/35 px-3 py-3">
+          <div className="ui-meta mb-1.5 flex items-center gap-2">
+            <ParticipantAvatar
+              participant={participant}
+              label={displayName}
+              size={18}
+              className="text-[9px] font-medium"
+            />
+            <span className="text-foreground/88">{displayName}</span>
             <span>{sourceLabel(asString(d.source))}</span>
           </div>
-          <div className="whitespace-pre-wrap text-xs text-muted-foreground">{msgText}</div>
+          <div className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{msgText}</div>
         </div>
       );
     }
@@ -676,12 +692,12 @@ function PartElement({
       return (
         <div
           className={cn(
-            "rounded-xl border px-3 py-2 text-xs",
-            element.tone === "warn" ? "border-primary/30 bg-primary/10" : "border-border/60 bg-card/40",
+            "flex items-baseline gap-2 px-1 py-1 text-xs text-muted-foreground",
+            element.tone === "warn" && "text-primary",
           )}
         >
-          <div className="mb-1 font-medium uppercase tracking-wide text-muted-foreground">{element.title}</div>
-          <div className="whitespace-pre-wrap text-muted-foreground">{element.text}</div>
+          <span className="shrink-0 font-medium uppercase tracking-wide">{element.title}</span>
+          <span className="whitespace-pre-wrap break-words">{element.text}</span>
         </div>
       );
   }

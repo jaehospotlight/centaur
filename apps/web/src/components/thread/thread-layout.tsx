@@ -291,6 +291,7 @@ export function ThreadLayout({ children }: { children: React.ReactNode }) {
         panelRef={mobileDialogRef}
         className="md:hidden"
         labelledBy="thread-sidebar-mobile-title"
+        dismissibleByDrag
       >
         <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
           <span

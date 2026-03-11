@@ -9,6 +9,7 @@ type UseThreadDetailActionsParams = {
   threadKey: string;
   isEngineer: boolean;
   canInterrupt: boolean;
+  isStreaming: boolean;
   fetchThread: () => Promise<boolean>;
   sendThreadMessage: (message: string, route: SendRoute) => Promise<void>;
   retryMessage: string;
@@ -30,8 +31,8 @@ export function isRunInFlight(state: string | undefined): boolean {
   return state === "running" || state === "working" || state === "stopping";
 }
 
-export function buildRetryWithContextMessage(retryMessage: string): string {
-  return `${retryMessage}\n\nPlease retry with additional detail and include edge cases.`;
+export function buildRetryThoroughlyMessage(retryMessage: string): string {
+  return `${retryMessage}\n\nRetry this request with a deeper pass, stronger detail, and explicit edge cases.`;
 }
 
 export function useThreadDetailActions({
@@ -39,6 +40,7 @@ export function useThreadDetailActions({
   threadKey,
   isEngineer,
   canInterrupt,
+  isStreaming,
   fetchThread,
   sendThreadMessage,
   retryMessage,
@@ -90,6 +92,10 @@ export function useThreadDetailActions({
       const route: SendRoute = "execute";
       const threadState = thread?.state;
 
+      if (isStreaming && !isEngineer && !isRunInFlight(threadState)) {
+        throw new Error("Run is still starting. Please wait or stop it before sending another message.");
+      }
+
       if (route === "execute" && isRunInFlight(threadState) && !isEngineer) {
         if (threadState === "running" || threadState === "working") {
           const interrupted = await interruptRun();
@@ -105,7 +111,7 @@ export function useThreadDetailActions({
             return;
           }
           try {
-            const res = await fetch(`${BASE}/api/threads/detail?key=${encodeURIComponent(threadKey)}`);
+            const res = await fetch(`${BASE}/api/agent/status?key=${encodeURIComponent(threadKey)}`);
             if (res.ok) {
               const data = (await res.json()) as { state?: string };
               if (!isRunInFlight(String(data.state ?? ""))) {
@@ -127,7 +133,7 @@ export function useThreadDetailActions({
       if (sendEpochRef.current !== sendEpoch) return;
       await sendThreadMessage(text, route);
     },
-    [interruptRun, isEngineer, sendThreadMessage, thread?.state, threadKey],
+    [interruptRun, isEngineer, isStreaming, sendThreadMessage, thread?.state, threadKey],
   );
 
   const handleStopAgent = useCallback(async () => {
@@ -139,14 +145,14 @@ export function useThreadDetailActions({
       if (value === "stop") {
         void interruptRun();
       } else if (value === "retry") {
-        void sendThreadMessage(retryMessage, "execute");
-      } else if (value === "retry-context") {
-        void sendThreadMessage(buildRetryWithContextMessage(retryMessage), "execute");
+        void handleSendMessage(retryMessage);
+      } else if (value === "retry-thoroughly") {
+        void handleSendMessage(buildRetryThoroughlyMessage(retryMessage));
       } else {
         void handleSendMessage(value);
       }
     },
-    [handleSendMessage, interruptRun, retryMessage, sendThreadMessage],
+    [handleSendMessage, interruptRun, retryMessage],
   );
 
   return {

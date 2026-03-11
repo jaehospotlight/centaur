@@ -95,22 +95,24 @@ export function CommandPalette({
       label="Command palette"
       overlayClassName="overlay-backdrop fixed inset-0 z-40"
       className={cn(
-        "fixed left-1/2 cmd-palette-top z-50 cmd-palette-w -translate-x-1/2 overflow-hidden rounded-md border border-border/90 bg-card/98 text-foreground shadow-dialog outline-none",
+        "fixed left-1/2 cmd-palette-top z-50 cmd-palette-w -translate-x-1/2 overflow-hidden rounded-[var(--radius-shell)] border border-border/80 bg-card/98 text-foreground shadow-dialog outline-none",
+        "animate-in fade-in-0 zoom-in-95 duration-base",
       )}
     >
-      <div className="flex items-center gap-2 border-b border-border/90 px-3 py-2.5">
+      <div className="flex items-center gap-2 border-b border-border/80 px-4 py-3">
         <Search className="size-3.5 text-muted-foreground" />
         <Command.Input
           placeholder="Type a command or search…"
-          className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/90"
+          className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/80"
         />
       </div>
-      <Command.List className="max-h-palette-max overflow-y-auto p-2">
+      <Command.List className="max-h-palette-max overflow-y-auto p-3">
+        {isRefreshing && <Command.Loading className="px-3 py-2 text-xs text-muted-foreground">Refreshing…</Command.Loading>}
         <Command.Empty className="px-2 py-4 text-center text-sm text-muted-foreground">
           No results.
         </Command.Empty>
 
-        <Command.Group heading="Navigation" className="text-xs text-muted-foreground">
+        <Command.Group heading="Navigation" className="ui-kicker text-muted-foreground">
           {navigationItems.map((thread) => {
             const name = thread.thread_name || threadName(thread.slack_thread_key);
             return (
@@ -119,11 +121,11 @@ export function CommandPalette({
                 value={`thread ${name} ${thread.slack_thread_key}`}
                 keywords={[thread.harness, thread.state, String(thread.turn_count)]}
                 onSelect={() => runAndClose(() => onNavigate(thread.slack_thread_key), onOpenChange, () => trigger("medium"))}
-                className="group flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm text-foreground data-[selected=true]:bg-accent/80"
+                className="group flex min-h-10 cursor-pointer items-center gap-2 rounded-[var(--radius-control)] px-3 py-2 text-sm text-foreground data-[selected=true]:bg-accent/80"
               >
                 <ThreadContextIcon className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">{name}</span>
-                <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="ui-caption ml-auto inline-flex items-center gap-1">
                   <span>{harnessAbbrev(thread.harness)}</span>
                   <span>{thread.turn_count}t</span>
                 </span>
@@ -132,9 +134,9 @@ export function CommandPalette({
           })}
         </Command.Group>
 
-        <Command.Separator className="my-1 h-px bg-border" />
+        <Command.Separator className="my-2 h-px bg-border/70" />
 
-        <Command.Group heading="Actions" className="text-xs text-muted-foreground">
+        <Command.Group heading="Actions" className="ui-kicker text-muted-foreground">
           {actions.map((action) => (
             <Command.Item
               key={action.id}
@@ -143,14 +145,14 @@ export function CommandPalette({
               disabled={action.disabled}
               onSelect={() => runAndClose(action.run, onOpenChange, () => trigger("medium"))}
               className={cn(
-                "flex items-center gap-2 rounded-md px-2 py-2 text-sm text-foreground data-[selected=true]:bg-accent/80",
+                "flex min-h-10 items-center gap-2 rounded-[var(--radius-control)] px-3 py-2 text-sm text-foreground data-[selected=true]:bg-accent/80",
                 action.disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
               )}
             >
               <action.icon className="size-3.5 shrink-0 text-muted-foreground" />
               <span>{action.label}</span>
               {action.shortcut ? (
-                <span className="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                <span className="ui-pill ml-auto font-mono">
                   {action.shortcut}
                 </span>
               ) : null}
@@ -158,7 +160,7 @@ export function CommandPalette({
           ))}
         </Command.Group>
       </Command.List>
-      <div className="border-t border-border/90 px-3 py-2 text-xs text-muted-foreground">
+      <div className="ui-caption border-t border-border/80 px-4 py-2.5">
         <CommandSurfaceIcon className="mr-1 inline size-3 align-icon-nudge" />
         <span className="font-mono">Enter</span> to run • <span className="font-mono">Esc</span> to close
       </div>

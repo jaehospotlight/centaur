@@ -18,23 +18,34 @@ import { useThreadDetailScreenModel } from "./use-thread-detail-screen-model";
 
 export function ThreadDetailScreen({ threadKey }: { threadKey: string }) {
   const model = useThreadDetailScreenModel(threadKey);
+  const displayThreadState = model.effectiveThreadState ?? model.thread?.state;
+  const threadWithParticipants = model.thread
+    ? {
+        ...model.thread,
+        state: displayThreadState ?? model.thread.state,
+        participants: model.participants,
+      }
+    : null;
 
-  if (model.error && !model.thread) {
+  if (model.error && !threadWithParticipants) {
     return (
-      <div className="h-dvh md:h-full flex items-center justify-center bg-background">
-        <div className="text-center">
-          <p className="text-destructive text-sm mb-4">{model.error}</p>
-          <div className="flex items-center justify-center gap-3">
+      <div className="flex h-dvh items-center justify-center bg-background px-4 md:h-full">
+        <div className="thread-surface max-w-md rounded-[var(--radius-shell)] px-6 py-6 text-center">
+          <p className="text-sm font-medium text-destructive">{model.error}</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            The thread shell could not load this session snapshot.
+          </p>
+          <div className="mt-5 flex items-center justify-center gap-3">
             <Button
               type="button"
               onClick={() => {
                 void model.fetchThread();
               }}
-              variant="outline"
-              size="xs"
-              className="border-border text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              variant="default"
+              size="sm"
+              data-touch-target
             >
-              Retry
+              Retry load
             </Button>
             <Link
               href={model.backHref}
@@ -49,17 +60,20 @@ export function ThreadDetailScreen({ threadKey }: { threadKey: string }) {
     );
   }
 
-  if (!model.thread) {
+  if (!threadWithParticipants) {
     return (
-      <div className="h-dvh md:h-full flex items-center justify-center bg-background">
-        <div className="text-center">
-          <p className="text-muted-foreground text-sm inline-flex items-center gap-2">
+      <div className="flex h-dvh items-center justify-center bg-background px-4 md:h-full">
+        <div className="thread-surface max-w-md rounded-[var(--radius-shell)] px-6 py-6 text-center">
+          <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
             <LoaderCircle className="size-4 animate-spin text-primary" />
             <Shimmer className="text-sm text-muted-foreground" duration={1.6}>
               Connecting...
             </Shimmer>
           </p>
-          <p className="text-muted-foreground text-xs font-mono mt-2">{threadName(threadKey)}</p>
+          <p className="mt-2 text-xs font-mono text-muted-foreground">{threadName(threadKey)}</p>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Pulling the latest persisted messages and live session state.
+          </p>
         </div>
       </div>
     );
@@ -69,7 +83,7 @@ export function ThreadDetailScreen({ threadKey }: { threadKey: string }) {
     <ThreadScreenFrame
       header={
         <ThreadDetailHeader
-          thread={model.thread}
+          thread={threadWithParticipants}
           humanName={model.humanName}
           tokenUsage={model.tokenUsage}
           liveElapsed={model.liveElapsed}
@@ -84,19 +98,20 @@ export function ThreadDetailScreen({ threadKey }: { threadKey: string }) {
           onInterrupt={() => void model.interruptRun()}
           onRefresh={() => void model.fetchThread()}
           onOpenInfo={model.openInfo}
+          onOpenPalette={() => model.setPaletteOpen(true)}
           onOpenDrawer={model.openMobileSidebar}
           sourceLabel={model.sourceLabel}
           onBack={model.handleBackToSource}
           upHref={model.upHref}
         />
       }
-      banner={<ConnectivityBanner isReconnecting={model.isReconnecting} threadState={model.thread.state} />}
+      banner={<ConnectivityBanner isReconnecting={model.isReconnecting} threadState={threadWithParticipants.state} />}
       content={
         <ActivityFeedV2
           messages={model.chatMessages}
-          state={model.thread.state}
+          state={threadWithParticipants.state}
           isStreaming={model.isStreaming}
-          participants={model.thread.participants}
+          participants={model.participants}
           compactMode={model.compactMode}
           onSelectSubagent={model.handleSelectSubagent}
           selectedSubagentKey={model.selectedSubagentKey}
@@ -107,7 +122,10 @@ export function ThreadDetailScreen({ threadKey }: { threadKey: string }) {
       }
       footer={
         <>
-          <QuickActionChips threadState={model.thread.state} onAction={model.handleQuickAction} />
+          <QuickActionChips
+            threadState={displayThreadState ?? "idle"}
+            onAction={model.handleQuickAction}
+          />
           <MessageInput
             mode={model.inputMode}
             onSend={model.handleSendMessage}
@@ -119,13 +137,13 @@ export function ThreadDetailScreen({ threadKey }: { threadKey: string }) {
         <MobileTabBar
           activeThreadHref={`/${encodeURIComponent(threadKey)}`}
           hasRunningAgent={model.isRunning}
-          hasError={model.thread.state === "error"}
+          hasError={threadWithParticipants.state === "error"}
         />
       }
       overlay={
         <ThreadOverlayHost
           threadKey={threadKey}
-          thread={model.thread}
+          thread={threadWithParticipants}
           tokenUsage={model.tokenUsage}
           elapsed={model.liveElapsed}
           canInterrupt={model.canInterrupt}

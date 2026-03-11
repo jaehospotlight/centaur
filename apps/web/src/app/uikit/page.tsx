@@ -86,14 +86,13 @@ import {
 // Thread Viewer Components
 import { ThreadSummaryCard } from "@/components/thread/thread-summary-card";
 import { ThreadStatusTabs } from "@/components/thread/thread-status-tabs";
-import { ThreadDetailTelemetry } from "@/components/thread/thread-detail-telemetry";
 import { StateDot } from "@/components/ui/state-dot";
 import { HarnessBadge } from "@/components/ui/harness-badge";
 import { Progress } from "@/components/ui/progress";
 import { ParticipantAvatars } from "@/components/thread/participant-avatars";
 import type { VisibleThreadStatusFilter } from "@/components/thread/thread-ui-constants";
 import type { ThreadSummary, Participant } from "@/lib/types";
-import { getThreadDisplayName } from "@/lib/viewer/thread-selectors";
+import { getThreadDisplayName, sortThreadsByRecency } from "@/lib/viewer/thread-selectors";
 
 // UI Primitives
 import { Badge } from "@/components/ui/badge";
@@ -496,6 +495,7 @@ function FullLayoutTab() {
   const [statusFilter, setStatusFilter] = useState<VisibleThreadStatusFilter>("all");
   const [selectedKey, setSelectedKey] = useState<string | null>("demo:running-1");
   const [filterQuery, setFilterQuery] = useState("");
+  const recentThreads = useMemo(() => sortThreadsByRecency(MANY_THREADS), []);
 
   const filteredThreads = useMemo(() => {
     let threads = MANY_THREADS;
@@ -518,7 +518,7 @@ function FullLayoutTab() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Realistic mock of the homepage — sidebar (308px) with thread list + detail panel with conversation. Click threads to switch.
+        Realistic mock of the homepage shell with the current sidebar width, thread list, and detail panel conversation. Click threads to switch.
       </p>
 
       <div className="overflow-hidden rounded-lg border border-border/60 bg-background" style={{ height: 640 }}>
@@ -526,7 +526,7 @@ function FullLayoutTab() {
           {/* Sidebar — same structure as ThreadSidebar + ThreadLayout */}
           <aside
             className="relative hidden shrink-0 flex-col border-r border-border/60 md:flex bg-[linear-gradient(180deg,color-mix(in_oklab,var(--card)_82%,transparent),color-mix(in_oklab,var(--background)_94%,transparent))]"
-            style={{ width: 308, minWidth: 308, maxWidth: 308 }}
+            style={{ width: 332, minWidth: 332, maxWidth: 332 }}
           >
             <div className="flex h-full min-h-0 w-full flex-col">
               <div className="border-b border-border/40 px-3 py-3">
@@ -615,20 +615,75 @@ function FullLayoutTab() {
               </div>
             ) : (
               /* New Session — matches (threads)/page.tsx */
-              <div className="flex h-full flex-col">
-                <div className="flex-1 flex items-center justify-center px-4">
-                  <div className="text-center max-w-md">
-                    <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-xl border border-border/80 bg-card/60">
-                      <MessageSquarePlus className="size-6 text-muted-foreground" />
-                    </div>
-                    <h1 className="text-lg font-semibold text-foreground">New Session</h1>
-                    <p className="mt-1.5 text-sm text-muted-foreground">
-                      Start a conversation with the AI agent. Your session will appear in the sidebar.
-                    </p>
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex-1 overflow-y-auto px-4 py-4">
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(300px,0.9fr)]">
+                    <section className="thread-surface flex min-h-[260px] flex-col justify-center rounded-[var(--radius-shell)] px-6 py-8">
+                      <div className="max-w-xl">
+                        <div className="mb-4 flex size-12 items-center justify-center rounded-2xl border border-border/80 bg-card/60">
+                          <MessageSquarePlus className="size-6 text-muted-foreground" />
+                        </div>
+                        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+                          Start a new thread with durable history.
+                        </h1>
+                        <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground">
+                          New prompts start here, replies stay attached to the thread, and the latest session stays one tap away.
+                        </p>
+                        <div className="mt-5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                          <span className="rounded-full border border-border/70 bg-background/55 px-2.5 py-1">
+                            Thread-first
+                          </span>
+                          <span className="rounded-full border border-border/70 bg-background/55 px-2.5 py-1">
+                            Harness-agnostic
+                          </span>
+                          <span className="rounded-full border border-border/70 bg-background/55 px-2.5 py-1">
+                            Immediate persistence
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="thread-surface-soft rounded-[var(--radius-shell)] p-3">
+                      <div className="flex items-center justify-between gap-3 px-2 pb-2 pt-1">
+                        <div>
+                          <h2 className="text-sm font-medium text-foreground">Continue recent work</h2>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            Jump back into the latest thread without hunting through the sidebar.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => setSelectedKey(recentThreads[0]?.slack_thread_key ?? null)}
+                        >
+                          Open latest
+                        </Button>
+                      </div>
+                      <div className="overflow-hidden rounded-2xl border border-border/70 bg-background/35">
+                        <div className="divide-y divide-border/50">
+                          {recentThreads.slice(0, 4).map((thread) => (
+                            <ThreadSummaryCard
+                              key={thread.slack_thread_key}
+                              thread={thread}
+                              href="#"
+                              density="compact"
+                              linkProps={{
+                                onClick: (e: React.MouseEvent) => {
+                                  e.preventDefault();
+                                  setSelectedKey(thread.slack_thread_key);
+                                },
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </section>
                   </div>
                 </div>
                 <MessageInput
                   mode="idle"
+                  placeholder="Start a new thread…"
+                  hint="The first message creates a new thread."
                   onSend={async (msg) => { toast("Message sent (demo): " + msg); setSelectedKey("demo:running-1"); }}
                 />
               </div>
@@ -692,13 +747,6 @@ function ThreadViewerShowcase() {
         </div>
       </Section>
 
-      <Section title="ThreadDetailTelemetry" description="Compact telemetry bar for thread state, turns, elapsed, phase.">
-        <div className="max-w-2xl space-y-2">
-          <ThreadDetailTelemetry state="running" turnCount={5} elapsed="4m 32s" activePhase="implement" />
-          <ThreadDetailTelemetry state="stopped" turnCount={12} elapsed="18m 15s" activePhase={null} />
-          <ThreadDetailTelemetry state="error" turnCount={3} elapsed="1m 02s" activePhase="research" />
-        </div>
-      </Section>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { memo } from "react";
+import { TrendingUp, TrendingDown } from "lucide-react";
 import type { KPICardNode } from "./types";
 import { formatValue } from "./format-value";
 
@@ -38,7 +39,7 @@ export const KPICard = memo(function KPICard({
       </div>
       {delta != null && (
         <p className={`mt-1 text-sm font-medium ${delta >= 0 ? "text-primary" : "text-destructive"}`}>
-          {delta >= 0 ? "↑" : "↓"}
+          {delta >= 0 ? <TrendingUp className="mr-0.5 inline size-3.5" /> : <TrendingDown className="mr-0.5 inline size-3.5" />}
           {Math.abs(delta).toFixed(1)}%
         </p>
       )}

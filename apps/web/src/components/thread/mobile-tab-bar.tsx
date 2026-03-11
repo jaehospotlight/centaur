@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutList, Zap } from "lucide-react";
+import { LayoutList, MessageCircle } from "lucide-react";
 import { useHaptics } from "@/components/haptics-provider";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { Button } from "@/components/ui/button";
@@ -14,9 +14,15 @@ type MobileTabBarProps = {
   activeThreadHref?: string;
   hasRunningAgent?: boolean;
   hasError?: boolean;
+  homeSecondaryLabel?: string;
 };
 
-export function MobileTabBar({ activeThreadHref, hasRunningAgent, hasError }: MobileTabBarProps) {
+export function MobileTabBar({
+  activeThreadHref,
+  hasRunningAgent,
+  hasError,
+  homeSecondaryLabel,
+}: MobileTabBarProps) {
   const pathname = usePathname();
   const keyboardHeight = useKeyboardHeight();
   const keyboardOpen = keyboardHeight > 0;
@@ -24,7 +30,9 @@ export function MobileTabBar({ activeThreadHref, hasRunningAgent, hasError }: Mo
   const { trigger } = useHaptics();
 
   const isThreads = pathname === "/";
-  const isActive = pathname.length > 1 && !pathname.startsWith("/api/");
+  const isCurrent = pathname.length > 1 && !pathname.startsWith("/api/");
+  const primaryLabel = "Home";
+  const secondaryLabel = isThreads ? (homeSecondaryLabel || "Latest") : "Current";
   if (keyboardOpen) return null;
 
   function scrollCurrentViewToTop() {
@@ -36,7 +44,7 @@ export function MobileTabBar({ activeThreadHref, hasRunningAgent, hasError }: Mo
         return;
       }
     }
-    if (isActive) {
+    if (isCurrent) {
       const feed = document.querySelector<HTMLElement>("[data-thread-feed-scroll='true']");
       if (feed) {
         feed.scrollTo({ top: 0, behavior });
@@ -56,23 +64,23 @@ export function MobileTabBar({ activeThreadHref, hasRunningAgent, hasError }: Mo
 
   function handleActiveTab() {
     trigger("selection");
-    if (isActive) {
+    if (isCurrent) {
       scrollCurrentViewToTop();
       return;
     }
   }
 
   const threadsClassName = cn(
-    "relative flex w-full min-h-11 flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-2 transition-colors duration-fast",
+    "relative flex w-full min-h-11 flex-col items-center justify-center gap-1 rounded-[var(--radius-control)] px-3 py-2 transition-colors duration-fast",
     isThreads
-      ? "border border-primary/40 bg-primary/14 text-primary"
-      : "border border-transparent text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+      ? "border border-primary/25 bg-card/95 text-foreground shadow-ring-subtle"
+      : "border border-transparent text-muted-foreground hover:bg-accent/35 hover:text-foreground",
   );
   const activeClassName = cn(
-    "relative flex w-full min-h-11 flex-col items-center justify-center gap-0.5 rounded-lg px-3 py-2 transition-colors duration-fast",
-    isActive
-      ? "border border-primary/40 bg-primary/14 text-primary"
-      : "border border-transparent text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+    "relative flex w-full min-h-11 flex-col items-center justify-center gap-1 rounded-[var(--radius-control)] px-3 py-2 transition-colors duration-fast",
+    isCurrent
+      ? "border border-primary/25 bg-card/95 text-foreground shadow-ring-subtle"
+      : "border border-transparent text-muted-foreground hover:bg-accent/35 hover:text-foreground",
   );
   const activeHref = activeThreadHref || "/";
 
@@ -82,7 +90,7 @@ export function MobileTabBar({ activeThreadHref, hasRunningAgent, hasError }: Mo
       className="md:hidden flex-shrink-0 flex items-center justify-center border-t border-border/70 px-3 min-h-tab-bar safe-area-bottom-sm transition-opacity-transform duration-base ease-standard"
     >
       <nav aria-label="Thread navigation">
-      <div className="thread-surface-soft grid w-full max-w-sidebar-w grid-cols-2 gap-1.5 rounded-xl p-1.5">
+      <div className="thread-surface grid w-full max-w-sidebar-w grid-cols-2 gap-1 rounded-[var(--radius-surface)] p-1">
       {isThreads ? (
         <Button
           type="button"
@@ -93,19 +101,19 @@ export function MobileTabBar({ activeThreadHref, hasRunningAgent, hasError }: Mo
           data-touch-target
         >
           <LayoutList className="size-5" />
-          <span className="text-label font-medium">Threads</span>
+          <span className="text-sm font-medium">{primaryLabel}</span>
         </Button>
       ) : (
         <Link href="/" scroll={false} aria-current={undefined} onClick={() => trigger("selection")} className={threadsClassName} data-touch-target>
           {hasError && !isThreads && (
-            <span className="absolute top-1.5 right-3 size-1.5 rounded-full bg-destructive" />
+            <span className="absolute top-2 right-3 size-1.5 rounded-full bg-destructive" />
           )}
           <LayoutList className="size-5" />
-          <span className="text-label font-medium">Threads</span>
+          <span className="text-sm font-medium">{primaryLabel}</span>
         </Link>
       )}
 
-      {isActive ? (
+      {isCurrent ? (
         <Button
           type="button"
           aria-current="page"
@@ -115,19 +123,31 @@ export function MobileTabBar({ activeThreadHref, hasRunningAgent, hasError }: Mo
           data-touch-target
         >
           {hasRunningAgent && (
-            <span className="absolute top-1.5 right-3 size-2 rounded-full bg-primary" />
+            <span className="absolute top-2 right-3 size-2 rounded-full bg-primary" />
           )}
-          <Zap className="size-5" />
-          <span className="text-label font-medium">Active</span>
+          <MessageCircle className="size-5" />
+          <span className="text-sm font-medium">{secondaryLabel}</span>
         </Button>
-      ) : (
+      ) : activeThreadHref ? (
         <Link href={activeHref} scroll={false} aria-current={undefined} onClick={() => trigger("selection")} className={activeClassName} data-touch-target>
           {hasRunningAgent && (
-            <span className="absolute top-1.5 right-3 size-2 rounded-full bg-primary" />
+            <span className="absolute top-2 right-3 size-2 rounded-full bg-primary" />
           )}
-          <Zap className="size-5" />
-          <span className="text-label font-medium">Active</span>
+          <MessageCircle className="size-5" />
+          <span className="text-sm font-medium">{secondaryLabel}</span>
         </Link>
+      ) : (
+        <Button
+          type="button"
+          aria-disabled="true"
+          disabled
+          variant="ghost"
+          className={cn(activeClassName, "opacity-45")}
+          data-touch-target
+        >
+          <MessageCircle className="size-5" />
+          <span className="text-sm font-medium">{secondaryLabel}</span>
+        </Button>
       )}
       </div>
     </nav></SurfaceBar>

@@ -74,7 +74,7 @@ export const SubagentCard = memo(function SubagentCard({
       aria-controls={isSelected ? "subagent-detail-panel" : undefined}
       aria-label={`Open details for ${step.name || "Subagent"}`}
       className={cn(
-        "h-auto group/subagent relative flex w-full items-start gap-3 overflow-hidden rounded-lg border bg-card/30 px-3 py-2.5 text-left",
+        "h-auto group/subagent relative flex w-full items-start gap-3 overflow-hidden rounded-[var(--radius-surface)] border bg-card/30 px-3 py-3 text-left",
         "thread-action-transition cursor-pointer hover:border-border/70 hover:bg-accent/35 active:bg-accent/50 active:scale-press",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
         isSelected && "border-primary/45 bg-accent/40 shadow-sm",
@@ -92,7 +92,7 @@ export const SubagentCard = memo(function SubagentCard({
         )}
       />
       <div className="relative mt-0.5 shrink-0">
-        <div className="flex size-8 items-center justify-center rounded-md border border-border/50 bg-background/45 text-muted-foreground">
+        <div className="flex size-9 items-center justify-center rounded-[var(--radius-control)] border border-border/55 bg-background/45 text-muted-foreground">
           <Icon className="size-4" />
         </div>
         <span
@@ -104,22 +104,22 @@ export const SubagentCard = memo(function SubagentCard({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-label font-medium leading-5 text-foreground/90">
+          <span className="truncate text-sm font-semibold leading-5 tracking-tight text-foreground/92">
             {step.name || "Subagent"}
           </span>
           {step.model && (
-            <Badge className="shrink-0 text-3xs" variant="secondary">
+            <Badge className="shrink-0" variant="secondary">
               {step.model}
             </Badge>
           )}
           {step.completed !== undefined && step.totalBranches !== undefined && (
-            <span className="shrink-0 text-[11px] font-mono tabular-nums text-muted-foreground">
+            <span className="shrink-0 text-detail font-mono tabular-nums text-muted-foreground">
               <AnimatedNumber value={step.completed} />/<AnimatedNumber value={step.totalBranches} />
             </span>
           )}
         </div>
         {preview ? (
-          <div className="mt-0.5 line-clamp-2 text-xs leading-5 text-muted-foreground">
+          <div className="mt-1 line-clamp-2 text-sm leading-5 text-foreground/76">
             {subagentTone(step.status) === "secondary" ? (
               <Shimmer duration={2}>{preview}</Shimmer>
             ) : (
@@ -127,7 +127,7 @@ export const SubagentCard = memo(function SubagentCard({
             )}
           </div>
         ) : null}
-        <div className="mt-1 flex min-h-meta-min items-center gap-1.5 text-detail text-muted-foreground">
+        <div className="ui-meta mt-1.5 flex min-h-meta-min items-center gap-1.5">
           <span className="inline-flex items-center gap-1">
             <span className={cn("size-1.5 rounded-full", subagentDotClassName(step.status))} />
             <span>{subagentStatusLabel(step.status)}</span>

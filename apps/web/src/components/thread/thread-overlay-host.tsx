@@ -3,7 +3,11 @@
 import dynamic from "next/dynamic";
 import type { SubagentStep } from "@/lib/describe";
 import type { ThreadDetail, ThreadSummary, ThreadTokenUsage } from "@/lib/types";
-import { SubagentDetailPanel } from "@/components/thread/subagent-detail-panel";
+
+const SubagentDetailPanel = dynamic(
+  () => import("@/components/thread/subagent-detail-panel").then((module) => module.SubagentDetailPanel),
+  { ssr: false },
+);
 
 const ThreadInfoSheet = dynamic(
   () => import("@/components/thread/thread-info-sheet").then((module) => module.ThreadInfoSheet),

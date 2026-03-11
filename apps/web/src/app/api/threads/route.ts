@@ -1,4 +1,4 @@
-/** GET /api/threads — list threads from Postgres (10s cache) */
+/** GET /api/threads — list threads from Postgres */
 
 import { getPool } from "@/lib/db";
 import {
@@ -7,10 +7,10 @@ import {
 } from "@/lib/viewer/thread-runtime";
 
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 
-// In-memory cache (10s TTL — thread list doesn't need real-time)
-let cache: { data: unknown; ts: number } | null = null;
-const CACHE_TTL = 10_000;
+let threadsCache: { data: unknown; ts: number } | null = null;
+const THREADS_CACHE_TTL_MS = 3_000;
 
 function extractText(parts: unknown): string | null {
   const arr = Array.isArray(parts) ? parts : [];
@@ -22,9 +22,9 @@ function extractText(parts: unknown): string | null {
 
 export async function GET() {
   try {
-    if (cache && Date.now() - cache.ts < CACHE_TTL) {
-      return Response.json(cache.data, {
-        headers: { "Cache-Control": "public, s-maxage=10, stale-while-revalidate=5" },
+    if (threadsCache && Date.now() - threadsCache.ts < THREADS_CACHE_TTL_MS) {
+      return Response.json(threadsCache.data, {
+        headers: { "Cache-Control": "public, s-maxage=3, stale-while-revalidate=1" },
       });
     }
 
@@ -103,10 +103,10 @@ export async function GET() {
     }));
 
     const result = { threads };
-    cache = { data: result, ts: Date.now() };
+    threadsCache = { data: result, ts: Date.now() };
 
     return Response.json(result, {
-      headers: { "Cache-Control": "public, s-maxage=10, stale-while-revalidate=5" },
+      headers: { "Cache-Control": "public, s-maxage=3, stale-while-revalidate=1" },
     });
   } catch (err) {
     console.error("Failed to list threads:", err);
