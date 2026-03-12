@@ -54,7 +54,7 @@ If the user says "QA", "QA the stack", or "health check", start immediately with
 
 ## Layer 1: Internal API
 
-All calls via `docker exec ai_v2-api-1 curl -s http://localhost:8000/...` — bypasses nginx, no auth needed.
+All calls via `docker exec centaur-api-1 curl -s http://localhost:8000/...` — bypasses nginx, no auth needed.
 
 ### 1a. Services & Health
 
@@ -65,7 +65,7 @@ docker compose ps -a --format '{{.Name}}\t{{.Status}}'
 All must be Up (healthy where applicable): postgres, pgbouncer, secrets, firewall, api, docker-socket-proxy, nginx, auth, alloy, victorialogs, prometheus, grafana, slackbot, web.
 
 ```bash
-docker exec ai_v2-api-1 curl -s http://localhost:8000/health/ready
+docker exec centaur-api-1 curl -s http://localhost:8000/health/ready
 # → {"status":"ok"}
 ```
 
@@ -109,7 +109,7 @@ Auth failures on etherscan/websearch are known — note but don't block.
 ### 1c. Agent Execute
 
 ```bash
-docker exec ai_v2-api-1 curl -s -X POST http://localhost:8000/agent/execute \
+docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/execute \
   -H "Content-Type: application/json" \
   -d '{"thread_key":"test:qa-execute","message":"Say hello and nothing else","harness":"amp"}'
 ```
@@ -129,7 +129,7 @@ docker compose logs api --tail 50 | grep persona_loaded
 For each persona (typically eng, legal, invest, events):
 
 ```bash
-docker exec ai_v2-api-1 curl -s -X POST http://localhost:8000/agent/execute \
+docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/execute \
   -H "Content-Type: application/json" \
   -d '{
     "thread_key": "test:qa-persona-{NAME}",
@@ -148,19 +148,19 @@ Clean up all `test:qa-persona-*` containers.
 
 ```bash
 # All services present in VictoriaLogs?
-docker exec ai_v2-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
+docker exec centaur-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode "query=* | uniq_values(service) limit 1000" --data-urlencode "limit=1"
 
 # _msg field populated (not "missing _msg field")?
-docker exec ai_v2-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
+docker exec centaur-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode 'query=service:"api"' --data-urlencode "limit=3"
 
 # Structured fields (level, event) searchable?
-docker exec ai_v2-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
+docker exec centaur-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode 'query=service:"api" AND level:"info" AND event:*' --data-urlencode "limit=3"
 
 # Sandbox container logs collected?
-docker exec ai_v2-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
+docker exec centaur-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode 'query=container:"pipe-"' --data-urlencode "limit=2"
 ```
 
@@ -235,7 +235,7 @@ curl -s -X POST http://localhost:3001/api/slack/events \
 Note: If slackbot isn't port-mapped, use `docker exec` to reach it on the internal network:
 
 ```bash
-docker exec ai_v2-api-1 curl -s -X POST http://slackbot:3001/api/slack/events \
+docker exec centaur-api-1 curl -s -X POST http://slackbot:3001/api/slack/events \
   -H "Content-Type: application/json" \
   -H "x-slack-signature: $SIGNATURE" \
   -H "x-slack-request-timestamp: $TIMESTAMP" \
@@ -302,7 +302,7 @@ When something fails:
 
 1. **Service crash** — `docker compose logs {service} --tail 30`
 2. **Schema mismatch** — Check DB/API schema vs tool code
-3. **Missing credentials** — `docker exec ai_v2-api-1 curl -s http://secrets:8100/secrets/{KEY}`
+3. **Missing credentials** — `docker exec centaur-api-1 curl -s http://secrets:8100/secrets/{KEY}`
 4. **Connection failure** — Check upstream, tunnel, firewall
 5. **Routing issue** — Compare nginx config with expected path
 

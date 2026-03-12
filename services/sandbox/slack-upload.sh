@@ -16,7 +16,7 @@ if [ ! -f "$FILE" ]; then
   exit 1
 fi
 
-U="${AI_V2_API_URL:-http://api:8000}"
+U="${CENTAUR_API_URL:-http://api:8000}"
 CHANNEL="${SLACK_CHANNEL:?SLACK_CHANNEL not set}"
 THREAD="${SLACK_THREAD_TS:?SLACK_THREAD_TS not set}"
 FILENAME="$(basename "$FILE")"
@@ -30,7 +30,7 @@ BODY=$(jq -nc \
   --arg thread_ts "$THREAD" \
   '{content_base64: $content_base64, filename: $filename, comment: $comment, channel: $channel, thread_ts: $thread_ts}')
 
-_KEY="${AI_V2_API_KEY:-}"
+_KEY="${CENTAUR_API_KEY:-}"
 if [ -f /home/agent/.api_key ]; then
   _KEY="$(cat /home/agent/.api_key)"
 fi

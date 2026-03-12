@@ -5,8 +5,8 @@ import {
   type FetchOptions,
 } from "@centaur/api-client";
 
-const API_URL = process.env.AI_V2_API_URL || "http://api:8000";
-const API_KEY = process.env.AI_V2_API_KEY || "";
+const API_URL = process.env.CENTAUR_API_URL || "http://api:8000";
+const API_KEY = process.env.CENTAUR_API_KEY || "";
 
 /**
  * Service-bound resilientFetch — injects API key and console logger.

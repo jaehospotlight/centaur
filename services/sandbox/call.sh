@@ -5,11 +5,11 @@
 #   call search <query> [limit]        → POST /api/search
 #   call sql <query>                   → POST /api/search/sql
 #   call discover <tool>               → GET /tools/<tool>
-U="${AI_V2_API_URL:-http://api:8000}"
+U="${CENTAUR_API_URL:-http://api:8000}"
 T="Accept: text/plain"
 J="Content-Type: application/json"
 # Prefer refreshed token (written on warm-pool claim) over original env var
-_KEY="${AI_V2_API_KEY:-}"
+_KEY="${CENTAUR_API_KEY:-}"
 if [ -f /home/agent/.api_key ]; then
   _KEY="$(cat /home/agent/.api_key)"
 fi

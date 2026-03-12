@@ -6,20 +6,20 @@
 
 ```bash
 # From repo root
-docker stop ai_v2-web-1
+docker stop centaur-web-1
 
 # Run natively (uses hosted API for backend data)
 cd apps/web
 source ../../.env
-AI_V2_API_URL=https://svc-ai.paradigm.xyz \
-AI_V2_API_KEY="$API_SECRET_KEY" \
-DATABASE_URL="postgresql://tempo:tempo_dev@localhost:5432/ai_v2" \
+CENTAUR_API_URL=https://svc-ai.paradigm.xyz \
+CENTAUR_API_KEY="$API_SECRET_KEY" \
+DATABASE_URL="postgresql://tempo:tempo_dev@localhost:5432/centaur" \
 pnpm dev --port 3001
 ```
 
 The rest of the stack (postgres, api, etc.) still runs in Docker. Only the web app runs on the host for instant HMR. Access the UI at `http://localhost:3001`.
 
-To point at the **local** API instead of hosted, use `AI_V2_API_URL=http://localhost:8000`.
+To point at the **local** API instead of hosted, use `CENTAUR_API_URL=http://localhost:8000`.
 
 ## Design System: 4-Layer Component Architecture
 

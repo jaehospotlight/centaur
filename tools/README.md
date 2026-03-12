@@ -16,7 +16,7 @@ tools/
 
 ```python
 # client.py
-from ai_v2.tool_sdk import secret
+from centaur.tool_sdk import secret
 
 
 class MyClient:

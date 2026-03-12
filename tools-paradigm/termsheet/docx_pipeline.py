@@ -217,7 +217,7 @@ def preprocess_template(
 
 def _cached_preprocessed_template_path(template_path: Path) -> Path:
     digest = hashlib.sha256(template_path.read_bytes()).hexdigest()[:16]
-    cache_dir = Path(tempfile.gettempdir()) / "ai_v2_termsheet_cache"
+    cache_dir = Path(tempfile.gettempdir()) / "centaur_termsheet_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / f"{template_path.stem}-{digest}-preprocessed.docx"
 

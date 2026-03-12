@@ -1,10 +1,10 @@
-name: ai_v2
+name: centaur
 
 services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: ai_v2
+      POSTGRES_DB: centaur
       POSTGRES_USER: tempo
       POSTGRES_PASSWORD: tempo_dev
     ports:
@@ -14,7 +14,7 @@ services:
     networks:
       - backend_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tempo -d ai_v2"]
+      test: ["CMD-SHELL", "pg_isready -U tempo -d centaur"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -48,7 +48,7 @@ services:
   # ⚠️  NEVER manually recreate this container — it requires OP_SERVICE_ACCOUNT_TOKEN
   # which is only injected by CI (GitHub Actions).  Manual `docker compose up -d secrets`
   # will start it without the token, breaking all secret resolution.
-  # To redeploy: gh workflow run deploy.yml --repo paradigmxyz/ai_v2
+  # To redeploy: gh workflow run deploy.yml --repo paradigmxyz/centaur
   secrets:
     build:
       context: .
@@ -128,13 +128,13 @@ services:
     environment:
       SECRET_MANAGER_URL: http://firewall:8081
       SLACKBOT_URL: http://slackbot:3001
-      AI_V2_LOG_LEVEL: info
+      CENTAUR_LOG_LEVEL: info
       TOOL_DIRS: /app/tools:/app/tools-paradigm
       REPOS_HOST_DIR: ${HOME}/github
       REPO_HOST_DIR: ${PWD}
       FIREWALL_HOST: firewall
-      AGENT_NETWORK: ai_v2_agent_net
-      FIREWALL_CERTS_VOLUME: ai_v2_firewall-certs
+      AGENT_NETWORK: centaur_agent_net
+      FIREWALL_CERTS_VOLUME: centaur_firewall-certs
       DOCKER_HOST: tcp://docker-socket-proxy:2375
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -167,7 +167,7 @@ services:
       context: .
       dockerfile: services/slackbot/Dockerfile
     environment:
-      AI_V2_API_URL: http://api:8000
+      CENTAUR_API_URL: http://api:8000
       SECRET_MANAGER_URL: http://firewall:8081
       HTTPS_PROXY: http://firewall:8080
       NODE_EXTRA_CA_CERTS: /firewall-certs/ca-cert.pem
@@ -189,7 +189,7 @@ services:
       context: .
       dockerfile: services/web/Dockerfile
     environment:
-      AI_V2_API_URL: http://api:8000
+      CENTAUR_API_URL: http://api:8000
       SECRET_MANAGER_URL: http://firewall:8081
     ports:
       - "127.0.0.1:3001:3001"
@@ -311,19 +311,19 @@ services:
 volumes:
   pgdata:
     external: true
-    name: ai_v2_pgdata
+    name: centaur_pgdata
   grafanadata:
     external: true
-    name: ai_v2_grafanadata
+    name: centaur_grafanadata
   prometheusdata:
     external: true
-    name: ai_v2_prometheusdata
+    name: centaur_prometheusdata
   vldata:
     external: true
-    name: ai_v2_vldata
+    name: centaur_vldata
   firewall-certs:
     external: true
-    name: ai_v2_firewall-certs
+    name: centaur_firewall-certs
 
 networks:
   secrets_net:

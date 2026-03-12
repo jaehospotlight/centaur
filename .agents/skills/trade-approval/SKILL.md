@@ -288,7 +288,7 @@ Still need: @<remaining_approvers> to approve
 
 ## Credentials Required
 
-All credentials are managed server-side by the ai_v2 API. The following must be configured:
+All credentials are managed server-side by the centaur API. The following must be configured:
 - **Coinbase Prime** API keys (for `coinbase` tool) — portfolio access to pf, po, sp7
 - **Anchorage Digital** API keys (for `anchorage` tool)
 - **Unit410** API keys (for `unit410` tool)

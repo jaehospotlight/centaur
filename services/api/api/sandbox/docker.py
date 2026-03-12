@@ -40,7 +40,7 @@ def _repos_host_dir() -> str:
 
 def _repo_host_dir() -> str:
     """Host-side path to the centaur repo root (for bind-mounting prompts/personas)."""
-    return os.getenv("REPO_HOST_DIR", os.path.join(_repos_host_dir(), "paradigmxyz", "ai_v2"))
+    return os.getenv("REPO_HOST_DIR", os.path.join(_repos_host_dir(), "paradigmxyz", "centaur"))
 
 
 _HARNESS_STUB_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AMP_API_KEY")
@@ -53,8 +53,8 @@ def _container_env(thread_key: str, container_name: str) -> list[str]:
     api_key = mint_sandbox_token(thread_key, container_name)
 
     env = [
-        f"AI_V2_API_URL={os.getenv('AGENT_API_URL', 'http://api:8000')}",
-        f"AI_V2_API_KEY={api_key}",
+        f"CENTAUR_API_URL={os.getenv('AGENT_API_URL', 'http://api:8000')}",
+        f"CENTAUR_API_KEY={api_key}",
     ]
 
     if local_dev:
@@ -212,7 +212,7 @@ class DockerSandboxBackend(SandboxBackend):
             detach=True,
             stdin_open=True,
             tty=False,
-            network=os.getenv("AGENT_NETWORK", "ai_v2_agent_net"),
+            network=os.getenv("AGENT_NETWORK", "centaur_agent_net"),
             mem_limit="4g",
             nano_cpus=int(2 * 1e9),
             environment=env,

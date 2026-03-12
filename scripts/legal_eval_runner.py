@@ -992,10 +992,10 @@ def _setup_agent_client(env: dict[str, str]) -> Any:
         return env.get(key) or os.getenv(key, "")
 
     def local_env() -> list[str]:
-        api_key = val("AI_V2_API_KEY") or val("API_SECRET_KEY")
+        api_key = val("CENTAUR_API_KEY") or val("API_SECRET_KEY")
         out = [
-            f"AI_V2_API_URL={val('AI_V2_API_URL') or 'http://host.docker.internal:8000'}",
-            f"AI_V2_API_KEY={api_key}",
+            f"CENTAUR_API_URL={val('CENTAUR_API_URL') or 'http://host.docker.internal:8000'}",
+            f"CENTAUR_API_KEY={api_key}",
         ]
         for key in (
             "ANTHROPIC_API_KEY",
@@ -1016,14 +1016,14 @@ def _setup_agent_client(env: dict[str, str]) -> Any:
 
 def _validate_runner_env(env: dict[str, str]) -> None:
     api_key = (
-        env.get("AI_V2_API_KEY")
-        or os.getenv("AI_V2_API_KEY")
+        env.get("CENTAUR_API_KEY")
+        or os.getenv("CENTAUR_API_KEY")
         or env.get("API_SECRET_KEY")
         or os.getenv("API_SECRET_KEY")
     )
     missing: list[str] = []
     if not api_key:
-        missing.append("AI_V2_API_KEY (or API_SECRET_KEY)")
+        missing.append("CENTAUR_API_KEY (or API_SECRET_KEY)")
     if missing:
         raise RuntimeError(f"Missing required env vars for eval runner: {', '.join(missing)}")
 

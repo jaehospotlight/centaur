@@ -136,11 +136,11 @@ fi
                 "sh",
                 "-c",
                 '''
-AI_V2_SKILLS="/home/agent/github/paradigmxyz/ai_v2/.agents/skills"
+CENTAUR_SKILLS="/home/agent/github/paradigmxyz/centaur/.agents/skills"
 WS_SKILLS="/home/agent/workspace/.agents/skills"
-if [ -d "$AI_V2_SKILLS" ] && [ ! -d "$WS_SKILLS" ]; then
+if [ -d "$CENTAUR_SKILLS" ] && [ ! -d "$WS_SKILLS" ]; then
     mkdir -p "$WS_SKILLS"
-    cp -r "$AI_V2_SKILLS"/. "$WS_SKILLS"/
+    cp -r "$CENTAUR_SKILLS"/. "$WS_SKILLS"/
 fi
 ''',
             ],

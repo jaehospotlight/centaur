@@ -16,7 +16,7 @@ def configure_structlog() -> int:
     Returns the resolved log level integer.
     """
     log_level = _LOG_LEVELS.get(
-        (os.getenv("AI_V2_LOG_LEVEL") or os.getenv("LOG_LEVEL") or "info").lower(), 20
+        (os.getenv("CENTAUR_LOG_LEVEL") or os.getenv("LOG_LEVEL") or "info").lower(), 20
     )
     structlog.configure(
         logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),

@@ -20,7 +20,7 @@ Set `SECRET_MANAGER_BACKEND=env` in `.env`, then provide secrets directly:
 SECRET_MANAGER_BACKEND=env
 
 # Postgres (auto-created by docker compose)
-DATABASE_URL=postgresql://tempo:tempo_dev@pgbouncer:5432/ai_v2
+DATABASE_URL=postgresql://tempo:tempo_dev@pgbouncer:5432/centaur
 
 # API auth key (generate one: openssl rand -hex 32)
 API_SECRET_KEY=your-api-key-here
@@ -265,7 +265,7 @@ The entrypoint supports persona variants via `AGENT_PERSONA` env var. If set to 
 ### Container Config
 
 - Joins `agent_net` Docker network → API reachable at `http://api:8000`
-- Entrypoint injects `AI_V2_API_URL` and `AI_V2_API_KEY` env vars
+- Entrypoint injects `CENTAUR_API_URL` and `CENTAUR_API_KEY` env vars
 - Stub API keys so harnesses init in API-key mode (not browser login)
 - `HTTPS_PROXY=http://firewall:8080` routes LLM calls through the firewall
 - Resource limits: 4GB memory, 2 CPUs
@@ -335,15 +335,15 @@ Via CLI (from inside the Docker network):
 
 ```bash
 # All logs for a specific thread
-docker exec ai_v2-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
+docker exec centaur-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode "query=thread_key:C042WDDP89Y" --data-urlencode "limit=50"
 
 # API errors in the last hour
-docker exec ai_v2-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
+docker exec centaur-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode "query=_stream:{service=\"api\"} AND level:error" --data-urlencode "limit=20"
 
 # Firewall audit trail for a time range
-docker exec ai_v2-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
+docker exec centaur-api-1 curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode "query=_stream:{service=\"firewall\"} AND event:proxy_audit" \
   --data-urlencode "start=2026-03-10T00:00:00Z" --data-urlencode "end=2026-03-11T00:00:00Z"
 ```
@@ -442,5 +442,5 @@ curl -s -X POST http://localhost:8000/agent/stop \
 
 ```bash
 docker ps --filter label=agent2=true
-docker exec <container_id> curl -s -H "Authorization: Bearer $AI_V2_API_KEY" http://api:8000/health
+docker exec <container_id> curl -s -H "Authorization: Bearer $CENTAUR_API_KEY" http://api:8000/health
 ```

@@ -4,8 +4,8 @@
 # If the API is unreachable for 3 consecutive checks, pulls latest and redeploys.
 set -euo pipefail
 
-DEPLOY_DIR="/home/ubuntu/github/paradigmxyz/ai_v2"
-STATE_FILE="/tmp/ai_v2_watchdog_failures"
+DEPLOY_DIR="/home/ubuntu/github/paradigmxyz/centaur"
+STATE_FILE="/tmp/centaur_watchdog_failures"
 MAX_FAILURES=3
 
 failures=$(cat "$STATE_FILE" 2>/dev/null || echo 0)
