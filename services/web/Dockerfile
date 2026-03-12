@@ -4,15 +4,17 @@ RUN corepack enable pnpm
 
 WORKDIR /app
 
-# Install dependencies (cached independently of source changes)
-COPY apps/web/package.json apps/web/pnpm-lock.yaml* ./
-COPY apps/web/patches/ patches/
-RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+# Copy workspace root config + shared packages + this service
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* ./
+COPY packages/ packages/
+COPY services/web/package.json services/web/
+COPY services/web/patches/ services/web/patches/
+RUN cd services/web && pnpm install --frozen-lockfile 2>/dev/null || pnpm install
 
 # Copy source and build
 FROM base AS builder
-COPY apps/web/ .
-RUN pnpm build
+COPY services/web/ services/web/
+RUN cd services/web && pnpm build
 
 # Production
 FROM node:22-slim AS runner
@@ -22,10 +24,10 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Next.js standalone output includes everything needed
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/services/web/.next/standalone ./
+COPY --from=builder /app/services/web/.next/static ./.next/static
 COPY scripts/bootstrap-secrets.sh /app/bootstrap-secrets.sh
-COPY apps/web/entrypoint.sh /app/entrypoint.sh
+COPY services/web/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh /app/bootstrap-secrets.sh
 
 EXPOSE 3001

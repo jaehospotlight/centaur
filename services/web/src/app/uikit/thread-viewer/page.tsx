@@ -53,7 +53,7 @@ export default function ThreadViewerUIKitPage() {
             liveElapsed="2m 18s"
             stableStatus="Refining shell previews, overlay choreography, and fixture coverage."
             isRunning
-            isEngineer
+            isPersona
             phases={["research", "implement", "review"]}
             error={null}
             interruptError={null}

@@ -7,7 +7,7 @@ type SendRoute = "execute";
 type UseThreadDetailActionsParams = {
   thread: ThreadDetail | null;
   threadKey: string;
-  isEngineer: boolean;
+  isPersona: boolean;
   canInterrupt: boolean;
   isStreaming: boolean;
   fetchThread: () => Promise<boolean>;
@@ -38,7 +38,7 @@ export function buildRetryThoroughlyMessage(retryMessage: string): string {
 export function useThreadDetailActions({
   thread,
   threadKey,
-  isEngineer,
+  isPersona,
   canInterrupt,
   isStreaming,
   fetchThread,
@@ -92,11 +92,11 @@ export function useThreadDetailActions({
       const route: SendRoute = "execute";
       const threadState = thread?.state;
 
-      if (isStreaming && !isEngineer && !isRunInFlight(threadState)) {
+      if (isStreaming && !isPersona && !isRunInFlight(threadState)) {
         throw new Error("Run is still starting. Please wait or stop it before sending another message.");
       }
 
-      if (route === "execute" && isRunInFlight(threadState) && !isEngineer) {
+      if (route === "execute" && isRunInFlight(threadState) && !isPersona) {
         if (threadState === "running" || threadState === "working") {
           const interrupted = await interruptRun();
           if (!interrupted) {
@@ -133,7 +133,7 @@ export function useThreadDetailActions({
       if (sendEpochRef.current !== sendEpoch) return;
       await sendThreadMessage(text, route);
     },
-    [interruptRun, isEngineer, isStreaming, sendThreadMessage, thread?.state, threadKey],
+    [interruptRun, isPersona, isStreaming, sendThreadMessage, thread?.state, threadKey],
   );
 
   const handleStopAgent = useCallback(async () => {

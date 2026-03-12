@@ -89,7 +89,7 @@ export function ThreadDetailScreen({ threadKey }: { threadKey: string }) {
           liveElapsed={model.liveElapsed}
           stableStatus={model.stableStatus}
           isRunning={model.isRunning}
-          isEngineer={model.isEngineer}
+          isPersona={model.isPersona}
           phases={model.phases}
           error={model.error}
           interruptError={model.interruptError}

@@ -300,7 +300,7 @@ export function useThreadDetailScreenModel(threadKey: string) {
   } = useThreadDetailActions({
     thread,
     threadKey,
-    isEngineer,
+    isPersona,
     canInterrupt,
     isStreaming,
     fetchThread,
@@ -395,7 +395,7 @@ export function useThreadDetailScreenModel(threadKey: string) {
     isStreaming,
     isRunning,
     effectiveThreadState,
-    isEngineer,
+    isPersona,
     tokenUsage,
     participants,
     liveElapsed,

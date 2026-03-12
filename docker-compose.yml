@@ -48,9 +48,9 @@ services:
   # will start it without the token, breaking all secret resolution.
   # To redeploy: gh workflow run deploy.yml --repo paradigmxyz/ai_v2
   secrets:
-    build: .
-    entrypoint: []
-    command: ["/app/.venv/bin/uvicorn", "secret_manager.app:app", "--host", "0.0.0.0", "--port", "8100"]
+    build:
+      context: .
+      dockerfile: services/secrets/Dockerfile
     environment:
       OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN:-}
       OP_VAULT: Paradigm AI Secrets & API Keys
@@ -176,7 +176,7 @@ services:
   slackbot:
     build:
       context: .
-      dockerfile: apps/slackbot/Dockerfile
+      dockerfile: services/slackbot/Dockerfile
     environment:
       AI_V2_API_URL: http://api:8000
       SECRET_MANAGER_URL: http://firewall:8081
@@ -199,7 +199,7 @@ services:
   web:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: services/web/Dockerfile
     environment:
       AI_V2_API_URL: http://api:8000
       SECRET_MANAGER_URL: http://firewall:8081
@@ -233,7 +233,7 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
-      - ./monitoring/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./services/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - auth
       - api
@@ -306,10 +306,11 @@ services:
       start_interval: 1s
     restart: unless-stopped
 
-  promtail:
-    image: grafana/promtail:latest
+  alloy:
+    image: grafana/alloy:latest
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
     volumes:
-      - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      - ./services/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       victorialogs:

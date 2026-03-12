@@ -49,7 +49,7 @@ type ThreadDetailHeaderProps = {
   liveElapsed: string;
   stableStatus: string | null;
   isRunning: boolean;
-  isEngineer: boolean;
+  isPersona: boolean;
   phases: string[];
   error: string | null;
   interruptError: string | null;
@@ -72,7 +72,7 @@ export function ThreadDetailHeader({
   liveElapsed,
   stableStatus,
   isRunning,
-  isEngineer,
+  isPersona,
   phases,
   error,
   interruptError,
@@ -295,7 +295,7 @@ export function ThreadDetailHeader({
         </div>
       </div>
 
-      {isEngineer && phases.length > 0 && (
+      {isPersona && phases.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2 md:px-4">
           <PhaseProgress phases={phases} />
         </div>
