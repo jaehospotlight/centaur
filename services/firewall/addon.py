@@ -85,7 +85,7 @@ TRUSTED_INTERNAL_HOSTS: frozenset[str] = frozenset(
 )
 
 SENSITIVE_INBOUND_HEADERS: frozenset[str] = frozenset(
-    {"x-api-key", "x-forwarded-user"}
+    {"x-forwarded-user"}
 )
 
 # HTTP method restrictions: hosts not in this set are limited to safe methods only.
