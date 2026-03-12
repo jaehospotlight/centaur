@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import functools
 import importlib.util
 import inspect
 import json
@@ -535,34 +534,14 @@ class ToolManager:
     def _collect_methods(module: Any) -> list[ToolMethod]:
         """Collect tools from a tool module.
 
-        The module must have a _client() factory. We instantiate it once at
-        discovery time to introspect available methods, but wrap each method
-        so that the factory is called again at invocation time. This ensures
-        constructor-time ``secret()`` calls see the real ToolContext that
-        ``call_tool`` sets up with resolved secrets.
+        The module must have a _client() factory. Call it once to get a cached
+        instance and expose every public method as a tool.
         """
         methods: list[ToolMethod] = []
 
-        def _make_invoker(
-            fact: Callable[[], Any],
-            name: str,
-            descriptor: Callable,
-        ) -> Callable:
-            if inspect.iscoroutinefunction(descriptor):
-                @functools.wraps(descriptor)
-                async def _invoke(**kwargs):
-                    inst = fact()
-                    return await getattr(inst, name)(**kwargs)
-            else:
-                @functools.wraps(descriptor)
-                def _invoke(**kwargs):
-                    inst = fact()
-                    return getattr(inst, name)(**kwargs)
-            return _invoke
-
         factory = getattr(module, "_client", None)
         if factory and callable(factory):
-            instance = factory()  # discovery/introspection only
+            instance = factory()
             for method_name, descriptor in sorted(
                 vars(type(instance)).items(),
                 key=lambda item: item[0],
@@ -576,9 +555,7 @@ class ToolManager:
                 method = getattr(instance, method_name, None)
                 if not inspect.ismethod(method):
                     continue
-                methods.append(
-                    ToolMethod(method_name, _make_invoker(factory, method_name, descriptor))
-                )
+                methods.append(ToolMethod(method_name, method))
 
         return methods
 
