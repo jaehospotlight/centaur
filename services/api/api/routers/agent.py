@@ -45,6 +45,7 @@ router = APIRouter(
 class Attachment(BaseModel):
     url: str
     name: str
+    mime_type: str | None = None
 
 
 class ExecuteRequest(BaseModel):

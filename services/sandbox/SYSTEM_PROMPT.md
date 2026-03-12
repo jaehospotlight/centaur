@@ -65,6 +65,7 @@
 
 [Slack files]
 |Files attached to the current user message should be at /home/agent/uploads/.
+|When you see [Attached image: ...], use the look_at tool to view the image.
 |If the file is NOT there (download failed), immediately fall back:
 |  1. Extract channel_id and message_ts from the thread context
 |  2. `call slack get_message_files '{"channel_id":"...","message_ts":"..."}'`

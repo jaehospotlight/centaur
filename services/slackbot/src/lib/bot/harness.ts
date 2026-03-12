@@ -261,7 +261,7 @@ export async function* executeStreaming(
   threadKey: string,
   message: string,
   harness?: Harness | null,
-  attachments?: Array<{ url: string; name: string }>,
+  attachments?: Array<{ url: string; name: string; mimeType?: string }>,
   options?: { platform?: string; userId?: string },
 ): AsyncGenerator<CanonicalEvent, string, undefined> {
   const normalizedKey = normalizeThreadKey(threadKey);
@@ -380,7 +380,7 @@ export async function* executeStreamingWithBusyRetries(
   threadKey: string,
   message: string,
   harness: Harness,
-  attachments?: Array<{ url: string; name: string }>,
+  attachments?: Array<{ url: string; name: string; mimeType?: string }>,
   options?: { platform?: string; userId?: string },
 ): AsyncGenerator<CanonicalEvent, string, undefined> {
   const maxAttempts = 4;
@@ -429,7 +429,7 @@ export async function postThreadContextMessage(
     userId?: string;
     messageId?: string;
     slackTs?: string;
-    attachments?: Array<{ url: string; name: string }>;
+    attachments?: Array<{ url: string; name: string; mimeType?: string }>;
   },
 ): Promise<{ status: string }> {
   const normalizedThreadKey = normalizeThreadKey(threadKey);

@@ -214,7 +214,7 @@ function createBot() {
     harness: Harness,
     tracker: ProgressTracker,
     executionStartedAt: number,
-    attachments?: Array<{ url: string; name: string }>,
+    attachments?: Array<{ url: string; name: string; mimeType?: string }>,
     options?: { platform?: string; userId?: string },
   ): AsyncGenerator<StreamChunk> {
     let totalYieldedCount = 0;
@@ -304,7 +304,7 @@ function createBot() {
     thread: Parameters<Parameters<typeof bot.onNewMention>[0]>[0],
     messageText: string,
     isFirstMessage: boolean,
-    attachments?: Array<{ url?: string; name?: string }>,
+    attachments?: Array<{ url?: string; name?: string; mimeType?: string }>,
     userId?: string,
     slackTs?: string,
   ) {
@@ -363,11 +363,16 @@ function createBot() {
 
       // Append file attachment annotations so the agent knows files are present
       const validAttachments = (attachments || []).filter(
-        (a): a is { url: string; name: string } => !!a.url && !!a.name,
+        (a): a is { url: string; name: string; mimeType?: string } => !!a.url && !!a.name,
       );
       if (validAttachments.length > 0) {
         const annotations = validAttachments
-          .map((a) => `[Attached file: /home/agent/uploads/${a.name}]`)
+          .map((a) => {
+            const path = `/home/agent/uploads/${a.name}`;
+            return a.mimeType?.startsWith("image/")
+              ? `[Attached image: ${path}]`
+              : `[Attached file: ${path}]`;
+          })
           .join("\n");
         message = `${message}\n\n${annotations}`;
       }
@@ -457,7 +462,7 @@ function createBot() {
     if (message.author.isMe) return;
     if (message.author.isBot) return;
     await thread.subscribe();
-    const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name }));
+    const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name, mimeType: a.mimeType }));
     const mentionTs = (message as { ts?: string }).ts || "";
     await handleMessage(thread, message.text, true, attachments, message.author.userId, mentionTs);
   });
@@ -518,12 +523,13 @@ function createBot() {
   bot.onSubscribedMessage(async (thread, message) => {
     if (message.author.isMe) return;
     if (message.author.isBot) return;
-    const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name }));
+    const attachments = message.attachments?.map((a) => ({ url: a.url, name: a.name, mimeType: a.mimeType }));
     if (!message.isMention) {
       const text = (message.text || "").trim();
       const threadKey = normalizeThreadKey(thread.id);
       const files = (attachments || [])
-        .filter((a): a is { url: string; name: string } => !!a.url && !!a.name);
+        .filter((a) => !!a.url && !!a.name)
+        .map((a) => ({ url: a.url!, name: a.name!, mimeType: a.mimeType }));
       if (!text && files.length === 0) return;
       const messageId = messageIdentifier({
         ts: (message as { ts?: string }).ts || (message as { id?: string }).id,
