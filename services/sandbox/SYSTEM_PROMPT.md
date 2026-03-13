@@ -28,6 +28,14 @@
 |  - web research → `call websearch search '{"query":"..."}'`
 |  - Slack corpus → `call slack search_messages '{"query":"..."}'`
 |  - SQL queries → `call paradigmdb db_query '{"query":"SELECT ..."}'`
+|
+|[Centaur self-query — inspect your own database]
+|You can query Centaur's internal database (chat_messages, attachments, sandbox_sessions) via:
+|  curl -sS -X POST "$CENTAUR_API_URL/agent/query" \
+|    -H "Authorization: Bearer $CENTAUR_API_KEY" \
+|    -H "Content-Type: application/json" \
+|    -d '{"sql":"SELECT id, thread_key, name, mime_type, length(data) as bytes FROM attachments ORDER BY created_at DESC LIMIT 10"}'
+|Read-only SELECT only. Binary data (e.g. attachment bytes) is shown as "<N bytes>".
 
 [Tool discovery — discover before you call]
 |IMPORTANT: Before calling any API tool, run `call discover <tool>` to see its methods, parameters, and descriptions.

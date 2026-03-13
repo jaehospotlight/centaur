@@ -574,3 +574,49 @@ async def thread_detail(request: Request, key: str):
     } if has_usage else None
 
     return detail
+
+
+# ── Internal DB query (read-only) ───────────────────────────────────────────
+
+_ALLOWED_TABLES = {"chat_messages", "sandbox_sessions", "attachments", "api_keys"}
+_BLOCKED_PATTERNS = {"drop ", "delete ", "insert ", "update ", "alter ", "create ", "truncate ", "grant ", "revoke "}
+
+
+@router.post("/query", dependencies=[Depends(verify_api_key)])
+async def query_db(request: Request):
+    """Run a read-only SQL query against Centaur's own database.
+
+    Only SELECT on allowed tables. Returns rows as JSON.
+    """
+    body = await request.json()
+    sql = (body.get("sql") or "").strip()
+    if not sql:
+        raise HTTPException(status_code=422, detail="sql is required")
+
+    sql_lower = sql.lower()
+    if not sql_lower.startswith("select"):
+        raise HTTPException(status_code=400, detail="Only SELECT queries are allowed")
+    for pat in _BLOCKED_PATTERNS:
+        if pat in sql_lower:
+            raise HTTPException(status_code=400, detail=f"Query contains blocked keyword: {pat.strip()}")
+
+    pool = request.app.state.db_pool
+    try:
+        rows = await pool.fetch(sql)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Convert to JSON-serializable dicts
+    results = []
+    for row in rows[:500]:
+        record = {}
+        for key, val in row.items():
+            if isinstance(val, (bytes, bytearray, memoryview)):
+                record[key] = f"<{len(val)} bytes>"
+            elif hasattr(val, "isoformat"):
+                record[key] = val.isoformat()
+            else:
+                record[key] = val
+        results.append(record)
+
+    return {"rows": results, "count": len(results)}
