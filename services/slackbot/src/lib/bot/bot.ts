@@ -156,9 +156,7 @@ export class SlackBot {
     yield { type: "task_update", id: "init", title: "Starting…", status: "in_progress" };
 
     for await (const event of this.client.execute({ threadKey, message: input, platform: "slack", userId })) {
-      if (tracker.update(event)) {
-        for (const chunk of tracker.pendingChunks()) yield chunk;
-      }
+      yield* tracker.update(event);
     }
 
     if (!tracker.initCompleted) {

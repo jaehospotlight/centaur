@@ -2,187 +2,126 @@ import type { CanonicalEvent } from "@centaur/harness-events";
 import type { StreamChunk } from "chat";
 
 type ActiveTool = { name: string; input: Record<string, unknown>; startedAt: number };
-
-const MAX_VISIBLE_STEPS = 5;
-
 type StepStatus = "pending" | "in_progress" | "complete" | "error";
 type HistoryEntry = { toolId: string; title: string; status: StepStatus };
+
+const MAX_VISIBLE_STEPS = 5;
 
 export class ProgressTracker {
   lastAssistantText = "";
   resultText = "";
-  /** Amp thread ID captured from system.init session_id (e.g. "T-019ce043-..."). */
   agentThreadId = "";
-  private activeTools = new Map<string, ActiveTool>();
-  private _pendingChunks: StreamChunk[] = [];
   initCompleted = false;
-  /** Ordered history of all step entries (grows unbounded but entries are tiny). */
+  private activeTools = new Map<string, ActiveTool>();
   private stepHistory: HistoryEntry[] = [];
 
-  /** Emit task_update chunks for the visible window (last MAX_VISIBLE_STEPS). */
-  private emitVisibleWindow(): void {
-    const start = Math.max(0, this.stepHistory.length - MAX_VISIBLE_STEPS);
-    for (let i = start; i < this.stepHistory.length; i++) {
-      const entry = this.stepHistory[i];
-      this._pendingChunks.push({
-        type: "task_update",
-        id: `step-${i - start}`,
-        title: entry.title,
-        status: entry.status,
-      });
-    }
-  }
-
-  /** Emit a single slot update without re-emitting the full window. */
-  private emitSlot(historyIndex: number): void {
-    const windowStart = Math.max(0, this.stepHistory.length - MAX_VISIBLE_STEPS);
-    const slotIndex = historyIndex - windowStart;
-    if (slotIndex < 0 || slotIndex >= MAX_VISIBLE_STEPS) return; // off-screen
-    const entry = this.stepHistory[historyIndex];
-    this._pendingChunks.push({
-      type: "task_update",
-      id: `step-${slotIndex}`,
-      title: entry.title,
-      status: entry.status,
-    });
-  }
-
-  /** Add a new step entry. If it causes a shift, re-emits the full window. */
-  private addStep(toolId: string, title: string, status: StepStatus): void {
-    this.stepHistory.push({ toolId, title, status });
-    if (this.stepHistory.length > MAX_VISIBLE_STEPS) {
-      // Window shifted — re-emit all visible slots
-      this.emitVisibleWindow();
-    } else {
-      // Still within initial slots, just emit the new one
-      this.emitSlot(this.stepHistory.length - 1);
-    }
-  }
-
-  /** Update an existing step entry's title and status. */
-  private updateStep(toolId: string, title: string, status: StepStatus): void {
-    const idx = this.stepHistory.findLastIndex((e) => e.toolId === toolId);
-    if (idx === -1) return;
-    this.stepHistory[idx].title = title;
-    this.stepHistory[idx].status = status;
-    this.emitSlot(idx);
-  }
-
-  update(event: CanonicalEvent): boolean {
-    // Complete the "Starting…" task on the first real event
+  *update(event: CanonicalEvent): Generator<StreamChunk> {
     if (!this.initCompleted) {
       this.initCompleted = true;
-      this._pendingChunks.push({
-        type: "task_update",
-        id: "init",
-        title: "Started",
-        status: "complete",
-      });
+      yield { type: "task_update", id: "init", title: "Started", status: "complete" };
     }
+
     if (event.type === "assistant" && event.message?.content) {
-      let changed = false;
       let textInThisEvent = "";
       for (const block of event.message.content) {
         if (block.type === "tool_use") {
-          // A tool is starting — any preceding assistant text (in this event
-          // or a prior one) was just preamble (e.g. "Let me look at…") and
-          // should not be posted as the final Slack message if the stream
-          // ends before the tool completes.
           this.lastAssistantText = "";
-          this.activeTools.set(block.id, {
-            name: block.name,
-            input: block.input,
-            startedAt: Date.now(),
-          });
-          changed = true;
-          this.addStep(block.id, friendlyToolLabel(block.name, block.input), "in_progress");
+          this.activeTools.set(block.id, { name: block.name, input: block.input, startedAt: Date.now() });
+          yield* this.addStep(block.id, friendlyToolLabel(block.name, block.input), "in_progress");
         } else if (block.type === "text" && block.text) {
           textInThisEvent = block.text;
         }
       }
-      // Only set lastAssistantText if this event had no tool_use blocks.
-      // When tools are active, text after all tools complete will set it.
       if (textInThisEvent && this.activeTools.size === 0) {
         this.lastAssistantText = textInThisEvent;
       }
-      return changed;
+      return;
     }
 
     if (event.type === "tool" && event.content) {
-      let changed = false;
       for (const block of event.content) {
         const active = this.activeTools.get(block.tool_use_id);
         if (active) {
           this.activeTools.delete(block.tool_use_id);
-          changed = true;
-          const isDone = !block.is_error;
-          this.updateStep(
+          yield* this.updateStep(
             block.tool_use_id,
-            friendlyToolLabel(active.name, active.input, isDone),
+            friendlyToolLabel(active.name, active.input, !block.is_error),
             block.is_error ? "error" : "complete",
           );
         }
       }
-      return changed;
-    }
-
-    if (event.type === "reasoning") {
-      // No-op: tool calls already provide real progress indicators
-      return false;
+      return;
     }
 
     if (event.type === "subagent") {
       const label = `Subagent: ${event.name || "Subagent"}`;
       if (event.status === "started") {
-        this.addStep(event.subagent_id, label, "in_progress");
-        return true;
+        yield* this.addStep(event.subagent_id, label, "in_progress");
+      } else if (event.status === "completed" || event.status === "failed") {
+        yield* this.updateStep(event.subagent_id, label, event.status === "completed" ? "complete" : "error");
       }
-      if (event.status === "completed" || event.status === "failed") {
-        this.updateStep(
-          event.subagent_id,
-          label,
-          event.status === "completed" ? "complete" : "error",
-        );
-        return true;
-      }
-      return false;
+      return;
     }
 
     if (event.type === "result") {
       this.resultText = event.text;
-      return true;
+      return;
     }
 
     if (event.type === "error") {
-      this._pendingChunks.push({
-        type: "markdown_text",
-        text: `Error: ${event.error || "Unknown error"}`,
-      });
-      return true;
+      yield { type: "markdown_text", text: `Error: ${event.error || "Unknown error"}` };
+      return;
     }
 
     if (event.type === "system" && event.subtype === "init" && event.session_id) {
       this.agentThreadId = event.session_id;
-      return false;
     }
-
-    // command_execution, file_change, usage — no visual update
-    return false;
   }
 
-  addHandoff(goal: string, _newThreadKey: string): void {
+  *addHandoff(goal: string): Generator<StreamChunk> {
     this.activeTools.clear();
     this.lastAssistantText = "";
     this.resultText = "";
-    this.addStep(`handoff-${Date.now()}`, `Handed off → ${goal}`, "complete");
+    yield* this.addStep(`handoff-${Date.now()}`, `Handed off → ${goal}`, "complete");
   }
 
-  pendingChunks(): StreamChunk[] {
-    const chunks = this._pendingChunks;
-    this._pendingChunks = [];
-    return chunks;
+  // ── Step window management ──────────────────────────────────────────────
+
+  private *addStep(toolId: string, title: string, status: StepStatus): Generator<StreamChunk> {
+    this.stepHistory.push({ toolId, title, status });
+    if (this.stepHistory.length > MAX_VISIBLE_STEPS) {
+      yield* this.emitVisibleWindow();
+    } else {
+      yield* this.emitSlot(this.stepHistory.length - 1);
+    }
+  }
+
+  private *updateStep(toolId: string, title: string, status: StepStatus): Generator<StreamChunk> {
+    const idx = this.stepHistory.findLastIndex((e) => e.toolId === toolId);
+    if (idx === -1) return;
+    this.stepHistory[idx].title = title;
+    this.stepHistory[idx].status = status;
+    yield* this.emitSlot(idx);
+  }
+
+  private *emitVisibleWindow(): Generator<StreamChunk> {
+    const start = Math.max(0, this.stepHistory.length - MAX_VISIBLE_STEPS);
+    for (let i = start; i < this.stepHistory.length; i++) {
+      const entry = this.stepHistory[i];
+      yield { type: "task_update", id: `step-${i - start}`, title: entry.title, status: entry.status };
+    }
+  }
+
+  private *emitSlot(historyIndex: number): Generator<StreamChunk> {
+    const windowStart = Math.max(0, this.stepHistory.length - MAX_VISIBLE_STEPS);
+    const slotIndex = historyIndex - windowStart;
+    if (slotIndex < 0 || slotIndex >= MAX_VISIBLE_STEPS) return;
+    const entry = this.stepHistory[historyIndex];
+    yield { type: "task_update", id: `step-${slotIndex}`, title: entry.title, status: entry.status };
   }
 }
+
+// ── Tool labels ───────────────────────────────────────────────────────────
 
 const TOOL_VERBS: Record<string, [active: string, done: string]> = {
   Read: ["Reading", "Read"],
@@ -202,11 +141,7 @@ const TOOL_VERBS: Record<string, [active: string, done: string]> = {
   skill: ["Loading skill", "Loaded skill"],
 };
 
-function friendlyToolLabel(
-  name: string,
-  input: Record<string, unknown>,
-  done?: boolean,
-): string {
+function friendlyToolLabel(name: string, input: Record<string, unknown>, done?: boolean): string {
   const pair = TOOL_VERBS[name];
   const verb = pair ? pair[done ? 1 : 0] : name;
   const ctx = friendlyToolContext(name, input);
@@ -215,12 +150,8 @@ function friendlyToolLabel(
 
 function friendlyToolContext(name: string, input: Record<string, unknown>): string {
   const str = (key: string) => (typeof input[key] === "string" ? (input[key] as string) : "");
-
   switch (name) {
-    case "Read":
-    case "edit_file":
-    case "create_file":
-    case "look_at":
+    case "Read": case "edit_file": case "create_file": case "look_at":
       return shortPath(str("path"));
     case "Bash":
       return friendlyBashContext(str("cmd"));
@@ -246,50 +177,31 @@ function friendlyToolContext(name: string, input: Record<string, unknown>): stri
 function friendlyBashContext(cmd: string): string {
   if (!cmd) return "";
   const trimmed = cmd.trim();
-  // Parse `call search <query>`, `call sql <query>`, `call discover <tool>`
   const callBuiltin = trimmed.match(/^call\s+(search|sql|discover)\s+(.*)/s);
-  if (callBuiltin) {
-    return `${callBuiltin[1]}: ${truncate(callBuiltin[2], 50)}`;
-  }
-  // Parse `call <tool> <method> [json]` → "tool.method"
+  if (callBuiltin) return `${callBuiltin[1]}: ${truncate(callBuiltin[2], 50)}`;
   const callMatch = trimmed.match(/^call\s+(\S+)\s+(\S+)/);
-  if (callMatch) {
-    return `${callMatch[1]}.${callMatch[2]}`;
-  }
+  if (callMatch) return `${callMatch[1]}.${callMatch[2]}`;
   return truncate(trimmed, 60);
 }
 
 function shortPath(p: string): string {
   if (!p) return "";
   const parts = p.split("/");
-  if (parts.length <= 3) return p;
-  return `…/${parts.slice(-2).join("/")}`;
+  return parts.length <= 3 ? p : `…/${parts.slice(-2).join("/")}`;
 }
 
 function truncate(s: string, max: number): string {
   if (!s) return "";
-  // Collapse to single line
   const line = s.replace(/\n/g, " ").trim();
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
 function summarizeInput(input: Record<string, unknown>): string {
-  const keys = Object.keys(input);
-  if (keys.length === 0) return "";
-
-  // Common patterns: show the most useful parameter
   for (const key of ["query", "pattern", "command", "cmd", "prompt", "path", "url", "message"]) {
-    if (typeof input[key] === "string") {
-      return `${key}: "${input[key]}"`;
-    }
+    if (typeof input[key] === "string") return `${key}: "${input[key]}"`;
   }
-
-  // Fallback: show first string param
-  for (const key of keys) {
-    if (typeof input[key] === "string" && (input[key] as string).length > 0) {
-      return `${key}: "${input[key]}"`;
-    }
+  for (const [key, val] of Object.entries(input)) {
+    if (typeof val === "string" && val.length > 0) return `${key}: "${val}"`;
   }
-
   return "";
 }
