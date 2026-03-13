@@ -269,7 +269,7 @@ class TestMessagesToContentBlocksWithAttachmentRef:
         blocks = messages_to_content_blocks(msgs)
         assert len(blocks) == 2
         assert blocks[0]["text"] == "<@U999>: check this"
-        assert "call attachments download" in blocks[1]["text"]
+        assert "/agent/attachments/att-1/download" in blocks[1]["text"]
         assert "att-1" in blocks[1]["text"]
 
 

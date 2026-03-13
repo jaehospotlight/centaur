@@ -127,3 +127,12 @@ async def client(app):
 def api_key():
     """Return the test API key."""
     return os.environ["API_SECRET_KEY"]
+
+
+@pytest_asyncio.fixture
+async def db_pool(app):
+    """Yield the live asyncpg pool from the running app."""
+    from asgi_lifespan import LifespanManager
+
+    async with LifespanManager(app) as manager:
+        yield manager.app.state.db_pool
