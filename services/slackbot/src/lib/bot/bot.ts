@@ -625,29 +625,38 @@ function createBot() {
     }
   }
 
+  type Attachment = { url?: string; name?: string; mimeType?: string; fetchData?: () => Promise<Buffer> };
+
+  async function refetchAttachments(
+    threadId: string,
+    ts: string,
+    existing: Attachment[],
+  ): Promise<Attachment[]> {
+    if (existing.length > 0 || !ts) return existing;
+    try {
+      const slack = bot.getAdapter("slack") as SlackAdapter;
+      const refetched = await slack.fetchMessage(threadId, ts);
+      if (refetched?.attachments && refetched.attachments.length > 0) {
+        log.info("files_refetched", { thread: threadId, count: refetched.attachments.length });
+        return [...refetched.attachments];
+      }
+    } catch (err) {
+      log.warn("files_refetch_failed", {
+        thread: threadId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return existing;
+  }
+
   bot.onNewMention(async (thread, message) => {
     if (message.author.isMe) return;
     if (message.author.isBot) return;
     await thread.subscribe();
-    let attachments = message.attachments ? [...message.attachments] : [];
     const mentionTs = (message as { ts?: string }).ts || "";
-
-    // Slack app_mention events don't include files — re-fetch the message to get them
-    if (attachments.length === 0 && mentionTs) {
-      try {
-        const slack = bot.getAdapter("slack") as SlackAdapter;
-        const refetched = await slack.fetchMessage(thread.id, mentionTs);
-        if (refetched?.attachments && refetched.attachments.length > 0) {
-          attachments = [...refetched.attachments];
-          log.info("mention_files_refetched", { thread: thread.id, count: attachments.length });
-        }
-      } catch (err) {
-        log.warn("mention_files_refetch_failed", {
-          thread: thread.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    const attachments = await refetchAttachments(
+      thread.id, mentionTs, message.attachments ? [...message.attachments] : [],
+    );
 
     await handleMessage(thread, message.text, true, attachments, message.author.userId, mentionTs);
   });
@@ -823,7 +832,8 @@ function createBot() {
       return;
     }
     const subTs = (message as { ts?: string }).ts || "";
-    await handleMessage(thread, message.text, false, rawAttachments, message.author.userId, subTs);
+    const attachments = await refetchAttachments(thread.id, subTs, [...rawAttachments]);
+    await handleMessage(thread, message.text, false, attachments, message.author.userId, subTs);
   });
 
   return bot;
