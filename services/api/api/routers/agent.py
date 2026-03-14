@@ -197,6 +197,12 @@ async def execute(request: Request):
             content={"code": "EMPTY_PROMPT"},
         )
 
+    # ── Extract inline attachments (image/document → attachment_ref) ─────
+    if isinstance(message, list):
+        pool = request.app.state.db_pool
+        msg_id = f"exec-{uuid.uuid4().hex[:16]}"
+        message = await _extract_attachments(pool, thread_key, msg_id, message)
+
     session = await get_or_spawn(thread_key, resolved_harness, engine=engine)
 
     return EventSourceResponse(

@@ -11,7 +11,7 @@ import { ProgressTracker } from "./progress-tracker";
 export interface BotThread {
   id: string;
   subscribe(): Promise<void>;
-  post(content: AsyncGenerator<StreamChunk> | { markdown: string }): Promise<{ edit(content: { markdown: string }): Promise<void> }>;
+  post(content: AsyncGenerator<StreamChunk> | { markdown: string }): Promise<{ id: string; edit(content: { markdown: string }): Promise<void> }>;
 }
 
 export interface BotMessage {
@@ -31,6 +31,8 @@ export interface BotAttachment {
 export interface SlackAdapter {
   fetchMessage(threadId: string, ts: string): Promise<{ attachments?: BotAttachment[] } | null>;
   setAssistantTitle(channel: string, threadTs: string, title: string): Promise<void>;
+  /** Replace a message's text and clear any Block Kit blocks (e.g. streaming progress cards). */
+  replaceMessage(channel: string, ts: string, text: string): Promise<void>;
 }
 
 // ── Bot ───────────────────────────────────────────────────────────────────
@@ -67,7 +69,8 @@ export class SlackBot {
     if (msg.author.isMe || msg.author.isBot) return;
 
     if (msg.isMention) {
-      await this.executeTurn(thread, msg.text, msg.attachments || [], msg.author.userId);
+      const attachments = await this.loadAttachments(thread.id, msg);
+      await this.executeTurn(thread, msg.text, attachments, msg.author.userId);
       return;
     }
 
@@ -97,13 +100,26 @@ export class SlackBot {
   async executeTurn(thread: BotThread, text: string, attachments: BotAttachment[], userId?: string) {
     const threadKey = normalizeThreadKey(thread.id);
     const input = await this.buildInput(text, attachments);
+
+    // If there are non-text content blocks (image/document), buffer them via
+    // POST /messages so the API stores base64 in the attachments table and
+    // replaces them with attachment_ref. Then execute with plain text — the
+    // flush pipeline converts attachment_refs to download instructions.
+    let executeInput: string | InputContentBlock[];
+    if (typeof input !== "string" && input.some((b) => b.type !== "text")) {
+      await this.client.bufferMessage({ threadKey, parts: input as Record<string, unknown>[], userId });
+      executeInput = text;
+    } else {
+      executeInput = input;
+    }
+
     const tracker = new ProgressTracker();
     const startTime = Date.now();
 
     log.info("execute_start", { thread_key: threadKey, user_id: userId });
 
     try {
-      const sent = await thread.post(this.streamTurn(threadKey, input, tracker, userId));
+      const sent = await thread.post(this.streamTurn(threadKey, executeInput, tracker, userId));
 
       const harness = (tracker as any).harness || "agent";
       const finalText = (tracker.resultText || tracker.lastAssistantText).trim();
@@ -122,7 +138,14 @@ export class SlackBot {
         const meta = [process.env.APP_NAME || "Centaur", hLabel, durStr].filter(Boolean);
         let md = `_${meta.join(" · ")}_\n\n${finalText}`;
         if (this.viewerUrl) md += `\n\n[Thread Viewer](${this.viewerUrl}/${encodeURIComponent(threadKey)})`;
-        try { await sent.edit({ markdown: md }); } catch {}
+        try {
+          if (this.slack) {
+            const { channel, threadTs: _ } = splitThreadKey(thread.id);
+            await this.slack.replaceMessage(channel, sent.id, md);
+          } else {
+            await sent.edit({ markdown: md });
+          }
+        } catch {}
       }
 
       if (finalText && this.slack) {

@@ -57,6 +57,107 @@ class TestAttachmentRefConversion:
         assert "att-xyz" in blocks[1]["text"]
 
 
+# ── Unit: attachment extraction pipeline ────────────────────────────────────
+#
+# The slackbot buffers messages with attachments via POST /agent/messages,
+# which calls _extract_attachments() to store base64 blobs in the attachments
+# table and replace them with lightweight attachment_ref parts.  On flush,
+# messages_to_content_blocks converts attachment_ref → text (curl download
+# instructions) so the sandbox agent can download the files.
+
+
+class TestAttachmentExtractionPipeline:
+    """Validates the extraction pipeline: base64 → attachment_ref → curl text.
+
+    Without this pipeline, raw image/document content blocks would reach the
+    sandbox, which only accepts text blocks and would reject them.
+    """
+
+    def test_document_block_would_fail_without_extraction(self):
+        """Raw document blocks pass through messages_to_content_blocks unchanged.
+
+        This proves that without the extraction step, the sandbox would
+        receive a non-text block and reject it.
+        """
+        messages = [{
+            "role": "user",
+            "parts": [
+                {"type": "text", "text": "summarize this"},
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": "JVBER...",
+                    },
+                },
+            ],
+        }]
+        blocks = messages_to_content_blocks(messages)
+        assert len(blocks) == 2
+        assert blocks[0] == {"type": "text", "text": "summarize this"}
+        # The document block passes through as-is — NOT a text block
+        assert blocks[1]["type"] == "document"
+        assert "source" in blocks[1]
+
+    def test_extracted_attachment_ref_becomes_download_instruction(self):
+        """After extraction, attachment_ref parts become text with curl."""
+        messages = [{
+            "role": "user",
+            "parts": [
+                {
+                    "type": "attachment_ref",
+                    "id": "att-deadbeef1234",
+                    "name": "slides.pdf",
+                    "mime_type": "application/pdf",
+                },
+                {
+                    "type": "attachment_ref",
+                    "id": "att-cafebabe5678",
+                    "name": "screenshot.png",
+                    "mime_type": "image/png",
+                },
+            ],
+        }]
+        blocks = messages_to_content_blocks(messages)
+        assert len(blocks) == 2
+        for block in blocks:
+            assert block["type"] == "text", (
+                "All blocks should be text after extraction + conversion"
+            )
+            assert "curl" in block["text"]
+        assert "att-deadbeef1234" in blocks[0]["text"]
+        assert "slides.pdf" in blocks[0]["text"]
+        assert "att-cafebabe5678" in blocks[1]["text"]
+        assert "screenshot.png" in blocks[1]["text"]
+
+    def test_mixed_text_and_document_extraction_flow(self):
+        """End-to-end: text + document → after extraction, all blocks are text."""
+        # Simulate the state AFTER _extract_attachments has run:
+        # the original document part has been replaced with attachment_ref.
+        messages = [{
+            "role": "user",
+            "parts": [
+                {"type": "text", "text": "please review this contract"},
+                {
+                    "type": "attachment_ref",
+                    "id": "att-contract99",
+                    "name": "contract.pdf",
+                    "mime_type": "application/pdf",
+                },
+            ],
+        }]
+        blocks = messages_to_content_blocks(messages)
+        assert len(blocks) == 2
+        # Text block preserved
+        assert blocks[0] == {"type": "text", "text": "please review this contract"}
+        # Attachment ref became a text download instruction
+        assert blocks[1]["type"] == "text"
+        assert "contract.pdf" in blocks[1]["text"]
+        assert "/agent/attachments/att-contract99/download" in blocks[1]["text"]
+        assert "curl" in blocks[1]["text"]
+
+
 # ── Integration: full roundtrip through the API ────────────────────────────
 
 SAMPLE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100  # fake PNG bytes

@@ -104,6 +104,17 @@ export class CentaurClient {
     }
   }
 
+  async bufferMessage(opts: {
+    threadKey: string;
+    parts: Array<Record<string, unknown>>;
+    userId?: string;
+  }) {
+    await this.http.post("/agent/messages", {
+      thread_key: opts.threadKey,
+      messages: [{ role: "user", parts: opts.parts, user_id: opts.userId }],
+    });
+  }
+
   async postContext(opts: PostContextOptions) {
     const { threadKey, text, userId, attachments } = opts;
     const metadata: Record<string, unknown> = {};
