@@ -48,6 +48,12 @@ export interface SlackAdapter {
 //
 
 export class SlackBot {
+  /** Active wires keyed by threadKey — one persistent SSE connection per thread. */
+  private wires = new Map<string, {
+    iter: AsyncIterator<CanonicalEvent, void, undefined>;
+    ready: boolean;
+  }>();
+
   constructor(
     readonly client: CentaurClient,
     private viewerUrl = "",
@@ -108,6 +114,26 @@ export class SlackBot {
     await this.execute(thread, threadKey, text, userId);
   }
 
+  private async ensureWire(threadKey: string): Promise<AsyncIterator<CanonicalEvent, void, undefined>> {
+    const existing = this.wires.get(threadKey);
+    if (existing?.ready) return existing.iter;
+
+    // Open a new persistent wire
+    const wire = this.client.connect({ threadKey, platform: "slack" });
+    const iter = wire[Symbol.asyncIterator]();
+
+    // Wait for wire.ready
+    const readyResult = await iter.next();
+    if (readyResult.done || (readyResult.value as any).type !== "wire.ready") {
+      throw new Error("Wire did not emit wire.ready");
+    }
+
+    const entry = { iter, ready: true };
+    this.wires.set(threadKey, entry);
+    log.info("wire_opened", { thread_key: threadKey });
+    return iter;
+  }
+
   private async execute(thread: BotThread, threadKey: string, text: string, userId?: string) {
     const tracker = new ProgressTracker();
     const t0 = Date.now();
@@ -139,6 +165,8 @@ export class SlackBot {
       }
 
       log.error("execute_error", { thread_key: threadKey, error: errMsg });
+      // Wire is probably dead — clean up so next mention reconnects
+      this.wires.delete(threadKey);
       try {
         await thread.post({ markdown: `Agent request failed: ${errMsg}` });
       } catch (postErr) {
@@ -182,35 +210,22 @@ export class SlackBot {
   ): AsyncGenerator<StreamChunk> {
     yield { type: "task_update", id: "init", title: "Starting…", status: "in_progress" };
 
-    // 1. Open the persistent stdout wire
-    const wire = this.client.connect({ threadKey, platform: "slack" });
-    const iter = wire[Symbol.asyncIterator]();
-
-    // 2. Wait for wire.ready, then inject stdin
-    let wireReady = false;
+    // 1. Ensure we have a persistent wire (reuse existing or open new)
+    let iter: AsyncIterator<CanonicalEvent, void, undefined>;
     try {
-      const readyResult = await iter.next();
-      if (!readyResult.done) {
-        const readyEvt = readyResult.value as any;
-        if (readyEvt.type === "wire.ready") {
-          wireReady = true;
-        }
-      }
+      iter = await this.ensureWire(threadKey);
     } catch (err) {
       log.error("wire_connect_failed", { thread_key: threadKey, error: err instanceof Error ? err.message : String(err) });
-    }
-
-    if (!wireReady) {
       yield { type: "markdown_text", text: "Failed to establish agent connection." };
       return;
     }
 
-    // 3. Inject the first message into stdin (fire-and-forget)
+    // 2. Inject the message into stdin (fire-and-forget)
     this.client.execute({ threadKey, message: text, platform: "slack", userId }).catch((err) => {
       log.error("stdin_inject_failed", { thread_key: threadKey, error: err instanceof Error ? err.message : String(err) });
     });
 
-    // 4. Stream events from the wire
+    // 3. Stream events from the wire until turn.done
     let pending: Promise<IteratorResult<CanonicalEvent, void>> | null = null;
 
     try {
@@ -228,7 +243,11 @@ export class SlackBot {
         }
 
         pending = null;
-        if (raced.result.done) break;
+        if (raced.result.done) {
+          // Wire closed (container exited) — clean up
+          this.wires.delete(threadKey);
+          break;
+        }
         const event = raced.result.value;
 
         // turn.done from wire — emit final text and finish this Slack message
@@ -240,9 +259,9 @@ export class SlackBot {
 
         yield* tracker.update(event);
       }
-    } finally {
-      // Each Slack message gets its own wire; cleanup is automatic when the
-      // SSE stream ends (container exit or server-side disconnect).
+    } catch {
+      // Wire broke — clean up so next mention reconnects
+      this.wires.delete(threadKey);
     }
 
     if (!tracker.initCompleted) yield { type: "task_update", id: "init", title: "Started", status: "complete" };
