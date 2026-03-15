@@ -208,8 +208,6 @@ export class SlackBot {
   private async *stream(
     threadKey: string, text: string, tracker: ProgressTracker, userId: string | undefined, t0: number,
   ): AsyncGenerator<StreamChunk> {
-    yield { type: "task_update", id: "init", title: "Starting…", status: "in_progress" };
-
     // 1. Ensure we have a persistent wire (reuse existing or open new)
     let iter: AsyncIterator<CanonicalEvent, void, undefined>;
     try {
@@ -263,8 +261,6 @@ export class SlackBot {
       // Wire broke — clean up so next mention reconnects
       this.wires.delete(threadKey);
     }
-
-    if (!tracker.initCompleted) yield { type: "task_update", id: "init", title: "Started", status: "complete" };
 
     // Emit the final response as markdown_text so Slack's streaming API includes it
     const finalText = (tracker.resultText || tracker.lastAssistantText).trim();
