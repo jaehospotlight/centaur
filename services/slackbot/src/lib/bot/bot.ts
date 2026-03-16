@@ -16,7 +16,8 @@ const STREAM_EXPIRED_POLL_MAX_MS = 5 * 60_000;
 export interface BotThread {
   id: string;
   subscribe(): Promise<void>;
-  post(content: AsyncGenerator<StreamChunk> | { markdown: string }): Promise<{ id: string; edit(content: { markdown: string }): Promise<void> }>;
+  startTyping(status?: string): Promise<void>;
+  post(content: AsyncGenerator<StreamChunk> | { markdown: string }, options?: { taskDisplayMode?: "timeline" | "plan" }): Promise<{ id: string; edit(content: { markdown: string }): Promise<void> }>;
 }
 
 export interface BotMessage {
@@ -139,8 +140,12 @@ export class SlackBot {
     const t0 = Date.now();
     log.info("execute_start", { thread_key: threadKey, user_id: userId });
 
+    thread.startTyping("thinking…").catch((err) => {
+      log.warn("start_typing_failed", { thread_key: threadKey, error: err instanceof Error ? err.message : String(err) });
+    });
+
     try {
-      await thread.post(this.stream(threadKey, text, tracker, userId, t0));
+      await thread.post(this.stream(threadKey, text, tracker, userId, t0), { taskDisplayMode: "plan" });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
 
@@ -236,7 +241,7 @@ export class SlackBot {
         ]);
 
         if (raced.kind === "keepalive") {
-          yield { type: "task_update", id: "keepalive", title: "Still working…", status: "in_progress" };
+          yield { type: "plan_update", title: "Still working…" };
           continue;
         }
 
@@ -261,6 +266,9 @@ export class SlackBot {
       // Wire broke — clean up so next mention reconnects
       this.wires.delete(threadKey);
     }
+
+    // Complete all in-progress steps and set plan title to "Completed"
+    yield* tracker.finalize();
 
     // Emit the final response as markdown_text so Slack's streaming API includes it
     const finalText = (tracker.resultText || tracker.lastAssistantText).trim();
