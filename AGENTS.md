@@ -315,7 +315,7 @@ Only after reviewing logs should you dig into source code or try to reproduce lo
 
 ## Terminology
 
-- **Chat SDK** always refers to the [Vercel Chat SDK](https://github.com/vercel/chat) (`~/github/vercel/chat`)
+- **Chat SDK** always refers to the [Vercel Chat SDK](https://github.com/vercel/chat) (`~/github/vercel/chat`). When you need to understand how the Chat SDK or `@chat-adapter/*` packages work, **always read the source at `~/github/vercel/chat`** — never dig through `node_modules`.
 
 ## Code Conventions
 
