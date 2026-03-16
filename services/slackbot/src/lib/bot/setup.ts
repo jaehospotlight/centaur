@@ -11,6 +11,7 @@ let _instance: { chat: Chat; bot: SlackBot } | null = null;
 function wrapAdapter(adapter: SlackAdapter): BotSlackAdapter {
   return {
     fetchMessage: (threadId, ts) => adapter.fetchMessage(threadId, ts) as any,
+    fetchMessages: (threadId, options) => adapter.fetchMessages(threadId, options) as any,
     setAssistantTitle: (channel, threadTs, title) => adapter.setAssistantTitle(channel, threadTs, title),
   };
 }

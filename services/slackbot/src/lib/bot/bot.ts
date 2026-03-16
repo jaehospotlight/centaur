@@ -50,6 +50,7 @@ export interface BotAttachment {
 
 export interface SlackAdapter {
   fetchMessage(threadId: string, ts: string): Promise<{ attachments?: BotAttachment[] } | null>;
+  fetchMessages(threadId: string, options?: { direction?: "forward" | "backward"; limit?: number }): Promise<{ messages: Array<{ text: string; author: { isMe: boolean; isBot: boolean; userId: string }; attachments?: BotAttachment[] }> }>;
   setAssistantTitle(channel: string, threadTs: string, title: string): Promise<void>;
 }
 
@@ -95,6 +96,10 @@ export class SlackBot {
   async onNewMention(thread: BotThread, msg: BotMessage) {
     if (msg.author.isMe || msg.author.isBot) return;
     await thread.subscribe();
+
+    // Buffer prior thread messages as context before the mentioning message
+    await this.backfillThreadHistory(thread.id);
+
     const attachments = await this.resolveAttachments(thread.id, msg);
     const parts = await this.toParts(msg.text, attachments);
     await this.bufferAndExecute(thread, msg.text, parts, msg.author.userId);
@@ -336,6 +341,31 @@ export class SlackBot {
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────
+
+  /** Fetch prior thread messages and buffer them to the API so the agent has full context. */
+  private async backfillThreadHistory(threadId: string) {
+    if (!this.slack) return;
+    const threadKey = normalizeThreadKey(threadId);
+    try {
+      const { messages } = await this.slack.fetchMessages(threadId, { direction: "forward", limit: 50 });
+      // Skip the last message (the mention itself — it gets buffered by the caller)
+      const prior = messages.filter((m) => !m.author.isMe && !m.author.isBot);
+      if (!prior.length) return;
+      // Drop the last non-bot message since it's the mentioning message buffered by bufferAndExecute
+      const history = prior.slice(0, -1);
+      for (const m of history) {
+        const text = (m.text || "").trim();
+        if (!text) continue;
+        const parts = await this.toParts(text, m.attachments || []);
+        await this.client.message({ threadKey, parts, userId: m.author.userId });
+      }
+      if (history.length) {
+        log.info("thread_history_backfilled", { thread_key: threadKey, count: history.length });
+      }
+    } catch (err) {
+      log.warn("thread_history_backfill_failed", { thread_key: threadKey, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   async resolveAttachments(threadId: string, msg: BotMessage): Promise<BotAttachment[]> {
     if (msg.attachments?.length) return [...msg.attachments];
