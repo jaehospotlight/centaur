@@ -9,14 +9,31 @@ import type { StreamChunk } from "chat";
  *   - `plan_update`  → plan block title (groups tasks under a heading)
  *   - `markdown_text` → streamed text content
  *
- * The plan block wraps task cards into a collapsible group. Each task card
- * has an id, title, status (pending/in_progress/complete/error), optional
- * details, and optional output. Slack handles the display natively —
- * we emit real task IDs and let the plan block manage scrolling/collapsing.
+ * Task cards support `details` (markdown shown under the title while in progress)
+ * and `output` (shown when complete). We use these to give visibility into what
+ * tools, subagents, and commands are actually doing.
  */
 
 type TaskStatus = "pending" | "in_progress" | "complete" | "error";
 type ActiveTool = { name: string; input: Record<string, unknown> };
+
+// The chat library's TaskUpdateChunk only has `output?: string`.
+// Slack's API also supports `details` (markdown). The adapter passes
+// chunks through as-is, so extra fields work at runtime.
+type RichTaskChunk = StreamChunk & {
+  details?: string;
+  output?: string;
+};
+
+function taskChunk(
+  id: string, title: string, status: TaskStatus,
+  opts?: { details?: string; output?: string },
+): StreamChunk {
+  const chunk: StreamChunk = { type: "task_update", id, title, status };
+  if (opts?.details) (chunk as any).details = opts.details;
+  if (opts?.output) chunk.output = opts.output;
+  return chunk;
+}
 
 export class ProgressTracker {
   /** Last assistant text block (used as fallback final answer). */
@@ -66,7 +83,7 @@ export class ProgressTracker {
     for (const [id, task] of this.tasks) {
       if (task.status === "in_progress" || task.status === "pending") {
         task.status = "complete";
-        yield { type: "task_update", id, title: task.title, status: "complete" };
+        yield taskChunk(id, task.title, "complete");
       }
     }
     yield { type: "plan_update", title: "Completed" };
@@ -80,7 +97,7 @@ export class ProgressTracker {
     const id = `handoff-${Date.now()}`;
     const title = `Handed off → ${goal}`;
     this.tasks.set(id, { title, status: "complete" });
-    yield { type: "task_update", id, title, status: "complete" };
+    yield taskChunk(id, title, "complete");
   }
 
   // ── Event handlers ─────────────────────────────────────────────────────
@@ -93,8 +110,9 @@ export class ProgressTracker {
         this.lastAssistantText = "";
         this.activeTools.set(block.id, { name: block.name, input: block.input });
         const title = friendlyToolLabel(block.name, block.input);
+        const details = toolDetails(block.name, block.input);
         this.tasks.set(block.id, { title, status: "in_progress" });
-        yield { type: "task_update", id: block.id, title, status: "in_progress" };
+        yield taskChunk(block.id, title, "in_progress", { details });
         yield* this.emitPlanTitle(title);
       } else if (block.type === "text" && block.text) {
         textInThisEvent = block.text;
@@ -113,9 +131,10 @@ export class ProgressTracker {
       this.activeTools.delete(block.tool_use_id);
       const status: TaskStatus = block.is_error ? "error" : "complete";
       const title = friendlyToolLabel(active.name, active.input, !block.is_error);
+      const output = toolResultSummary(active.name, block.content, block.is_error);
       const task = this.tasks.get(block.tool_use_id);
       if (task) { task.title = title; task.status = status; }
-      yield { type: "task_update", id: block.tool_use_id, title, status };
+      yield taskChunk(block.tool_use_id, title, status, { output });
     }
   }
 
@@ -125,21 +144,23 @@ export class ProgressTracker {
     if (event.status === "started") {
       const title = `Subagent: ${label}`;
       this.tasks.set(id, { title, status: "in_progress" });
-      yield { type: "task_update", id, title, status: "in_progress" };
+      yield taskChunk(id, title, "in_progress");
       yield* this.emitPlanTitle(title);
     } else if (event.status === "working") {
+      const activities = (event.activities || []).map((a) => `- ${a.description}`).join("\n");
       const activity = event.activity || event.activities?.[0]?.description || "";
       const title = activity ? `Subagent: ${label} — ${truncate(activity, 60)}` : `Subagent: ${label}`;
       const task = this.tasks.get(id);
       if (task) { task.title = title; }
-      yield { type: "task_update", id, title, status: "in_progress" };
+      yield taskChunk(id, title, "in_progress", { details: activities || undefined });
       yield* this.emitPlanTitle(title);
     } else if (event.status === "completed" || event.status === "failed") {
       const status: TaskStatus = event.status === "completed" ? "complete" : "error";
       const title = `Subagent: ${label}`;
+      const output = event.summary || (event.error ? `Error: ${event.error}` : undefined);
       const task = this.tasks.get(id);
       if (task) { task.title = title; task.status = status; }
-      yield { type: "task_update", id, title, status };
+      yield taskChunk(id, title, status, { output });
     }
   }
 
@@ -149,8 +170,9 @@ export class ProgressTracker {
     const isError = event.exit_code !== undefined && event.exit_code !== 0;
     const status: TaskStatus = isError ? "error" : "complete";
     const title = `${isError ? "Failed" : "Ran"} — ${cmd}`;
+    const output = event.aggregated_output ? truncate(event.aggregated_output, 200) : undefined;
     this.tasks.set(id, { title, status });
-    yield { type: "task_update", id, title, status };
+    yield taskChunk(id, title, status, { output });
   }
 
   // ── Plan title ─────────────────────────────────────────────────────────
@@ -164,6 +186,78 @@ export class ProgressTracker {
       yield { type: "plan_update", title: newTitle };
     }
   }
+}
+
+// ── Tool details (shown as `details` on in_progress task cards) ───────────
+
+function toolDetails(name: string, input: Record<string, unknown>): string | undefined {
+  const str = (key: string) => (typeof input[key] === "string" ? (input[key] as string) : "");
+  switch (name) {
+    case "Read":
+      return str("path") ? `Reading \`${shortPath(str("path"))}\`` : undefined;
+    case "edit_file":
+      return str("path") ? `Editing \`${shortPath(str("path"))}\`` : undefined;
+    case "create_file":
+      return str("path") ? `Creating \`${shortPath(str("path"))}\`` : undefined;
+    case "Bash":
+      return str("cmd") ? `\`${truncate(str("cmd"), 120)}\`` : undefined;
+    case "Grep":
+      return str("pattern") ? `Pattern: \`${truncate(str("pattern"), 80)}\`` : undefined;
+    case "finder":
+      return str("query") ? truncate(str("query"), 150) : undefined;
+    case "librarian":
+      return str("query") ? truncate(str("query"), 200) : undefined;
+    case "oracle":
+      return str("task") ? truncate(str("task"), 200) : undefined;
+    case "web_search":
+      return str("objective") ? truncate(str("objective"), 150) : undefined;
+    case "read_web_page":
+      return str("url") || undefined;
+    case "Task":
+      return str("description") || str("prompt") ? truncate(str("description") || str("prompt"), 200) : undefined;
+    case "look_at":
+      return [str("path") && `File: \`${shortPath(str("path"))}\``, str("objective")].filter(Boolean).join("\n") || undefined;
+    case "skill":
+      return str("name") ? `Loading skill: ${str("name")}` : undefined;
+    default:
+      return undefined;
+  }
+}
+
+// ── Tool result summary (shown as `output` on completed task cards) ──────
+
+function toolResultSummary(name: string, content: unknown, isError: boolean): string | undefined {
+  if (isError) {
+    const text = extractText(content);
+    return text ? `Error: ${truncate(text, 150)}` : "Error";
+  }
+  // For most tools, the result is too large / not useful to show in the card.
+  // Only show output for tools where a brief summary is meaningful.
+  switch (name) {
+    case "finder":
+    case "librarian":
+    case "oracle":
+    case "web_search": {
+      const text = extractText(content);
+      return text ? truncate(text, 200) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function extractText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => (typeof c === "string" ? c : typeof c === "object" && c && "text" in c ? (c as { text: string }).text : ""))
+      .join(" ")
+      .trim();
+  }
+  if (typeof content === "object" && content && "text" in content) {
+    return (content as { text: string }).text;
+  }
+  return "";
 }
 
 // ── Tool labels ───────────────────────────────────────────────────────────
