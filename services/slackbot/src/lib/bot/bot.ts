@@ -422,8 +422,11 @@ export class SlackBot {
 
           pending = null;
           if (raced.result.done) {
+            // Stream ended without turn.done — treat as a wire break
+            // (e.g. API restarted mid-turn) so we attempt reconnect.
+            wireBroke = true;
             this.wires.delete(threadKey);
-            break outer;
+            break;
           }
           const event = raced.result.value;
 

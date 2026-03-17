@@ -466,7 +466,127 @@ describe("simulated stream deaths", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 5. splitSlackMessage
+// 5. consumeWire reconnect on graceful EOF (API restart mid-turn)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("consumeWire reconnects on graceful EOF without turn.done", () => {
+  /**
+   * Simulates the exact bug: API restarts mid-turn → SSE iterator returns
+   * { done: true } without emitting turn.done → slackbot should reconnect
+   * and eventually get the result, NOT show "Agent completed with no output."
+   */
+  it("treats iterator done (no turn.done) as wire break and reconnects", async () => {
+    // Build a mock CentaurClient
+    let connectCalls = 0;
+    let reconnectCalls = 0;
+
+    // First connect: yields wire.ready, one assistant event, then EOF (simulating API restart)
+    // Reconnect: yields the turn.done with the result
+    const mockClient = {
+      connect: () => {
+        connectCalls++;
+        return (async function* () {
+          yield { type: "wire.ready", lease_id: "L1", turn_counter: 0 };
+          // Simulate an assistant text event mid-turn
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Working on it..." }] },
+          };
+          // Iterator ends here — no turn.done (API restarted)
+        })();
+      },
+      reconnect: () => {
+        reconnectCalls++;
+        return (async function* () {
+          // After reconnect, the agent finishes and we get turn.done
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Here is the answer." }] },
+          };
+          yield {
+            type: "turn.done",
+            turn_id: 1,
+            result: "Here is the answer.",
+            agent_thread_id: "",
+          };
+        })();
+      },
+      execute: async () => ({ ok: true, injected: true, turn_id: 1 }),
+      message: async () => ({ ok: true }),
+      getStatus: async () => ({}),
+    };
+
+    const { SlackBot } = await import("../src/lib/bot/bot");
+    const bot = new SlackBot(mockClient as any);
+
+    // Collect all stream chunks
+    const chunks: any[] = [];
+    // Access private stream method via prototype trick
+    const streamGen = (bot as any).stream(
+      "test:reconnect-1",
+      "test message",
+      new ProgressTracker(),
+      "U123",
+      Date.now(),
+      new AbortController().signal,
+    );
+
+    for await (const chunk of streamGen) {
+      chunks.push(chunk);
+    }
+
+    // Verify reconnect was attempted
+    expect(reconnectCalls).toBeGreaterThanOrEqual(1);
+
+    // Verify the final output contains the answer (not "Agent completed with no output")
+    const markdownChunks = chunks.filter((c) => c.type === "markdown_text");
+    expect(markdownChunks.length).toBeGreaterThan(0);
+    const finalOutput = markdownChunks.map((c) => c.text).join("");
+    expect(finalOutput).toContain("Here is the answer.");
+    expect(finalOutput).not.toContain("no output");
+  });
+
+  it("gives up after max retries and shows no output", { timeout: 30_000 }, async () => {
+    // All connections EOF immediately — should exhaust retries
+    const mockClient = {
+      connect: () => (async function* () {
+        yield { type: "wire.ready", lease_id: "L1", turn_counter: 0 };
+        // EOF immediately, no events
+      })(),
+      reconnect: () => (async function* () {
+        // Reconnect also EOFs immediately
+      })(),
+      execute: async () => ({ ok: true, injected: true, turn_id: 1 }),
+      message: async () => ({ ok: true }),
+      getStatus: async () => ({}),
+    };
+
+    const { SlackBot } = await import("../src/lib/bot/bot");
+    const bot = new SlackBot(mockClient as any);
+
+    const chunks: any[] = [];
+    const streamGen = (bot as any).stream(
+      "test:reconnect-exhaust",
+      "test message",
+      new ProgressTracker(),
+      "U123",
+      Date.now(),
+      new AbortController().signal,
+    );
+
+    for await (const chunk of streamGen) {
+      chunks.push(chunk);
+    }
+
+    // Should eventually give up and show "no output"
+    const markdownChunks = chunks.filter((c) => c.type === "markdown_text");
+    expect(markdownChunks.length).toBeGreaterThan(0);
+    expect(markdownChunks[markdownChunks.length - 1].text).toContain("no output");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 6. splitSlackMessage
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("splitSlackMessage", () => {
