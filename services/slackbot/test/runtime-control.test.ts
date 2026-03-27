@@ -128,6 +128,19 @@ describe("SlackBot runtime control", () => {
     expect(client.cancelExecution).toHaveBeenCalledWith("exe-old");
   });
 
+  it("acks live streamed deliveries without requiring an outbox lease", async () => {
+    const client = createImmediateStreamClient();
+    const bot = new SlackBot(client as any);
+    const { thread } = createThread();
+
+    await bot.onSubscribedMessage(thread, userMessage("follow-up", {
+      id: "1700000000.000004",
+      isMention: true,
+    }));
+
+    expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-new", undefined);
+  });
+
   it("claims only Slack final deliveries and posts completed results once", async () => {
     const client = createImmediateStreamClient();
     client.claimFinalDeliveries = vi.fn(async () => ({

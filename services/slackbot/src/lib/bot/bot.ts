@@ -395,7 +395,7 @@ export class SlackBot {
             deliveredToSlack = true;
           }
           if (deliveredToSlack) {
-            await this.ackFinalDelivery(executionId);
+            await this.ackFinalDelivery(executionId, { requireLease: false });
           }
           return;
         }
@@ -434,7 +434,7 @@ export class SlackBot {
       log.info("execute_complete", { thread_key: threadKey, duration_s: Math.round((Date.now() - t0) / 100) / 10, result_length: finalText.length, overflow_chunks: tracker.overflowChunks.length });
 
       if (deliveredToSlack) {
-        await this.ackFinalDelivery(executionId);
+        await this.ackFinalDelivery(executionId, { requireLease: false });
       }
 
       await this.setAssistantTitle(threadKey, finalText);
@@ -617,9 +617,15 @@ export class SlackBot {
     }
   }
 
-  private async ackFinalDelivery(executionId: string): Promise<void> {
+  private async ackFinalDelivery(
+    executionId: string,
+    opts?: { requireLease?: boolean },
+  ): Promise<void> {
     try {
-      await this.client.markFinalDelivered(executionId, this.deliveryConsumerId);
+      await this.client.markFinalDelivered(
+        executionId,
+        opts?.requireLease === false ? undefined : this.deliveryConsumerId,
+      );
     } catch (err) {
       log.warn("final_delivery_ack_failed", {
         execution_id: executionId,
