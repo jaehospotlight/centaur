@@ -966,13 +966,19 @@ async def mark_final_delivered(
         (
             "UPDATE agent_final_delivery_outbox SET state = 'delivered', delivered_at = NOW(), "
             "lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW() "
-            "WHERE execution_id = $1"
+            "WHERE execution_id = $1 AND state <> 'delivered'"
         )
         + owner_check
         + " RETURNING execution_id, thread_key",
         *params,
     )
     if not row:
+        existing = await pool.fetchrow(
+            "SELECT thread_key, state FROM agent_final_delivery_outbox WHERE execution_id = $1",
+            execution_id,
+        )
+        if existing and existing["state"] == "delivered":
+            return {"ok": True, "execution_id": execution_id, "idempotent": True}
         raise HTTPException(status_code=409, detail="delivery not claimable")
 
     await pool.execute(

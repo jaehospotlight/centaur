@@ -364,11 +364,33 @@ export class SlackBot {
     let deliveredToSlack = false;
     try {
       try {
-        sentMessage = await thread.post(
-          this.streamExecution(threadKey, executionId, tracker, t0, ac.signal),
-          { taskDisplayMode: "plan" },
-        );
-        deliveredToSlack = true;
+        const stream = this.streamExecution(threadKey, executionId, tracker, t0, ac.signal);
+        const iter = stream[Symbol.asyncIterator]();
+        let firstVisible: StreamChunk | undefined;
+
+        while (!ac.signal.aborted) {
+          const next = await iter.next();
+          if (next.done) break;
+          if (next.value.type === "markdown_text") {
+            firstVisible = next.value;
+            break;
+          }
+        }
+
+        if (firstVisible) {
+          sentMessage = await thread.post(
+            (async function* () {
+              yield firstVisible;
+              while (true) {
+                const next = await iter.next();
+                if (next.done) return;
+                yield next.value;
+              }
+            })(),
+            { taskDisplayMode: "plan" },
+          );
+          deliveredToSlack = true;
+        }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
 

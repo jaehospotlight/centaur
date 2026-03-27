@@ -7,12 +7,14 @@ import { SlackBot, type BotMessage, type BotThread, type SlackAdapter } from "..
 function createThread(id = "slack:C123:1700000000.000100") {
   const postedMarkdown: string[] = [];
   const streamedChunks: StreamChunk[] = [];
+  let postCount = 0;
 
   const thread: BotThread = {
     id,
     async subscribe() {},
     async startTyping() {},
     async post(content) {
+      postCount += 1;
       if ("markdown" in content) {
         postedMarkdown.push(content.markdown);
       } else {
@@ -29,7 +31,14 @@ function createThread(id = "slack:C123:1700000000.000100") {
     },
   };
 
-  return { thread, postedMarkdown, streamedChunks };
+  return {
+    thread,
+    postedMarkdown,
+    streamedChunks,
+    get postCount() {
+      return postCount;
+    },
+  };
 }
 
 function userMessage(text: string, opts?: { id?: string; teamId?: string; isMention?: boolean }): BotMessage {
@@ -50,7 +59,7 @@ function userMessage(text: string, opts?: { id?: string; teamId?: string; isMent
   };
 }
 
-function createImmediateStreamClient() {
+function createImmediateStreamClient(): any {
   return {
     spawn: vi.fn(async () => ({ assignment_generation: 7 })),
     message: vi.fn(async () => ({ ok: true, attachment_ids: [] })),
@@ -126,6 +135,63 @@ describe("SlackBot runtime control", () => {
 
     expect(oldAbortController.signal.aborted).toBe(true);
     expect(client.cancelExecution).toHaveBeenCalledWith("exe-old");
+  });
+
+  it("does not leave a blank streamed message behind when an execution is interrupted before text", async () => {
+    let nextExecution = 1;
+    const client = {
+      spawn: vi.fn(async () => ({ assignment_generation: 7 })),
+      message: vi.fn(async () => ({ ok: true, attachment_ids: [] })),
+      execute: vi.fn(async () => ({ execution_id: `exe-${nextExecution++}` })),
+      streamEvents: vi.fn(({ executionId, signal }: { executionId: string; signal?: AbortSignal }) => {
+        if (executionId === "exe-1") {
+          return (async function* () {
+            await new Promise<void>((resolve) => {
+              if (signal?.aborted) {
+                resolve();
+                return;
+              }
+              signal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+          })();
+        }
+
+        return (async function* () {
+          yield {
+            eventId: 1,
+            eventKind: "amp_raw_event",
+            data: {
+              type: "turn.done",
+              result: "done",
+            },
+          };
+        })();
+      }),
+      cancelExecution: vi.fn(async () => ({ ok: true })),
+      markFinalDelivered: vi.fn(async () => ({ ok: true })),
+      markFinalFailed: vi.fn(async () => ({ ok: true })),
+      claimFinalDeliveries: vi.fn(async () => ({ deliveries: [] })),
+      getExecution: vi.fn(async () => ({ status: "completed", result_text: "done" })),
+    };
+    const bot = new SlackBot(client as any);
+    const runtime = createThread();
+    const { thread, streamedChunks } = runtime;
+
+    const firstTurn = bot.onSubscribedMessage(thread, userMessage("first", {
+      id: "1700000000.000003",
+      isMention: true,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await bot.onSubscribedMessage(thread, userMessage("second", {
+      id: "1700000000.000004",
+      isMention: true,
+    }));
+    await firstTurn;
+
+    expect(client.cancelExecution).toHaveBeenCalledWith("exe-1");
+    expect(runtime.postCount).toBe(1);
+    expect(streamedChunks.some((chunk) => chunk.type === "markdown_text")).toBe(true);
   });
 
   it("acks live streamed deliveries without requiring an outbox lease", async () => {

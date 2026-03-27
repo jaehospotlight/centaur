@@ -192,6 +192,14 @@ async def test_final_delivery_claim_and_mark_delivered(client, db_pool, api_key:
     )
     assert delivered.status_code == 200
 
+    delivered_again = await client.post(
+        f"/agent/final-deliveries/{execution_id}/delivered",
+        headers=_auth(api_key),
+        json={"consumer_id": "slackbot:test"},
+    )
+    assert delivered_again.status_code == 200
+    assert delivered_again.json()["idempotent"] is True
+
     row = await db_pool.fetchrow(
         "SELECT state, lease_owner FROM agent_final_delivery_outbox WHERE execution_id = $1",
         execution_id,
@@ -199,6 +207,47 @@ async def test_final_delivery_claim_and_mark_delivered(client, db_pool, api_key:
     assert row is not None
     assert row["state"] == "delivered"
     assert row["lease_owner"] is None
+
+    delivered_events = await db_pool.fetchval(
+        "SELECT COUNT(*) FROM agent_execution_events "
+        "WHERE execution_id = $1 AND event_kind = 'final_delivery_delivered'",
+        execution_id,
+    )
+    assert int(delivered_events or 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_mark_execution_terminal_delays_outbox_claimability(db_pool):
+    from api.runtime_control import _mark_execution_terminal
+
+    execution_id = f"exe-{uuid.uuid4().hex[:10]}"
+    thread_key = f"slack:C-test:{uuid.uuid4().hex}"
+    await db_pool.execute(
+        "INSERT INTO agent_final_delivery_outbox (execution_id, thread_key, delivery, state) "
+        "VALUES ($1, $2, '{}'::jsonb, 'awaiting_terminal')",
+        execution_id,
+        thread_key,
+    )
+
+    started_at = dt.datetime.now(dt.timezone.utc)
+    with patch("api.runtime_control.FINAL_DELIVERY_READY_GRACE_S", 2.0):
+        await _mark_execution_terminal(
+            db_pool,
+            execution_id=execution_id,
+            thread_key=thread_key,
+            status="completed",
+            terminal_reason="completed",
+            result_text="done",
+            error_text=None,
+        )
+
+    row = await db_pool.fetchrow(
+        "SELECT state, next_attempt_at FROM agent_final_delivery_outbox WHERE execution_id = $1",
+        execution_id,
+    )
+    assert row is not None
+    assert row["state"] == "pending"
+    assert row["next_attempt_at"] >= started_at + dt.timedelta(seconds=1.5)
 
 
 @pytest.mark.asyncio

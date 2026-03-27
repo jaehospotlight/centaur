@@ -37,6 +37,10 @@ EXECUTION_WORKER_CONCURRENCY = max(
     int(os.getenv("EXECUTION_WORKER_CONCURRENCY", "4")),
     1,
 )
+FINAL_DELIVERY_READY_GRACE_S = max(
+    float(os.getenv("FINAL_DELIVERY_READY_GRACE_S", "2.0")),
+    0.0,
+)
 
 _worker_tasks: list[asyncio.Task] = []
 _worker_wake = asyncio.Event()
@@ -946,6 +950,9 @@ async def _mark_execution_terminal(
     result_text: str,
     error_text: str | None,
 ) -> None:
+    next_attempt_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+        seconds=FINAL_DELIVERY_READY_GRACE_S,
+    )
     await pool.execute(
         "UPDATE agent_execution_requests SET status = $1, terminal_reason = $2, "
         "result_text = $3, error_text = $4, completed_at = NOW(), updated_at = NOW() "
@@ -969,8 +976,8 @@ async def _mark_execution_terminal(
     )
     await pool.execute(
         "UPDATE agent_final_delivery_outbox SET state = 'pending', final_payload = $1::jsonb, "
-        "next_attempt_at = NOW(), updated_at = NOW() "
-        "WHERE execution_id = $2",
+        "next_attempt_at = $2, updated_at = NOW() "
+        "WHERE execution_id = $3",
         canonical_json(
             {
                 "execution_id": execution_id,
@@ -981,6 +988,7 @@ async def _mark_execution_terminal(
                 **({"error_text": error_text} if error_text else {}),
             }
         ),
+        next_attempt_at,
         execution_id,
     )
     await append_execution_event(
