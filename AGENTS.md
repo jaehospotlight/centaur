@@ -50,13 +50,23 @@ docker compose build sandbox
 From inside the API container (localhost bypass — no key needed):
 
 ```bash
-docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/execute \
+THREAD_KEY=test-e2e-1
+
+SPAWN=$(docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/spawn \
   -H "Content-Type: application/json" \
-  -d '{
-    "thread_key": "test:hello",
-    "message": "Hello, what can you do?",
-    "harness": "amp"
-  }'
+  -d "{\"thread_key\":\"${THREAD_KEY}\",\"harness\":\"amp\"}")
+ASSIGNMENT_GENERATION=$(printf '%s' "$SPAWN" | jq -r '.assignment_generation')
+
+docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/message \
+  -H "Content-Type: application/json" \
+  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly PONG and nothing else.\"}]}"
+
+EXECUTE=$(docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/execute \
+  -H "Content-Type: application/json" \
+  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"harness\":\"amp\",\"delivery\":{\"platform\":\"dev\"}}")
+EXECUTION_ID=$(printf '%s' "$EXECUTE" | jq -r '.execution_id')
+
+docker exec centaur-api-1 curl -s "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
 ```
 
 Or create a DB-backed key for external use (see [API Key Management](#api-key-management)).
@@ -124,90 +134,94 @@ Or create a DB-backed key for external use (see [API Key Management](#api-key-ma
 
 Centaur is a modular service architecture. Each service communicates through well-defined interfaces. As long as you implement these interfaces, you can swap or extend any layer independently.
 
-**Client → API** (connect + execute protocol):
+**Client → API** (durable control-plane protocol):
 
-Clients (slackbot, web app, CLI) are dumb adapters. They translate platform events into a standard protocol and render the SSE response for their platform. The API is the stateful brain — it owns session lifecycle, harness resolution, message persistence, and context accumulation.
+Clients (slackbot, web app, CLI) should stay thin. They persist input with `spawn -> message -> execute`, stream or replay output from the durable events endpoint, and only fall back to durable terminal state when the live stream is gone. The API owns runtime assignment, execution serialization, cancellation, and final-delivery recovery; Postgres is the source of truth.
 
-The protocol separates the **stdout stream** from **stdin writes**:
+**Step 1: Assign or reuse a runtime** (`POST /agent/spawn`)
 
-**Step 1: Open the stdout wire** (`POST /agent/connect`)
-
-Opens a persistent SSE connection to the sandbox's stdout. The wire stays open across multiple turns until the container exits. Call this once per session — all subsequent turns stream through the same connection.
+Pins one warm runtime to the thread and returns the current `assignment_generation`.
 
 ```
-POST /agent/connect
+POST /agent/spawn
 {
   "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "harness": "amp",
-  "platform": "slack"
+  "harness": "amp"
 }
 
-← SSE stream (stays open across turns)
-← data: {"type":"assistant","message":{...}}
-← data: {"type":"turn.done","turn_id":1,"result":"...","agent_thread_id":""}
-← ... (more turns as execute calls are made)
+← {
+    "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
+    "runtime_id": "rtm_123",
+    "assignment_generation": 12,
+    "state": "assigned_idle"
+  }
 ```
 
-**Step 2: Buffer messages** (`POST /agent/messages`)
+**Step 2: Persist the user turn** (`POST /agent/message`)
 
-Persist user messages (and any attachments) to `chat_messages`. This is a durable write — even if execute fails, the message is saved. Inline base64 image/document blocks are automatically extracted to the `attachments` table and replaced with lightweight `attachment_ref` parts.
+Writes one durable transcript event. Inline base64 image/document blocks are extracted into `attachments` and rewritten to lightweight `attachment_ref` parts.
 
 ```
-POST /agent/messages
+POST /agent/message
 {
   "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
+  "assignment_generation": 12,
   "role": "user",
   "parts": [{"type": "text", "text": "analyze this"}],
   "user_id": "U123",
   "metadata": {"user_name": "alice", "platform": "slack"}
 }
 
-← {"ok": true, "inserted": 1}
+← {"ok": true, "message_id": "msg_123"}
 ```
 
-**Step 3: Inject stdin** (`POST /agent/execute`)
+**Step 3: Enqueue execution** (`POST /agent/execute`)
 
-Writes the message to the sandbox's stdin. Does NOT return an SSE stream — output appears on the connect wire from Step 1. On first execute for a thread, a system message with platform formatting rules is also injected.
+Creates a durable execution request plus final-delivery obligation. The worker drives the attached container; the response is just the execution handle.
 
 ```
 POST /agent/execute
 {
   "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "message": "analyze this",
+  "assignment_generation": 12,
   "harness": "amp",
-  "platform": "slack",
-  "user_id": "U123"
+  "delivery": {"platform": "slack"}
 }
 
-← {"ok": true, "injected": true, "turn_id": 1}
+← {"ok": true, "execution_id": "exe_123", "status": "queued"}
 ```
 
-**Reconnect** (`POST /agent/reconnect`)
+**Step 4: Stream or replay output** (`GET /agent/threads/{thread_key}/events`)
 
-Re-attach to a running container's stdout without sending a new turn. Used by the slackbot to recover an in-progress stream after an API restart.
+Consumers tail durable events for one execution. On disconnect, reconnect with the last seen event id. If the execution already finished and no more rows remain, the API emits the terminal `execution_state` snapshot.
 
 ```
-POST /agent/reconnect
-{
-  "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "harness": "amp",
-  "skip_done_count": 0
-}
+GET /agent/threads/slack:C0AJ07U8Z1N:1773364194.179929/events?execution_id=exe_123&after_event_id=0
 
-← SSE stream (same format as connect)
+← SSE event: amp_raw_event
+← data: {"type":"assistant","message":{...}}
+← SSE event: turn.done
+← data: {"type":"turn.done","result":"..."}
+← SSE event: execution_state
+← data: {"status":"completed","result_text":"..."}
 ```
 
-**What gets written to Postgres after a full turn:**
+**Step 5: Release only when you really want to end the assignment** (`POST /agent/threads/{thread_key}/release`)
 
-| Table | What | When |
-|-------|------|------|
-| `chat_messages` (role=user) | User message parts (with `attachment_ref` replacing inline blobs) | Step 2 (`/agent/messages`) |
-| `attachments` | Raw binary blobs extracted from base64 image/document parts | Step 2 (automatic) |
-| `chat_messages` (role=system) | Platform formatting context (e.g. Slack markdown rules) | Step 3 (first execute only) |
-| `chat_messages` (role=assistant) | Final assistant response text | Step 3 (after `turn.done`) |
-| `sandbox_sessions` | Session state (`idle`), `last_delivered_id` cursor, `thread_name` | Step 3 (after `turn.done`) |
+Releases the thread-to-runtime pin and optionally cancels any non-terminal execution still tied to that assignment generation.
 
-Multiple messages can be buffered via repeated `/agent/messages` calls before a single `/agent/execute`. The flush pipeline delivers all un-delivered messages to the sandbox in order.
+**Durable state written for one turn:**
+
+| Table | What |
+|-------|------|
+| `agent_runtime_assignments` | Thread-to-runtime pin and active assignment generation |
+| `agent_message_requests` | Durable inbound transcript events |
+| `attachments` | Extracted attachment bytes for inline multimodal content |
+| `agent_execution_requests` | Queued/running/terminal execution row |
+| `agent_execution_events` | Replayable raw + projected execution events |
+| `agent_final_delivery_outbox` | Final-result delivery obligation for reconnect/retry paths |
+
+`POST /agent/connect` and `POST /agent/reconnect` are legacy endpoints now kept only as explicit `410 LEGACY_ENDPOINT_REMOVED` stubs. Do not build new clients on them.
 
 **API → Sandbox** (Docker stdin/stdout, NDJSON):
 
@@ -610,52 +624,60 @@ docker compose build sandbox
 All E2E curl commands below use `docker exec` for localhost bypass (no API key needed).
 To test from outside the container, create a DB-backed key via the [admin API](#api-key-management).
 
-### 2. Open the stdout wire (terminal 1)
+### 2. Spawn a runtime assignment
 
 ```bash
-docker exec centaur-api-1 curl -s -N -X POST http://localhost:8000/agent/connect \
+THREAD_KEY=test-e2e-1
+
+SPAWN=$(docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/spawn \
   -H "Content-Type: application/json" \
-  -d '{
-    "thread_key": "test:e2e-1",
-    "harness": "amp"
-  }'
+  -d "{\"thread_key\":\"${THREAD_KEY}\",\"harness\":\"amp\"}")
+ASSIGNMENT_GENERATION=$(printf '%s' "$SPAWN" | jq -r '.assignment_generation')
 ```
 
-This returns an SSE stream that stays open across all turns.
-
-### 3. Execute a message (terminal 2)
+### 3. Persist a message
 
 ```bash
-docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/execute \
+docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/message \
   -H "Content-Type: application/json" \
-  -d '{
-    "thread_key": "test:e2e-1",
-    "message": "Hello, what can you do?",
-    "harness": "amp"
-  }'
+  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly PONG and nothing else.\"}]}"
 ```
 
-Output streams on the connect wire in terminal 1. Execute returns `{"ok": true, "injected": true, "turn_id": 1}`.
-
-### 4. Follow-up (same container, same session)
+### 4. Enqueue execution
 
 ```bash
-docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/execute \
+EXECUTE=$(docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/execute \
   -H "Content-Type: application/json" \
-  -d '{
-    "thread_key": "test:e2e-1",
-    "message": "now summarize the key topics"
-  }'
+  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"harness\":\"amp\",\"delivery\":{\"platform\":\"dev\"}}")
+EXECUTION_ID=$(printf '%s' "$EXECUTE" | jq -r '.execution_id')
 ```
 
-### 5. Inspect / Clean up
+### 5. Tail durable events (or reconnect later)
 
 ```bash
-docker exec centaur-api-1 curl -s "http://localhost:8000/agent/status?key=test:e2e-1" | jq
+docker exec centaur-api-1 curl -s -N \
+  "http://localhost:8000/agent/threads/${THREAD_KEY}/events?execution_id=${EXECUTION_ID}&after_event_id=0"
+```
 
-docker exec centaur-api-1 curl -s -X POST http://localhost:8000/agent/stop \
+If this stream disconnects, reconnect with the last seen `event_id` as `after_event_id`. If the execution already finished, the endpoint emits the terminal `execution_state` snapshot.
+
+### 6. Inspect or cancel
+
+```bash
+docker exec centaur-api-1 curl -s "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
+
+docker exec centaur-api-1 curl -s -X POST \
+  "http://localhost:8000/agent/executions/${EXECUTION_ID}/cancel" \
   -H "Content-Type: application/json" \
-  -d '{"thread_key": "test:e2e-1"}'
+  -d '{}'
+```
+
+### 7. Release the assignment when finished
+
+```bash
+docker exec centaur-api-1 curl -s -X POST "http://localhost:8000/agent/threads/${THREAD_KEY}/release" \
+  -H "Content-Type: application/json" \
+  -d '{"release_id":"rel-test-e2e-1","cancel_inflight":true}'
 ```
 
 ### Debugging
