@@ -1337,6 +1337,7 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
             silence_deadline = await _touch_execution_progress(pool, execution_id)
 
     backend = get_backend()
+    await backend.attach(session)
     rt = _get_runtime(session.sandbox_id)
 
     turn_done_event: dict[str, Any] | None = None

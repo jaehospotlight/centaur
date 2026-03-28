@@ -448,13 +448,14 @@ async def test_worker_marks_turn_done_error_as_failed_and_updates_runtime(db_poo
             )
         }
 
+    backend = SimpleNamespace(attach=AsyncMock())
     with (
         patch("api.runtime_control.get_or_spawn", new=AsyncMock(return_value=session)),
         patch(
             "api.runtime_control.inject_stdin",
             new=AsyncMock(return_value={"ok": True, "injected": True, "durable_turn_id": "turn-1"}),
         ),
-        patch("api.runtime_control.get_backend", return_value=object()),
+        patch("api.runtime_control.get_backend", return_value=backend),
         patch(
             "api.runtime_control._get_runtime",
             return_value=SimpleNamespace(turn_counter=1),
@@ -707,13 +708,14 @@ async def test_worker_marks_silence_deadline_exceeded_and_stops_session(db_pool)
             yield {}
 
     stop_session_mock = AsyncMock()
+    backend = SimpleNamespace(attach=AsyncMock())
     with (
         patch("api.runtime_control.get_or_spawn", new=AsyncMock(return_value=session)),
         patch(
             "api.runtime_control.inject_stdin",
             new=AsyncMock(return_value={"ok": True, "injected": True, "durable_turn_id": "turn-1"}),
         ),
-        patch("api.runtime_control.get_backend", return_value=object()),
+        patch("api.runtime_control.get_backend", return_value=backend),
         patch(
             "api.runtime_control._get_runtime",
             return_value=SimpleNamespace(turn_counter=1),
@@ -796,10 +798,11 @@ async def test_worker_reuses_durable_turn_id_without_reinjecting(db_pool):
         }
 
     inject_stdin_mock = AsyncMock()
+    backend = SimpleNamespace(attach=AsyncMock())
     with (
         patch("api.runtime_control.get_or_spawn", new=AsyncMock(return_value=session)),
         patch("api.runtime_control.inject_stdin", inject_stdin_mock),
-        patch("api.runtime_control.get_backend", return_value=object()),
+        patch("api.runtime_control.get_backend", return_value=backend),
         patch(
             "api.runtime_control._get_runtime",
             return_value=SimpleNamespace(turn_counter=1),
@@ -808,6 +811,7 @@ async def test_worker_reuses_durable_turn_id_without_reinjecting(db_pool):
     ):
         await _process_execution(db_pool, row)
 
+    backend.attach.assert_awaited_once_with(session)
     inject_stdin_mock.assert_not_awaited()
 
     execution = await db_pool.fetchrow(
@@ -878,13 +882,14 @@ async def test_worker_reapplies_agents_override_on_runtime_replacement(db_pool):
         }
 
     write_override = AsyncMock()
+    backend = SimpleNamespace(attach=AsyncMock())
     with (
         patch("api.runtime_control.get_or_spawn", new=AsyncMock(return_value=session)),
         patch(
             "api.runtime_control.inject_stdin",
             new=AsyncMock(return_value={"ok": True, "injected": True, "durable_turn_id": "turn-1"}),
         ),
-        patch("api.runtime_control.get_backend", return_value=object()),
+        patch("api.runtime_control.get_backend", return_value=backend),
         patch(
             "api.runtime_control._get_runtime",
             return_value=SimpleNamespace(turn_counter=1),
