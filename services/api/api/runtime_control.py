@@ -1243,6 +1243,10 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
     delivery = decode_jsonb(row.get("delivery"), {})
 
     if execution_status == "cancel_requested":
+        await _stop_execution_session(
+            thread_key,
+            reason="cancel_requested",
+        )
         await _mark_execution_terminal(
             pool,
             execution_id=execution_id,
@@ -1400,6 +1404,10 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
                     execution_id,
                 )
                 if status_row and status_row["status"] == "cancel_requested":
+                    await _stop_execution_session(
+                        thread_key,
+                        reason="cancel_requested",
+                    )
                     await _mark_execution_terminal(
                         pool,
                         execution_id=execution_id,
@@ -1409,8 +1417,6 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
                         result_text="",
                         error_text="cancel_requested",
                     )
-                    with contextlib.suppress(Exception):
-                        await backend.close_streams(session)
                     return
                 continue
 
@@ -1438,6 +1444,10 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
                 execution_id,
             )
             if status_row and status_row["status"] == "cancel_requested":
+                await _stop_execution_session(
+                    thread_key,
+                    reason="cancel_requested",
+                )
                 await _mark_execution_terminal(
                     pool,
                     execution_id=execution_id,
@@ -1447,8 +1457,6 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
                     result_text="",
                     error_text="cancel_requested",
                 )
-                with contextlib.suppress(Exception):
-                    await backend.close_streams(session)
                 return
 
             if payload.get("type") == "turn.done":

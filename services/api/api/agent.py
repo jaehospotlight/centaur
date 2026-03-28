@@ -1319,10 +1319,9 @@ async def stop_session(thread_key: str) -> bool:
     if not session:
         return False
 
-    _drop_runtime(session.sandbox_id)
-
     backend = get_backend()
     await backend.stop(session)
+    _drop_runtime(session.sandbox_id)
     await _db_update_state(thread_key, "stopped")
     log.info("pipe_session_stopped", thread_key=thread_key)
     return True
