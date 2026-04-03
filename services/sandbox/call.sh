@@ -167,10 +167,17 @@ case "$tool" in
     exit 1
     ;;
   tools)
-    request "GET" "$U/tools"
+    # Inject the built-in agent sub-command into the tool listing
+    response="$(request "GET" "$U/tools")" || { printf '%s\n' "$response"; exit 1; }
+    printf '%s' "$response" | jq -c '. + {"agent":{"description":"Sub-agent dispatch (built-in). Use: call agent execute, call agent status, call agent stop","methods":["execute","status","stop"]}}'
+    printf '\n'
     ;;
   discover)
-    request "GET" "$U/tools/$2"
+    if [ "$2" = "agent" ]; then
+      printf '%s\n' '{"tool":"agent","description":"Sub-agent dispatch (built-in, not a tool plugin)","methods":[{"name":"execute","description":"Spawn a sub-agent. Body: {\"thread_key\":\"task:<purpose>-<id>\",\"message\":\"...\",\"harness\":\"<persona>\"}. Returns {execution_id, status}."},{"name":"status","description":"Poll sub-agent. Usage: call agent status '\''?key=<thread_key>'\''"},{"name":"stop","description":"Stop sub-agent. Body: {\"thread_key\":\"...\"}"}]}'
+    else
+      request "GET" "$U/tools/$2"
+    fi
     ;;
   agent)
     # Usage: call agent execute '{"thread_key":"...","message":"...","harness":"legal"}'

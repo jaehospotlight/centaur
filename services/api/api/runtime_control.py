@@ -1773,10 +1773,10 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
                 execution_id,
             )
             if status_row and status_row["status"] == "cancel_requested":
-                await _stop_execution_session(
-                    thread_key,
-                    reason="cancel_requested",
-                )
+                # Don't kill the container — cancel_execution() already sent
+                # SIGUSR1 which gracefully interrupts the turn.  The harness
+                # wrapper handles it and keeps the session alive so subsequent
+                # turns retain conversation context.
                 await _finalize_execution(
                     status="cancelled",
                     terminal_reason="cancel_requested",
