@@ -28,6 +28,7 @@ from api.agent import reconcile_tick
 from api.runtime_guardrails import assert_runtime_credentials_ready
 from api.runtime_control import start_execution_worker, stop_execution_worker
 from api.workflow_engine import (
+    get_workflow_dirs,
     discover_workflow_handlers,
     start_workflow_worker,
     stop_workflow_worker,
@@ -88,6 +89,24 @@ async def _push_injection_map() -> None:
         log.warning("injection_map_push_failed", exc_info=True)
 
 
+async def _watch_workflows() -> None:
+    """Watch external workflow directories and auto-reload when files change."""
+    from watchfiles import awatch
+
+    watch_dirs = [d for d in get_workflow_dirs() if d.exists()]
+    if not watch_dirs:
+        return
+    log.info("workflow_watcher_started", paths=[str(d) for d in watch_dirs])
+    async for changes in awatch(*watch_dirs):
+        changed_files = [str(p) for _, p in changes]
+        log.info("workflow_files_changed", files=changed_files)
+        try:
+            result = discover_workflow_handlers()
+            log.info("workflows_auto_reloaded", workflows=list(result.keys()), count=len(result))
+        except Exception as e:
+            log.error("workflow_auto_reload_failed", error=str(e))
+
+
 async def _reconcile_loop() -> None:
     """Periodically reconcile sessions, enforce TTL, clean orphans."""
     while True:
@@ -127,6 +146,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     start_push_loop(app.state.db_pool)
     await _push_injection_map()
     watcher_task = asyncio.create_task(_watch_tools(tool_manager))
+    wf_watcher_task = asyncio.create_task(_watch_workflows())
     reconcile_task = asyncio.create_task(_reconcile_loop())
     if warm_pool_enabled:
         await start_replenish_loop()
@@ -142,8 +162,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await stop_execution_worker()
         reconcile_task.cancel()
         watcher_task.cancel()
+        wf_watcher_task.cancel()
         with suppress(asyncio.CancelledError):
             await watcher_task
+        with suppress(asyncio.CancelledError):
+            await wf_watcher_task
         with suppress(asyncio.CancelledError):
             await reconcile_task
         await close_pool(app.state.db_pool)

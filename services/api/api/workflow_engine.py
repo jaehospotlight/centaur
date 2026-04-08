@@ -961,6 +961,20 @@ class _RegisteredHandler:
 _WORKFLOW_HANDLERS: dict[str, _RegisteredHandler] = {}
 
 _BUILTIN_WORKFLOWS_PACKAGE = "api.workflows"
+_EXTERNAL_WORKFLOWS_NAMESPACE = "centaur.workflows"
+
+
+def get_workflow_dirs() -> list[Path]:
+    """Return external workflow directories from WORKFLOW_DIRS env var."""
+    raw = os.getenv("WORKFLOW_DIRS", "")
+    dirs: list[Path] = []
+    for entry in raw.split(":"):
+        entry = entry.strip()
+        if entry:
+            p = Path(entry)
+            if p.is_dir():
+                dirs.append(p)
+    return dirs
 
 
 def _coerce_value(value: Any, target_type: type) -> Any:
@@ -1008,8 +1022,45 @@ def _coerce_input(
     return raw
 
 
+def _load_workflow_file(
+    py_file: Path, mod_name: str, discovered: dict[str, str],
+) -> None:
+    """Load a single workflow handler file into the registry."""
+    try:
+        if mod_name in sys.modules:
+            del sys.modules[mod_name]
+        spec = importlib.util.spec_from_file_location(mod_name, py_file)
+        if not spec or not spec.loader:
+            log.warning("workflow_handler_skip", file=str(py_file), reason="no loader")
+            return
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+
+        wf_name = getattr(mod, "WORKFLOW_NAME", None)
+        wf_handler = getattr(mod, "handler", None)
+        if not isinstance(wf_name, str) or not callable(wf_handler):
+            log.warning(
+                "workflow_handler_skip",
+                file=str(py_file),
+                reason="missing WORKFLOW_NAME or handler",
+            )
+            return
+        input_cls = getattr(mod, "Input", None)
+        version = hashlib.sha256(py_file.read_bytes()).hexdigest()
+        _WORKFLOW_HANDLERS[wf_name] = _RegisteredHandler(
+            handler=wf_handler,
+            input_cls=input_cls,
+            source_path=str(py_file),
+            version=version,
+        )
+        discovered[wf_name] = str(py_file)
+    except Exception:
+        log.warning("workflow_handler_load_failed", file=str(py_file), exc_info=True)
+
+
 def discover_workflow_handlers() -> dict[str, str]:
-    """Scan the api.workflows package for handler modules.
+    """Scan built-in and external workflow directories for handler modules.
 
     Each module must export:
     - ``WORKFLOW_NAME: str`` — the registered workflow name
@@ -1019,48 +1070,32 @@ def discover_workflow_handlers() -> dict[str, str]:
     - ``Input`` — a ``@dataclass`` that raw ``input_json`` is
       auto-coerced into before calling the handler.
 
+    Built-in workflows live in ``api/workflows/``.  External directories
+    are specified via the ``WORKFLOW_DIRS`` env var (colon-separated paths)
+    and are bind-mounted + hot-reloaded like tools.
+
     Returns a dict of {workflow_name: module_path} for logging.
     """
     global _WORKFLOW_HANDLERS
+    _WORKFLOW_HANDLERS.clear()
     discovered: dict[str, str] = {}
 
+    # 1. Built-in workflows (api.workflows package)
     pkg_path = Path(__file__).resolve().parent / "workflows"
-    if not pkg_path.is_dir():
-        log.warning("workflow_handlers_dir_missing", path=str(pkg_path))
-        return discovered
-
-    for py_file in sorted(pkg_path.glob("*.py")):
-        if py_file.name.startswith("_"):
-            continue
-        mod_name = f"{_BUILTIN_WORKFLOWS_PACKAGE}.{py_file.stem}"
-        try:
-            if mod_name in sys.modules:
-                del sys.modules[mod_name]
-            mod = importlib.import_module(mod_name)
-            wf_name = getattr(mod, "WORKFLOW_NAME", None)
-            wf_handler = getattr(mod, "handler", None)
-            if not isinstance(wf_name, str) or not callable(wf_handler):
-                log.warning(
-                    "workflow_handler_skip",
-                    file=str(py_file),
-                    reason="missing WORKFLOW_NAME or handler",
-                )
+    if pkg_path.is_dir():
+        for py_file in sorted(pkg_path.glob("*.py")):
+            if py_file.name.startswith("_"):
                 continue
-            input_cls = getattr(mod, "Input", None)
-            version = hashlib.sha256(py_file.read_bytes()).hexdigest()
-            _WORKFLOW_HANDLERS[wf_name] = _RegisteredHandler(
-                handler=wf_handler,
-                input_cls=input_cls,
-                source_path=str(py_file),
-                version=version,
-            )
-            discovered[wf_name] = str(py_file)
-        except Exception:
-            log.warning(
-                "workflow_handler_load_failed",
-                file=str(py_file),
-                exc_info=True,
-            )
+            mod_name = f"{_BUILTIN_WORKFLOWS_PACKAGE}.{py_file.stem}"
+            _load_workflow_file(py_file, mod_name, discovered)
+
+    # 2. External workflow directories (WORKFLOW_DIRS)
+    for wf_dir in get_workflow_dirs():
+        for py_file in sorted(wf_dir.glob("*.py")):
+            if py_file.name.startswith("_"):
+                continue
+            mod_name = f"{_EXTERNAL_WORKFLOWS_NAMESPACE}.{py_file.stem}"
+            _load_workflow_file(py_file, mod_name, discovered)
 
     log.info(
         "workflow_handlers_discovered",

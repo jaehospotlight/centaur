@@ -192,6 +192,26 @@ case "$tool" in
       request "POST" "$U/agent/$method" "$body"
     fi
     ;;
+  workflow)
+    # Usage: call workflow run '{"workflow_name":"agent_loop","input":{...}}'
+    #        call workflow get <run_id>
+    #        call workflow cancel <run_id>
+    #        call workflow list
+    if [ "$method" = "run" ]; then
+      request "POST" "$U/workflows/runs" "$body"
+    elif [ "$method" = "get" ]; then
+      request "GET" "$U/workflows/runs/$body"
+    elif [ "$method" = "cancel" ]; then
+      request "POST" "$U/workflows/runs/$body/cancel"
+    elif [ "$method" = "list" ]; then
+      request "GET" "$U/workflows/runs${body:+?$body}"
+    elif [ "$method" = "event" ]; then
+      request "POST" "$U/workflows/events" "$body"
+    else
+      printf '{"error":"unknown_workflow_method","method":%s}\n' "$(printf '%s' "$method" | jq -Rs .)"
+      exit 1
+    fi
+    ;;
   *)
     if [ -z "$body" ]; then
       request "POST" "$U/tools/$tool/$method"

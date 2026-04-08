@@ -131,6 +131,7 @@ services:
       CENTAUR_LOG_LEVEL: info
       LOCAL_DEV_API_KEY: ${LOCAL_DEV_API_KEY:-}
       TOOL_DIRS: /app/tools:/app/tools-paradigm
+      WORKFLOW_DIRS: /app/workflows
       REPOS_HOST_DIR: ${HOME}/github
       REPO_HOST_DIR: ${PWD}
       FIREWALL_HOST: firewall
@@ -152,6 +153,7 @@ services:
     volumes:
       - ./tools:/app/tools
       - ./tools-paradigm:/app/tools-paradigm
+      - ./workflows:/app/workflows
       - firewall-certs:/firewall-certs:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/health/ready"]

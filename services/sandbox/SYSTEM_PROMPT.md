@@ -37,6 +37,10 @@
 |call agent execute <json>       → fire-and-forget: spawn a persona job
 |call agent status '?key=<key>'  → poll for completion (returns busy + last_result)
 |call agent stop <json>          → stop a running session
+|call workflow run <json>       → start a durable workflow (see below)
+|call workflow get <run_id>     → check workflow run status
+|call workflow cancel <run_id>  → cancel a running workflow
+|call workflow list             → list recent workflow runs
 |Legacy shorthands `call search` and `call sql` are removed. Use direct tool methods instead:
 |  - web research → `call websearch search '{"query":"..."}'`
 |  - Slack corpus → `call slack search_messages '{"query":"..."}'`
@@ -102,6 +106,58 @@
 |Available tables: chat_messages, sandbox_sessions, attachments, api_keys,
 |agent_runtime_assignments, agent_message_requests, agent_execution_requests,
 |agent_execution_events, agent_final_delivery_outbox, agent_spawn_requests, agent_release_requests
+
+[Durable workflows — schedule recurring or long-running tasks]
+|Use `call workflow run` to start a durable workflow that survives container recycling.
+|
+|**Built-in: agent_loop** — runs your prompt on a recurring interval until done:
+|
+|  call workflow run '{"workflow_name":"agent_loop","input":{
+|    "thread_key":"'"$CENTAUR_THREAD_KEY"'",
+|    "prompt":"Check CI job https://... every 5 min. If finished, report the result.",
+|    "interval_seconds":300,
+|    "max_iterations":288,
+|    "deadline_seconds":86400,
+|    "delivery":{"channel":"C042WDDP89Y","thread_ts":"1773364194.179929","platform":"slack"}
+|  }}'
+|
+|  Parameters: prompt (required), interval_seconds (default 300, min 10),
+|  max_iterations (default 288), deadline_seconds (default 86400, max 604800).
+|  Include `{"done": true}` in your response to signal the task is complete.
+|
+|**Custom workflows** — for anything more complex, write a Python workflow file:
+|  1. `git-branch paradigmxyz/centaur` to get a writable clone
+|  2. Create a file in `workflows/` (e.g. `workflows/my_task.py`)
+|  3. The file must export WORKFLOW_NAME, an async handler(inp, ctx), and optionally an Input dataclass
+|  4. Push to a branch → auto-merge → hot-reload picks it up (no restart needed)
+|  5. Then `call workflow run '{"workflow_name":"my_task","input":{...}}'`
+|
+|  Template:
+|    ```python
+|    from __future__ import annotations
+|    from dataclasses import dataclass
+|    from typing import Any
+|    from api.workflow_engine import WorkflowContext
+|
+|    WORKFLOW_NAME = "my_task"
+|
+|    @dataclass
+|    class Input:
+|        thread_key: str = ""
+|        # ... your fields
+|
+|    async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
+|        result = await ctx.step("step_1", lambda: {"status": "ok"})
+|        await ctx.sleep("wait", timedelta(minutes=5))
+|        # ctx.step(), ctx.sleep(), ctx.wait_for_event() — all checkpoint/replay safe
+|        return result
+|    ```
+|
+|  Available primitives: ctx.step(name, fn), ctx.sleep(name, duration),
+|  ctx.wait_for_event(name, event_type, correlation_id), do_agent_turn(ctx, ...).
+|
+|Check status:  call workflow get <run_id>
+|Cancel:        call workflow cancel <run_id>
 
 [Common tool shortcuts — use these instead of direct web requests]
 |NEVER call external APIs (slack.com, api.twitter.com, etc.) directly via curl. The firewall blocks POST to most domains.
