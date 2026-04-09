@@ -43,7 +43,7 @@ oauth_config:
 
 settings:
   event_subscriptions:
-    request_url: https://svc-ai.paradigm.xyz/api/webhooks/slack
+    request_url: https://svc-ai.dayno.xyz/api/webhooks/slack
     bot_events:
       - app_mention
       - assistant_thread_started
