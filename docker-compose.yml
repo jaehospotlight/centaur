@@ -2,7 +2,7 @@ name: centaur
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg16@sha256:33198da2828a14c30348d2ccb4750833d5ed9a44c88d840a0e523d7417120337
     environment:
       POSTGRES_DB: ai_v2
       POSTGRES_USER: tempo
@@ -22,7 +22,7 @@ services:
 
 
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy
+    image: tecnativa/docker-socket-proxy:latest@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476
     environment:
       CONTAINERS: 1
       NETWORKS: 1
@@ -205,7 +205,7 @@ services:
     profiles: ["build"]
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:latest@sha256:70d9599b186ce287be0d2c5ba9a78acb2e86c1a68c9c41449454d0fc3eeb84e8
     environment:
       GF_SERVER_ROOT_URL: https://svc-ai.paradigm.xyz/grafana
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
@@ -230,7 +230,7 @@ services:
     restart: unless-stopped
 
   victoriametrics:
-    image: victoriametrics/victoria-metrics:latest
+    image: victoriametrics/victoria-metrics:latest@sha256:b9b667f6709f20044328ddefae8869c56ced840ebafdf89bc3bba1f28f2d7e60
     command:
       - -storageDataPath=/victoria-metrics-data
       - -retentionPeriod=30d
@@ -250,7 +250,7 @@ services:
     restart: unless-stopped
 
   victorialogs:
-    image: docker.io/victoriametrics/victoria-logs:latest
+    image: docker.io/victoriametrics/victoria-logs:latest@sha256:70cadcf591e593456decccb23250765a4a5f2cd62904e2ab181fd4db45428d5e
     command:
       - -storageDataPath=/victoria-logs-data
       - -retentionPeriod=7d
