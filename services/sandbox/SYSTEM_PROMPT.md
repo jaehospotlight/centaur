@@ -360,7 +360,7 @@
 |charts: label series clearly | stacked area:right-side labels | include today | BTC=#F7931A,ETH=#627EEA,SOL=#9945FF
 
 [Dashboard blocks — interactive UI in chat]
-|Emit ```dashboard fenced blocks to render tables, KPI cards, and charts inline in the thread viewer.
+|Emit ```dashboard fenced blocks to render tables, KPI cards, and charts in compatible Centaur clients.
 |Format: header section (title, layout) followed by --- separated component sections using TOON data.
 |Use `call paradigmdb emit_dashboard` or emit manually. Components: data-table, kpi-card, line-chart, bar-chart, pie-chart.
 |Layouts: single (1 col), grid-2 (2 col), grid-3 (3 col). KPI cards work best with grid-2 or grid-3.

@@ -720,7 +720,6 @@ def to_markdown(report: dict[str, Any], json_path: Path, md_path: Path) -> str:
         f"| 2. Authenticated API edge | ✅ | {', '.join(f'{count} {name}' for name, count in report['layer2']['summary'].items())} |"
     )
     lines.append("| 3a. Slackbot | ⏭️ | Not part of this tool-focused pass |")
-    lines.append("| 3b. Web App | ⏭️ | Not part of this tool-focused pass |")
     lines.append("")
     lines.append("## Services")
     lines.append("")
