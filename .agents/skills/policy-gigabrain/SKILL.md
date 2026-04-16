@@ -119,6 +119,7 @@ Generate a policy briefing memo before Hill meetings.
    call paradigmdb db_query '{"query":"SELECT * FROM \"Organization\" WHERE name ILIKE '\''%relevant_company%'\'';"}'
    ```
 9. Generate the briefer using the format and style rules below.
+10. Before delivering the memo, run the pre-delivery checklist below and cut anything that pushes the draft into an issue-deck format.
 
 **Audience**
 - Write for a Paradigm executive with deep fluency in crypto, DeFi, and relevant legislation.
@@ -130,6 +131,11 @@ Generate a policy briefing memo before Hill meetings.
 - State facts as facts. Do not narrate sourcing with phrases like "According to his official bio," "per public disclosures," or "research shows."
 - Use present tense for current roles and positions and past tense for historical facts.
 - Avoid filler transitions like "it is worth noting," "additionally," or "it should be mentioned."
+
+**Length Target**
+- Default to a tight principal-ready memo of roughly 900-1100 words, usually about 3 pages.
+- When choosing between the approved Schumer and Cruz examples, follow Cruz for length and restraint, and use Schumer only as a model for member-specific political intelligence.
+- Only exceed the default length when the user explicitly asks for a longer memo or the office is unusually central to an active negotiation.
 
 **Inclusion Standard**
 - Write an operator brief, not a comprehensive research memo.
@@ -159,6 +165,7 @@ Generate a policy briefing memo before Hill meetings.
   7. `Stance on AI`
 - Do not generate a `Specific Topics to Address` section.
 - Do not generate a `Touchpoints` section.
+- If the user wants talking points, issue notes, or a live legislative walkthrough, treat that as a separate deliverable rather than adding another memo section.
 - Fold prior office touchpoint intel into `Landscape Summary` and the relevant stance sections instead.
 - `Landscape Summary` and `Biography` should be short prose sections.
 - `Goals`, `Crypto Knowledge`, `Stance on Prediction Markets`, `Stance on Defense Tech`, and `Stance on AI` should use concise full-sentence bullets.
@@ -183,16 +190,28 @@ Generate a policy briefing memo before Hill meetings.
 **Biography Rules**
 - Keep `Biography` short and functional.
 - Use it to explain how the member thinks, not to inventory every prior job or credential.
+- Default to one short paragraph. Use two short paragraphs only when the extra context clearly sharpens the political read.
 
 **Goals Rules**
 - Write short, plain-English bullets describing what we want to get done, what we want to learn, or what framing we want to land.
 - Keep the bullets specific to the member and the meeting.
 - Avoid generic relationship-building filler.
+- Use 3-4 bullets by default.
+- Favor bullets that describe an action, question, or strategic point to land. Good patterns: "Press for Schumer's read on the path for CLARITY" or "Establish that Paradigm's AI work fits his competitiveness agenda."
+- Avoid generic bullets like "Introduce Paradigm" unless the office genuinely does not know us or the relationship reset is itself a meeting objective.
 
 **Stance Section Rules**
 - Each bullet should be member-specific and additive.
 - Do not turn these sections into generic explainers on the underlying issue.
 - If there is not enough tailored material for a full section, use one short editorial bullet rather than padding.
+- Use 1-3 bullets per stance section. One strong bullet is better than three generic ones.
+
+**Section Density Rules**
+- `Landscape Summary`: 1-2 short paragraphs.
+- `Biography`: 1 short paragraph by default, 2 only if needed.
+- `Goals`: 3-4 bullets.
+- `Crypto Knowledge`, `Stance on Prediction Markets`, `Stance on Defense Tech`, and `Stance on AI`: usually 1-3 bullets each.
+- If the draft starts to read like a combined memo plus issue deck, cut rather than expand.
 
 **Paradigm Perspective**
 - Layer in Paradigm's views where relevant, especially in `Landscape Summary`, the stance sections, and `Goals`.
@@ -202,30 +221,39 @@ Generate a policy briefing memo before Hill meetings.
 - Default to a specific, clean, no-throat-clearing style, for example: "McCormick first ran for the U.S. Senate in 2022, narrowly losing the Pennsylvania Republican primary to Mehmet Oz by a margin of 0.1 percent."
 - Use the format and section guidance in this template when in doubt: `https://docs.google.com/document/d/1jAEVUbvZHZZ09D6LBxU5jbyIx4e-YuXyDfLT-BL5Vpc/edit?usp=sharing`
 
+**Briefer Pre-Delivery Checklist**
+- The draft is roughly within the 900-1100 word target unless the user asked for more.
+- The memo contains only the seven required sections, in order.
+- There is no `Specific Topics to Address`, `Touchpoints`, or standalone issue-deck section.
+- `Goals` contains 3-4 specific, outcome-driven bullets rather than generic relationship filler.
+- Each stance section contains only member-specific points; generic background has been cut.
+- Any request for talking points or legislative detail has been handled as a separate deliverable, not appended to the memo.
+
 **Briefer Template:**
 ```
 ## Landscape Summary
-Write 1-2 short paragraphs that open with committee assignments and relevant subcommittees, then define the member's core policy identity, then explain where Paradigm's issues fit for that member.
+Write 1-2 short paragraphs that open with committee assignments and relevant subcommittees, then define the member's core policy identity, then explain where Paradigm's issues fit for that member. Keep this analytical and compact.
 
 ## Biography
-Write 1-2 short paragraphs in reverse chronological order, starting with the current or most recent role and ending with education/background. Cover: key career milestones, prior offices, education, leadership roles, and any state or political identity that helps explain how they think.
+Write 1 short paragraph by default, or 2 short paragraphs only when needed, in reverse chronological order. Cover only the career milestones, prior offices, and background that help explain how the member thinks.
 
 ## Goals
 - [Concrete meeting objective]
 - [Question to press or intel to gather]
 - [Paradigm framing to land]
+- [Optional fourth bullet only if it is truly meeting-critical]
 
 ## Crypto Knowledge
-Use full-sentence bullets covering: familiarity with crypto and digital assets, notable public statements, legislative engagement, whether crypto is a core issue or a competitiveness issue for them, and any relevant staff sophistication.
+Use 1-3 full-sentence bullets covering only the most relevant material: familiarity with crypto and digital assets, notable public statements, legislative engagement, whether crypto is a core issue or a competitiveness issue for them, and any relevant staff sophistication.
 
 ## Stance on Prediction Markets
-Use full-sentence bullets covering: public record if any, likely entry point, relevant current events, and how the member is likely to see the issue. Frame this around Paradigm's position that prediction markets and all event contracts should be regulated by the CFTC under exclusive federal jurisdiction.
+Use 1-3 full-sentence bullets covering: public record if any, likely entry point, relevant current events, and how the member is likely to see the issue. Frame this around Paradigm's position that prediction markets and all event contracts should be regulated by the CFTC under exclusive federal jurisdiction.
 
 ## Stance on Defense Tech
-Use full-sentence bullets covering: defense-industrial priorities, acquisition reform views, state or district defense ties, and how the member thinks about innovation, deterrence, and competition.
+Use 1-3 full-sentence bullets covering: defense-industrial priorities, acquisition reform views, state or district defense ties, and how the member thinks about innovation, deterrence, and competition.
 
 ## Stance on AI
-Use full-sentence bullets covering: philosophy of regulation, innovation posture, national-security framing, and whether the member prefers congressional action versus agency action.
+Use 1-3 full-sentence bullets covering: philosophy of regulation, innovation posture, national-security framing, and whether the member prefers congressional action versus agency action.
 ```
 
 ### 1a. `#touchpoint` Capture
