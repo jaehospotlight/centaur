@@ -31,6 +31,8 @@ Prioritize evidence in this order:
 4. Final delivered output text.
 5. Execution summary signals (tool calls, errors, duration).
 
+Follow-up messages are provided as raw text. Interpret them semantically: read the actual words and determine whether the user is satisfied, correcting, re-asking, or expressing frustration. Do not rely on keyword matching or substring heuristics.
+
 Do not assume silence means success. No follow-up is weak positive evidence only.
 
 If the evidence is incomplete, say so in the task confidence instead of inventing missing facts.
@@ -134,12 +136,14 @@ Do not invent a complex clustering engine. If two failures share the same root c
 
 ## Cross-Run Deduplication
 
-The workflow may provide a list of recent fix titles that have already been attempted.
+The workflow provides a list of recent fix titles that have already been attempted. This list appears in the prompt as a JSON array under "Recently attempted fix titles."
 
-Before selecting fixes, check whether your proposed fix title substantially overlaps with a recently attempted fix. If it does, either:
+Before selecting fixes, check whether your proposed fix title substantially overlaps with a recently attempted fix. Use semantic comparison, not exact string matching. If it overlaps, either:
 
 - skip it (the prior fix should address it), or
 - explain why the prior fix was insufficient and a new attempt is warranted.
+
+A separate reconciliation step will also deduplicate your fixes against learning-synthesis proposals after this pass. Focus on selecting the best fixes from the evidence you see; the workflow handles cross-pass merging.
 
 ## Allowed Fix Types
 

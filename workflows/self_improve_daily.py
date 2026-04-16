@@ -16,6 +16,7 @@ from typing import Any
 
 from api.runtime_control import ControlPlaneError, decode_jsonb
 from api.workflow_engine import Delivery, WorkflowContext
+from workflows.json_payloads import extract_json_payload, has_required_keys, missing_required_keys
 
 WORKFLOW_NAME = "self_improve_daily"
 SCHEDULE = {
@@ -35,38 +36,10 @@ MAX_DELIVERY_TEXT_CHARS = 2000
 PR_METADATA_START = "<!-- self_improve_metadata_v1:start -->"
 PR_METADATA_END = "<!-- self_improve_metadata_v1:end -->"
 
-NEGATIVE_FOLLOWUP_PATTERNS = (
-    "not what i asked",
-    "that is not right",
-    "that's not right",
-    "you missed",
-    "you forgot",
-    "still wrong",
-    "didn't work",
-    "did not work",
-    "try again",
-    "rerun",
-    "re-run",
-    "fix this",
-)
-POSITIVE_FOLLOWUP_PATTERNS = (
-    "thanks",
-    "thank you",
-    "looks good",
-    "perfect",
-    "great",
-    "awesome",
-    "got it",
-)
-REASK_PATTERNS = (
-    "can you",
-    "could you",
-    "please",
-    "again",
-    "instead",
-    "actually",
-    "what i meant",
-)
+TRIAGE_PREFERRED_KEYS = ("selected_task_ids", "task_assessments")
+TRIAGE_REQUIRED_KEYS = ("selected_task_ids",)
+RECONCILE_PREFERRED_KEYS = ("reconciled_fixes",)
+RECONCILE_REQUIRED_KEYS = ("reconciled_fixes",)
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -81,6 +54,54 @@ REVIEW_WINDOW_HOURS_DEFAULT = _env_positive_int("SELF_IMPROVE_REVIEW_WINDOW_HOUR
 MAX_SELECTED_FIXES_DEFAULT = _env_positive_int("SELF_IMPROVE_MAX_SELECTED_FIXES", 1)
 CANDIDATE_LIMIT_DEFAULT = _env_positive_int("SELF_IMPROVE_CANDIDATE_LIMIT", 20)
 CANDIDATE_FETCH_FACTOR = _env_positive_int("SELF_IMPROVE_CANDIDATE_FETCH_FACTOR", 4)
+REVIEW_PREFERRED_KEYS = (
+    "tasks_reviewed",
+    "below_bar_count",
+    "below_bar_rate",
+    "task_reviews",
+    "top_failure_modes",
+    "selected_fixes",
+)
+REVIEW_REQUIRED_KEYS = ("task_reviews", "selected_fixes")
+SYNTHESIS_PREFERRED_KEYS = (
+    "sessions_analyzed",
+    "opportunities_found",
+    "opportunities",
+    "selected_builds",
+)
+SYNTHESIS_REQUIRED_KEYS = ("opportunities", "selected_builds")
+OPEN_PR_PREFERRED_KEYS = (
+    "branch",
+    "commit",
+    "pr_number",
+    "pr_url",
+    "pr_title",
+    "verified_handoff",
+)
+OPEN_PR_REQUIRED_KEYS = ("branch", "pr_number", "pr_url")
+RESEARCH_PREFERRED_KEYS = (
+    "root_cause",
+    "fix_type",
+    "affected_files",
+    "acceptance_criteria",
+    "verification_plan",
+    "risks",
+    "confidence",
+    "new_capability_justification",
+)
+RESEARCH_REQUIRED_KEYS = (
+    "root_cause",
+    "fix_type",
+    "affected_files",
+    "acceptance_criteria",
+    "verification_plan",
+)
+PLAN_PREFERRED_KEYS = ("files", "plan", "validation", "pr_title", "expected_impact")
+PLAN_REQUIRED_KEYS = ("files", "plan", "validation", "pr_title")
+IMPLEMENT_PREFERRED_KEYS = ("changed_files", "summary")
+IMPLEMENT_REQUIRED_KEYS = ("changed_files", "summary")
+VALIDATE_PREFERRED_KEYS = ("checks", "summary", "regression_check")
+VALIDATE_REQUIRED_KEYS = ("checks", "summary")
 
 
 @dataclass
@@ -111,25 +132,23 @@ def _message_part_types(parts: list[dict[str, Any]]) -> list[str]:
     )
 
 
-def _extract_json_payload(text: str) -> dict[str, Any]:
-    decoder = json.JSONDecoder()
-    best: dict[str, Any] | None = None
-    for index, char in enumerate(text):
-        if char not in "[{":
-            continue
-        try:
-            payload, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            if best is None or len(payload) > len(best):
-                best = payload
-    if best is not None:
-        return best
-    return {
-        "error": "agent response did not contain a JSON object",
-        "raw_snippet": text[:300] if text else "",
-    }
+def _extract_required_json_payload(
+    text: str,
+    *,
+    stage: str,
+    preferred_keys: tuple[str, ...] = (),
+    required_keys: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    payload = extract_json_payload(text, preferred_keys=preferred_keys)
+    if required_keys and not has_required_keys(payload, required_keys):
+        missing = ", ".join(missing_required_keys(payload, required_keys))
+        payload_keys = ", ".join(sorted(payload.keys()))
+        snippet = str(payload.get("raw_snippet") or "")[:160]
+        raise RuntimeError(
+            f"{stage} response missing required keys [{missing}] "
+            f"(payload keys: [{payload_keys}]; snippet: {snippet})"
+        )
+    return payload
 
 
 def _parse_thread_key(thread_key: str) -> tuple[str, str]:
@@ -188,23 +207,10 @@ def _serialize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _summarize_followups(messages: list[dict[str, Any]]) -> dict[str, Any]:
     texts = [str(message.get("text") or "").strip() for message in messages]
-    lowered = [text.lower() for text in texts if text]
-    negative_signals = sum(
-        1 for text in lowered if any(pattern in text for pattern in NEGATIVE_FOLLOWUP_PATTERNS)
-    )
-    positive_signals = sum(
-        1 for text in lowered if any(pattern in text for pattern in POSITIVE_FOLLOWUP_PATTERNS)
-    )
-    reask_signals = sum(
-        1 for text in lowered if any(pattern in text for pattern in REASK_PATTERNS)
-    )
     return {
         "followup_count": len(messages),
         "has_followup": bool(messages),
-        "negative_signals": negative_signals,
-        "positive_signals": positive_signals,
-        "reask_signals": reask_signals,
-        "example_texts": [text for text in texts if text][:3],
+        "example_texts": [text for text in texts if text][:5],
     }
 
 
@@ -234,105 +240,98 @@ def _sum_mapping_values(items: list[dict[str, Any]], key: str) -> dict[str, int]
     return totals
 
 
-def _candidate_priority(task: dict[str, Any]) -> dict[str, Any]:
-    summary = task.get("user_followup_summary", {})
-    score = 0
-    reasons: list[str] = []
-    status = str(task.get("status") or "")
-    terminal_reason = str(task.get("terminal_reason") or "")
-
-    if status and status != "completed":
-        score += 10
-        reasons.append("execution_not_completed")
-    elif terminal_reason and terminal_reason not in {"completed", "success"}:
-        score += 4
-        reasons.append("terminal_reason_non_success")
-
-    negative_signals = int(summary.get("negative_signals") or 0)
-    if negative_signals:
-        score += negative_signals * 4
-        reasons.append("negative_user_followup")
-
-    reask_signals = int(summary.get("reask_signals") or 0)
-    if reask_signals:
-        score += reask_signals * 3
-        reasons.append("user_reask")
-
-    tool_error_count = _sum_int_values(task.get("tool_errors_by_name"))
-    if tool_error_count:
-        score += min(tool_error_count, 3) * 2
-        reasons.append("tool_errors")
-
-    tool_retry_count = int(task.get("tool_retry_count") or 0)
-    if tool_retry_count:
-        score += min(tool_retry_count, 3)
-        reasons.append("tool_retries")
-
-    if int(task.get("subagent_failures") or 0):
-        score += 2
-        reasons.append("subagent_failures")
-
-    if int(task.get("command_error_events") or 0):
-        score += 2
-        reasons.append("command_errors")
-
-    if int(task.get("file_change_events") or 0) and not summary.get("positive_signals"):
-        score += 1
-        reasons.append("code_change_review_candidate")
-
-    enriched = dict(task)
-    enriched["candidate_priority"] = score
-    enriched["candidate_reasons"] = reasons
-    return enriched
+def _compact_task_summary(task: dict[str, Any]) -> dict[str, Any]:
+    followup_summary = task.get("user_followup_summary") or {}
+    return {
+        "task_id": task.get("task_id"),
+        "thread_key": task.get("thread_key"),
+        "ask_text": str(task.get("ask_text") or "")[:500],
+        "status": task.get("status"),
+        "terminal_reason": task.get("terminal_reason"),
+        "duration_s": task.get("duration_s"),
+        "tool_errors": _sum_int_values(task.get("tool_errors_by_name")),
+        "tool_retry_count": task.get("tool_retry_count", 0),
+        "subagent_failures": task.get("subagent_failures", 0),
+        "command_error_events": task.get("command_error_events", 0),
+        "followup_count": followup_summary.get("followup_count", 0),
+        "followup_texts": followup_summary.get("example_texts", []),
+        "delivery_snippet": str(task.get("final_delivery_text") or "")[:300],
+    }
 
 
-def _select_review_batch(tasks: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+async def _run_triage_pass(
+    ctx: WorkflowContext,
+    *,
+    tasks: list[dict[str, Any]],
+    limit: int,
+) -> list[str]:
     if not tasks:
         return []
+    if len(tasks) <= limit:
+        return [str(task.get("task_id") or "") for task in tasks]
 
-    enriched = [_candidate_priority(task) for task in tasks]
-    flagged = [task for task in enriched if int(task.get("candidate_priority") or 0) > 0]
-    quiet = [task for task in enriched if int(task.get("candidate_priority") or 0) == 0]
+    summaries = [_compact_task_summary(task) for task in tasks]
+    prompt = textwrap.dedent(
+        f"""
+        You are triaging Slack-thread user tasks for a nightly self-improvement review.
 
-    def _sort_key(task: dict[str, Any]) -> tuple[int, str]:
-        return (
-            int(task.get("candidate_priority") or 0),
-            str(task.get("source_created_at") or ""),
+        Below are {len(summaries)} reconstructed tasks from the past day. Select the
+        {limit} most valuable tasks to send to the full quality-review pass.
+
+        Selection criteria (use your judgment, not rigid rules):
+        - Prioritize tasks where the user likely had a bad experience: failed
+          executions, negative or corrective follow-ups, timeouts, silence.
+        - Include a mix of failure modes so the review covers diverse issues.
+        - Include at least 1-2 tasks that completed successfully so the reviewer
+          can calibrate what "good" looks like in this batch.
+        - Interpret follow-up messages semantically. "thanks" after a good answer
+          is positive. "can you try again" after a failure is negative. Do not
+          rely on keyword matching — read the actual conversation snippets.
+        - Consider execution telemetry (errors, retries, duration) as supporting
+          evidence, not as the sole selection criterion.
+
+        Return JSON only with exactly these top-level keys:
+        - `selected_task_ids`: array of {limit} task_id strings, ordered by
+          review priority (most important first).
+        - `task_assessments`: array of objects, one per input task, each with
+          `task_id`, `review_priority` ("high"/"medium"/"low"),
+          `followup_quality` ("positive"/"neutral"/"negative"/"none"),
+          and a short `rationale`.
+
+        Task summaries:
+        ```json
+        {json.dumps(summaries, indent=2)}
+        ```
+        """
+    ).strip()
+
+    async def _triage() -> dict[str, Any]:
+        result = await ctx.agent_turn(
+            prompt,
+            thread_key=f"workflow:{ctx.run_id}:triage",
+            delivery=Delivery.dev(),
+            prompt_selector="eng",
+            metadata={
+                "source": WORKFLOW_NAME,
+                "mode": "parent",
+                "stage": "triage",
+            },
+        )
+        return _extract_required_json_payload(
+            str(result.get("result_text") or ""),
+            stage="triage",
+            preferred_keys=TRIAGE_PREFERRED_KEYS,
+            required_keys=TRIAGE_REQUIRED_KEYS,
         )
 
-    flagged.sort(key=_sort_key, reverse=True)
-    quiet.sort(key=_sort_key, reverse=True)
-
-    selected: list[dict[str, Any]] = []
-    used_ids: set[str] = set()
-
-    quiet_quota = 0
-    if flagged and quiet:
-        quiet_quota = min(max(1, limit // 5), len(quiet))
-
-    for task in flagged[: max(limit - quiet_quota, 0)]:
-        task_id = str(task.get("task_id") or "")
-        if task_id and task_id not in used_ids:
-            selected.append(task)
-            used_ids.add(task_id)
-
-    for task in quiet[:quiet_quota]:
-        task_id = str(task.get("task_id") or "")
-        if task_id and task_id not in used_ids:
-            selected.append(task)
-            used_ids.add(task_id)
-
-    if len(selected) < limit:
-        for task in flagged[len(selected) :] + quiet[quiet_quota:]:
-            task_id = str(task.get("task_id") or "")
-            if task_id and task_id not in used_ids:
-                selected.append(task)
-                used_ids.add(task_id)
-            if len(selected) >= limit:
-                break
-
-    selected.sort(key=_sort_key, reverse=True)
-    return selected[:limit]
+    triage_result = await ctx.step("triage_tasks", _triage, step_kind="review")
+    selected_ids = list(triage_result.get("selected_task_ids") or [])
+    ctx.log(
+        "self_improve_triage_completed",
+        candidate_count=len(tasks),
+        selected_count=len(selected_ids),
+    )
+    return [str(tid) for tid in selected_ids[:limit]]
 
 
 def _looks_insufficient(task: dict[str, Any]) -> bool:
@@ -783,16 +782,13 @@ async def _collect_evidence_packs(
                 "self_improve_task_reconstructed",
                 task_id=evidence["task_id"],
                 thread_key=evidence["thread_key"],
-                candidate_priority=_candidate_priority(evidence).get("candidate_priority", 0),
             )
 
-    selected = _select_review_batch(tasks, limit=candidate_limit)
     ctx.log(
-        "self_improve_review_batch_selected",
-        candidate_count=len(tasks),
-        selected_count=len(selected),
+        "self_improve_tasks_reconstructed",
+        task_count=len(tasks),
     )
-    return selected
+    return tasks
 
 
 async def _run_batch_review_pass(
@@ -800,9 +796,21 @@ async def _run_batch_review_pass(
     *,
     evidence_packs: list[dict[str, Any]],
     max_selected_fixes: int,
+    recent_fix_titles: list[str] | None = None,
 ) -> dict[str, Any]:
     if not evidence_packs:
         return _empty_review(0)
+
+    recent_titles_block = ""
+    if recent_fix_titles:
+        recent_titles_block = textwrap.dedent(
+            f"""
+            Recently attempted fix titles (skip or justify re-attempting):
+            ```json
+            {json.dumps(recent_fix_titles, indent=2)}
+            ```
+            """
+        ).strip()
 
     prompt = textwrap.dedent(
         f"""
@@ -823,6 +831,10 @@ async def _run_batch_review_pass(
         `tool_calling_quality`, `subagent_usage_quality`, `communication_quality`.
         Do NOT use alternate names like task_understanding, efficiency, user_satisfaction,
         instruction_following, or any other synonym. Use exactly the keys above.
+
+        Interpret follow-up messages semantically. Read the actual text of each
+        follow-up and determine whether it indicates satisfaction, correction,
+        a new request, or frustration. Do not rely on keyword matching.
 
         Some tasks may be genuinely good. If a task was completed correctly with no
         negative follow-up signals, grade it above-bar. Do not manufacture problems
@@ -845,6 +857,8 @@ async def _run_batch_review_pass(
         The `target_surface` must name a real file in the Centaur codebase.
         Vague recommendations are not acceptable.
 
+        {recent_titles_block}
+
         Evidence pack batch:
         ```json
         {json.dumps({"max_selected_fixes": max_selected_fixes, "tasks": evidence_packs}, indent=2)}
@@ -864,7 +878,12 @@ async def _run_batch_review_pass(
                 "stage": "batch_review",
             },
         )
-        return _extract_json_payload(str(result.get("result_text") or ""))
+        return _extract_required_json_payload(
+            str(result.get("result_text") or ""),
+            stage="batch_review",
+            preferred_keys=REVIEW_PREFERRED_KEYS,
+            required_keys=REVIEW_REQUIRED_KEYS,
+        )
 
     review = await ctx.step("batch_review", _review, step_kind="review")
     return _normalize_review(review, tasks_reviewed=len(evidence_packs))
@@ -918,7 +937,12 @@ async def _run_learning_synthesis_pass(
                 "stage": "learning_synthesis",
             },
         )
-        return _extract_json_payload(str(result.get("result_text") or ""))
+        return _extract_required_json_payload(
+            str(result.get("result_text") or ""),
+            stage="learning_synthesis",
+            preferred_keys=SYNTHESIS_PREFERRED_KEYS,
+            required_keys=SYNTHESIS_REQUIRED_KEYS,
+        )
 
     synthesis = await ctx.step("learning_synthesis", _synthesize, step_kind="review")
     if not isinstance(synthesis, dict):
@@ -1014,9 +1038,9 @@ def _build_scorecard_markdown(
         {opened_prs}
         - Child workflow errors:
         {failed_children}
-        - PRs merged: {notifier_stats.get('merged_prs', 0)}
-        - PRs deployed: {notifier_stats.get('deployed_prs', 0)}
-        - Source threads notified: {notifier_stats.get('source_threads_notified', 0)}
+        - PRs merged in last 24h: {notifier_stats.get('merged_prs', 0)}
+        - PRs deployed in last 24h: {notifier_stats.get('deployed_prs', 0)}
+        - Source threads notified in last 24h: {notifier_stats.get('source_threads_notified', 0)}
         """
     ).strip()
 
@@ -1120,21 +1144,94 @@ async def _load_recent_fix_titles(ctx: WorkflowContext) -> list[str]:
     return sorted(titles)
 
 
-def _dedup_selected_fixes(
-    fixes: list[dict[str, Any]],
+async def _run_reconcile_fixes_pass(
+    ctx: WorkflowContext,
     *,
-    recent_titles: set[str],
+    gap_fixes: list[dict[str, Any]],
+    build_fixes: list[dict[str, Any]],
+    recent_titles: list[str],
+    max_fixes: int,
 ) -> list[dict[str, Any]]:
-    deduped: list[dict[str, Any]] = []
-    seen_titles = set(recent_titles)
+    all_candidates = gap_fixes + build_fixes
+    if not all_candidates:
+        return []
+    if len(all_candidates) == 1 and not recent_titles:
+        return all_candidates
+
+    prompt = textwrap.dedent(
+        f"""
+        You are reconciling proposed self-improvement fixes from two independent
+        analysis passes (gap-analysis and learning-synthesis) before spawning
+        child workflows to implement them.
+
+        Your job:
+        1. Merge semantically duplicate fixes. Two fixes that target the same
+           file for the same root cause are duplicates even if worded differently.
+        2. Drop any fix that substantially overlaps with a recently attempted fix
+           (see recent_titles below). Only keep it if you can articulate why the
+           prior attempt was insufficient.
+        3. Rank the surviving fixes by expected user-value impact.
+        4. Return at most {max_fixes} fixes.
+
+        Each fix in the output must include ALL of these fields:
+        `title`, `fix_type`, `target_surface`, `what_to_change`,
+        `dominant_failure_mode`, `priority`, `why_now`, `evidence_quotes`,
+        `source_threads`, `representative_tasks`.
+
+        If a field was present in the input fix, preserve it. If you merge two
+        fixes, combine their evidence and source threads.
+
+        Return JSON only with exactly this top-level key:
+        - `reconciled_fixes`: array of fix objects (at most {max_fixes}).
+
+        Recently attempted fix titles (skip these unless clearly insufficient):
+        ```json
+        {json.dumps(recent_titles, indent=2)}
+        ```
+
+        Candidate fixes from gap-analysis:
+        ```json
+        {json.dumps(gap_fixes, indent=2)}
+        ```
+
+        Candidate fixes from learning-synthesis:
+        ```json
+        {json.dumps(build_fixes, indent=2)}
+        ```
+        """
+    ).strip()
+
+    async def _reconcile() -> dict[str, Any]:
+        result = await ctx.agent_turn(
+            prompt,
+            thread_key=f"workflow:{ctx.run_id}:reconcile-fixes",
+            delivery=Delivery.dev(),
+            prompt_selector="eng",
+            metadata={
+                "source": WORKFLOW_NAME,
+                "mode": "parent",
+                "stage": "reconcile_fixes",
+            },
+        )
+        return _extract_required_json_payload(
+            str(result.get("result_text") or ""),
+            stage="reconcile_fixes",
+            preferred_keys=RECONCILE_PREFERRED_KEYS,
+            required_keys=RECONCILE_REQUIRED_KEYS,
+        )
+
+    reconciled = await ctx.step("reconcile_fixes", _reconcile, step_kind="review")
+    fixes = list(reconciled.get("reconciled_fixes") or [])
     for fix in fixes:
-        title = str(fix.get("title") or "").strip().lower()
-        if title and title in seen_titles:
-            continue
-        if title:
-            seen_titles.add(title)
-        deduped.append(fix)
-    return deduped
+        if isinstance(fix, dict):
+            fix["source_threads"] = _normalize_source_threads(fix.get("source_threads"))
+    ctx.log(
+        "self_improve_reconcile_completed",
+        input_count=len(all_candidates),
+        output_count=len(fixes),
+        recent_titles_count=len(recent_titles),
+    )
+    return [fix for fix in fixes if isinstance(fix, dict)][:max_fixes]
 
 
 async def _load_recent_notifier_stats(ctx: WorkflowContext) -> dict[str, int]:
@@ -1170,8 +1267,25 @@ async def _run_parent(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             candidate_limit=max(inp.candidate_limit, 1),
         )
 
-    evidence_packs = await ctx.step("collect_tasks", _collect, step_kind="gather")
-    ctx.log("self_improve_batch_collected", tasks_reviewed=len(evidence_packs))
+    all_tasks = await ctx.step("collect_tasks", _collect, step_kind="gather")
+    ctx.log("self_improve_batch_collected", tasks_total=len(all_tasks))
+
+    selected_ids = await _run_triage_pass(
+        ctx,
+        tasks=all_tasks,
+        limit=max(inp.candidate_limit, 1),
+    )
+    id_set = set(selected_ids)
+    evidence_packs = [
+        task for task in all_tasks if str(task.get("task_id") or "") in id_set
+    ]
+    if not evidence_packs:
+        evidence_packs = all_tasks[:max(inp.candidate_limit, 1)]
+    ctx.log(
+        "self_improve_triage_applied",
+        total_tasks=len(all_tasks),
+        selected_tasks=len(evidence_packs),
+    )
 
     review = await _run_batch_review_pass(
         ctx,
@@ -1193,13 +1307,11 @@ async def _run_parent(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     async def _load_dedup_titles() -> list[str]:
         return await _load_recent_fix_titles(ctx)
 
-    # Workflow checkpoints are stored as JSON, so this step returns a list and
-    # the parent rehydrates set semantics in memory for fast membership checks.
-    recent_titles = set(
+    recent_titles = list(
         await ctx.step("load_recent_fix_titles", _load_dedup_titles, step_kind="gather")
     )
 
-    gap_fixes = list(review.get("selected_fixes") or [])[: max(inp.max_selected_fixes, 1)]
+    gap_fixes = list(review.get("selected_fixes") or [])
     build_fixes = []
     for build in list(synthesis.get("selected_builds") or []):
         if not isinstance(build, dict):
@@ -1218,14 +1330,13 @@ async def _run_parent(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             "new_capability_justification": build.get("what_should_exist", ""),
         })
 
-    all_fixes = gap_fixes + build_fixes
-    selected_fixes = _dedup_selected_fixes(all_fixes, recent_titles=recent_titles)
-    if len(selected_fixes) < len(all_fixes):
-        ctx.log(
-            "self_improve_dedup_applied",
-            original_count=len(all_fixes),
-            deduped_count=len(selected_fixes),
-        )
+    selected_fixes = await _run_reconcile_fixes_pass(
+        ctx,
+        gap_fixes=gap_fixes,
+        build_fixes=build_fixes,
+        recent_titles=recent_titles,
+        max_fixes=max(inp.max_selected_fixes, 1),
+    )
 
     children = await _start_fix_children(ctx, selected_fixes=selected_fixes)
     child_results = await _wait_for_fix_children(ctx, children)
@@ -1267,6 +1378,8 @@ async def _run_phase(
     phase_name: str,
     agent_thread_key: str,
     prompt: str,
+    preferred_keys: tuple[str, ...] = (),
+    required_keys: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     async def _phase() -> dict[str, Any]:
         result = await ctx.agent_turn(
@@ -1280,7 +1393,12 @@ async def _run_phase(
                 "phase": phase_name,
             },
         )
-        return _extract_json_payload(str(result.get("result_text") or ""))
+        return _extract_required_json_payload(
+            str(result.get("result_text") or ""),
+            stage=phase_name,
+            preferred_keys=preferred_keys,
+            required_keys=required_keys,
+        )
 
     return await ctx.step(phase_name, _phase, step_kind="phase")
 
@@ -1322,6 +1440,8 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         phase_name="research",
         agent_thread_key=agent_thread_key,
         prompt=research_prompt,
+        preferred_keys=RESEARCH_PREFERRED_KEYS,
+        required_keys=RESEARCH_REQUIRED_KEYS,
     )
     ctx.log("self_improve_fix_phase", phase="research", fix_type=fix_packet.get("fix_type"))
 
@@ -1349,6 +1469,8 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         phase_name="plan",
         agent_thread_key=agent_thread_key,
         prompt=plan_prompt,
+        preferred_keys=PLAN_PREFERRED_KEYS,
+        required_keys=PLAN_REQUIRED_KEYS,
     )
     ctx.log("self_improve_fix_phase", phase="plan", fix_type=fix_packet.get("fix_type"))
 
@@ -1381,6 +1503,8 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         phase_name="implement",
         agent_thread_key=agent_thread_key,
         prompt=implement_prompt,
+        preferred_keys=IMPLEMENT_PREFERRED_KEYS,
+        required_keys=IMPLEMENT_REQUIRED_KEYS,
     )
     ctx.log("self_improve_fix_phase", phase="implement", fix_type=fix_packet.get("fix_type"))
 
@@ -1408,6 +1532,8 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         phase_name="validate",
         agent_thread_key=agent_thread_key,
         prompt=validate_prompt,
+        preferred_keys=VALIDATE_PREFERRED_KEYS,
+        required_keys=VALIDATE_REQUIRED_KEYS,
     )
     ctx.log("self_improve_fix_phase", phase="validate", fix_type=fix_packet.get("fix_type"))
 
@@ -1449,6 +1575,8 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         phase_name="open_pr",
         agent_thread_key=agent_thread_key,
         prompt=open_pr_prompt,
+        preferred_keys=OPEN_PR_PREFERRED_KEYS,
+        required_keys=OPEN_PR_REQUIRED_KEYS,
     )
     ctx.log(
         "self_improve_fix_phase",

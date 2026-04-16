@@ -11,6 +11,7 @@ from typing import Any
 
 from api.runtime_control import ControlPlaneError, decode_jsonb
 from api.workflow_engine import Delivery, WorkflowContext
+from workflows.json_payloads import extract_json_payload
 
 WORKFLOW_NAME = "self_improve_deploy_notifier"
 NOTIFIED_REPLY_WINDOW_HOURS = 24 * 180
@@ -42,22 +43,6 @@ def _safe_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
-
-
-def _extract_json_payload(text: str) -> dict[str, Any]:
-    decoder = json.JSONDecoder()
-    best: dict[str, Any] | None = None
-    for index, char in enumerate(text):
-        if char not in "[{":
-            continue
-        try:
-            payload, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            if best is None or len(payload) > len(best):
-                best = payload
-    return best or {"error": "agent response did not contain a JSON object", "raw_snippet": text[:300]}
 
 
 def _normalize_notification(entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -199,7 +184,11 @@ async def _draft_thread_replies(
                             if isinstance(m, dict) and str(m.get("text") or "").strip()
                         ]
                 except Exception:
-                    pass
+                    ctx.log(
+                        "self_improve_notifier_thread_context_fetch_failed",
+                        channel=channel,
+                        thread_ts=thread_ts,
+                    )
             result.append(enriched_entry)
         return result
 
@@ -270,9 +259,17 @@ async def _draft_thread_replies(
                 "stage": "draft_thread_replies",
             },
         )
-        return _extract_json_payload(str(result.get("result_text") or ""))
+        return extract_json_payload(
+            str(result.get("result_text") or ""),
+            preferred_keys=("replies",),
+        )
 
     drafted = await ctx.step("draft_thread_replies", _draft, step_kind="review")
+    if "replies" not in drafted:
+        ctx.log(
+            "self_improve_notifier_draft_parse_mismatch",
+            payload_keys=sorted(drafted.keys()),
+        )
     return _normalize_reply_drafts(drafted)
 
 
@@ -349,9 +346,17 @@ async def _humanize_thread_replies(
                 "stage": "humanize_thread_replies",
             },
         )
-        return _extract_json_payload(str(result.get("result_text") or ""))
+        return extract_json_payload(
+            str(result.get("result_text") or ""),
+            preferred_keys=("replies",),
+        )
 
     humanized = await ctx.step("humanize_thread_replies", _humanize, step_kind="review")
+    if "replies" not in humanized:
+        ctx.log(
+            "self_improve_notifier_humanize_parse_mismatch",
+            payload_keys=sorted(humanized.keys()),
+        )
     return _normalize_reply_drafts(humanized)
 
 

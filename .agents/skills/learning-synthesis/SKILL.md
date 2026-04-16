@@ -76,7 +76,11 @@ Look for:
 
 Use the same evidence packs as gap-analysis. Do not request additional data.
 
+Follow-up messages are provided as raw text. Interpret them semantically to understand what users actually needed, not just whether the task "passed" or "failed."
+
 Focus on **patterns across sessions**, not individual task quality. A single instance is an anecdote; 2+ instances of the same demand pattern are a signal.
+
+A separate reconciliation step will deduplicate your selected builds against gap-analysis fixes after this pass. Focus on finding the best opportunities; the workflow handles cross-pass merging.
 
 ## Output Contract
 
