@@ -70,38 +70,19 @@ SYNTHESIS_PREFERRED_KEYS = (
     "selected_builds",
 )
 SYNTHESIS_REQUIRED_KEYS = ("opportunities", "selected_builds")
-OPEN_PR_PREFERRED_KEYS = (
+EXECUTE_PREFERRED_KEYS = (
     "branch",
     "commit",
     "pr_number",
     "pr_url",
     "pr_title",
     "verified_handoff",
+    "research",
+    "plan",
+    "changed_files",
+    "validation",
 )
-OPEN_PR_REQUIRED_KEYS = ("branch", "pr_number", "pr_url")
-RESEARCH_PREFERRED_KEYS = (
-    "root_cause",
-    "fix_type",
-    "affected_files",
-    "acceptance_criteria",
-    "verification_plan",
-    "risks",
-    "confidence",
-    "new_capability_justification",
-)
-RESEARCH_REQUIRED_KEYS = (
-    "root_cause",
-    "fix_type",
-    "affected_files",
-    "acceptance_criteria",
-    "verification_plan",
-)
-PLAN_PREFERRED_KEYS = ("files", "plan", "validation", "pr_title", "expected_impact")
-PLAN_REQUIRED_KEYS = ("files", "plan", "validation", "pr_title")
-IMPLEMENT_PREFERRED_KEYS = ("changed_files", "summary")
-IMPLEMENT_REQUIRED_KEYS = ("changed_files", "summary")
-VALIDATE_PREFERRED_KEYS = ("checks", "summary", "regression_check")
-VALIDATE_REQUIRED_KEYS = ("checks", "summary")
+EXECUTE_REQUIRED_KEYS = ("branch", "pr_number", "pr_url")
 
 
 @dataclass
@@ -1019,12 +1000,12 @@ def _build_scorecard_markdown(
     opened_prs = "\n".join(
         f"- [#{item['pr_number']}]({item['pr_url']}) {item.get('title', '').strip()}"
         for item in child_results
-        if item.get("pr_number") and item.get("pr_url")
+        if item.get("pr_number") and item.get("pr_url") and not item.get("error")
     ) or "- none opened"
     failed_children = "\n".join(
         f"- {item.get('title') or item.get('child_run_id') or 'unknown child'}: {item.get('error')}"
         for item in child_results
-        if item.get("error")
+        if item.get("error") and not (item.get("pr_number") and item.get("pr_url"))
     ) or "- none"
     return textwrap.dedent(
         f"""
@@ -1109,28 +1090,63 @@ async def _wait_for_fix_children(
     results: list[dict[str, Any]] = []
     for index, child in enumerate(children, start=1):
         run_id = str(child.get("run_id") or "")
-        completed = await ctx.wait_for_workflow(
-            f"selected_fix_{index}.result",
-            run_id=run_id,
-            timeout=dt.timedelta(hours=CHILD_TIMEOUT_HOURS),
-        )
+        try:
+            completed = await ctx.wait_for_workflow(
+                f"selected_fix_{index}.result",
+                run_id=run_id,
+                timeout=dt.timedelta(hours=CHILD_TIMEOUT_HOURS),
+            )
+        except TimeoutError:
+            ctx.log(
+                "self_improve_fix_child_timeout",
+                child_run_id=run_id,
+                timeout_hours=CHILD_TIMEOUT_HOURS,
+            )
+            results.append({
+                "child_run_id": run_id,
+                "error": f"child workflow timed out after {CHILD_TIMEOUT_HOURS}h",
+            })
+            continue
+        except ControlPlaneError as exc:
+            ctx.log(
+                "self_improve_fix_child_wait_error",
+                child_run_id=run_id,
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+            results.append({
+                "child_run_id": run_id,
+                "error": f"child wait failed: {exc.message}",
+            })
+            continue
+
+        status = completed.get("status") if isinstance(completed, dict) else None
+        error_text = completed.get("error_text") if isinstance(completed, dict) else None
         output_json = completed.get("output_json") if isinstance(completed, dict) else {}
         if isinstance(output_json, str):
             try:
                 output_json = json.loads(output_json)
             except (json.JSONDecodeError, TypeError):
                 output_json = {"error": "malformed child output", "raw": output_json[:500]}
-        if isinstance(output_json, dict):
-            results.append(output_json)
-        else:
-            results.append({
+        if not isinstance(output_json, dict):
+            output_json = {}
+
+        if status in {"failed", "cancelled"} and not output_json.get("pr_url"):
+            output_json = dict(output_json)
+            output_json.setdefault("child_run_id", run_id)
+            output_json["error"] = error_text or output_json.get("error") or f"child status: {status}"
+
+        if not output_json:
+            output_json = {
                 "child_run_id": run_id,
-                "error": "child output was not a JSON object",
-            })
+                "error": error_text or "child output was not a JSON object",
+            }
+
+        results.append(output_json)
         ctx.log(
             "self_improve_fix_child_completed",
             child_run_id=run_id,
-            status=completed.get("status") if isinstance(completed, dict) else None,
+            status=status,
         )
     return results
 
@@ -1392,26 +1408,31 @@ async def _run_phase(
     preferred_keys: tuple[str, ...] = (),
     required_keys: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    async def _phase() -> dict[str, Any]:
-        result = await ctx.agent_turn(
-            prompt,
-            thread_key=agent_thread_key,
-            delivery=Delivery.dev(),
-            prompt_selector="eng",
-            metadata={
-                "source": WORKFLOW_NAME,
-                "mode": "fix_child",
-                "phase": phase_name,
-            },
-        )
+    # Use a phase-specific message_id so multiple agent_turn calls on the
+    # same thread_key don't collide on the idempotency check in append_message.
+    phase_message_id = f"wf:{ctx.run_id}:{phase_name}:message"
+    phase_result = await ctx.agent_turn(
+        prompt,
+        thread_key=agent_thread_key,
+        message_id=phase_message_id,
+        delivery=Delivery.dev(),
+        prompt_selector="eng",
+        metadata={
+            "source": WORKFLOW_NAME,
+            "mode": "fix_child",
+            "phase": phase_name,
+        },
+    )
+
+    async def _parse_phase() -> dict[str, Any]:
         return _extract_required_json_payload(
-            str(result.get("result_text") or ""),
+            str(phase_result.get("result_text") or ""),
             stage=phase_name,
             preferred_keys=preferred_keys,
             required_keys=required_keys,
         )
 
-    return await ctx.step(phase_name, _phase, step_kind="phase")
+    return await ctx.step(phase_name, _parse_phase, step_kind="phase")
 
 
 async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
@@ -1424,192 +1445,95 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         )
 
     fix_packet["source_threads"] = _normalize_source_threads(fix_packet.get("source_threads"))
-    agent_thread_key = f"workflow:{ctx.run_id}:fix"
     metadata_block = _make_pr_metadata_block(ctx, fix_packet)
+    fix_type = fix_packet.get("fix_type", "unknown")
 
-    research_prompt = textwrap.dedent(
+    # Run research → plan → implement → validate → open_pr as one agent turn.
+    # This is a single conversation on one sandbox, so git branches, edits, and
+    # validations all share filesystem state through PR creation.
+    execute_prompt = textwrap.dedent(
         f"""
         Load the `improve-gap-task` skill first.
 
-        This is the research phase for one selected self-improvement fix.
-        Keep scope narrow.
+        You are implementing one selected self-improvement fix end-to-end in one
+        session. Work through all five phases in order, using tool calls between
+        phases so the filesystem and git state stay consistent:
+
+        1. research — understand the fix and its surface area
+        2. plan — produce a concrete plan for one focused PR
+        3. implement — apply the change in the writable clone
+        4. validate — run the smallest relevant checks
+        5. open PR — commit, push, and open the PR
+
+        Use `git-branch paradigmxyz/centaur` at the start because the mounted
+        repo is read-only. Keep the change tightly scoped to one focused PR.
+
         If the fix type is `new_skill` or `new_persona`, include an explicit
-        justification for why this is a missing-capability problem instead of a
-        code, workflow, prompt, or tool fix.
-        Use `git-branch paradigmxyz/centaur` before editing because the mounted
-        repo is read-only.
-        Return JSON only.
+        justification for why this is a missing-capability problem rather than
+        a code, workflow, prompt, or tool fix.
 
-        Fix packet:
-        ```json
-        {json.dumps(fix_packet, indent=2, ensure_ascii=False)}
-        ```
-        """
-    ).strip()
-    research = await _run_phase(
-        ctx,
-        phase_name="research",
-        agent_thread_key=agent_thread_key,
-        prompt=research_prompt,
-        preferred_keys=RESEARCH_PREFERRED_KEYS,
-        required_keys=RESEARCH_REQUIRED_KEYS,
-    )
-    ctx.log("self_improve_fix_phase", phase="research", fix_type=fix_packet.get("fix_type"))
-
-    plan_prompt = textwrap.dedent(
-        f"""
-        Load the `improve-gap-task` skill first.
-
-        This is the plan phase for the same selected self-improvement fix.
-        Keep the plan tightly scoped to one focused PR.
-        Return JSON only.
-
-        Fix packet:
-        ```json
-        {json.dumps(fix_packet, indent=2, ensure_ascii=False)}
-        ```
-
-        Research output:
-        ```json
-        {json.dumps(research, indent=2, ensure_ascii=False)}
-        ```
-        """
-    ).strip()
-    plan = await _run_phase(
-        ctx,
-        phase_name="plan",
-        agent_thread_key=agent_thread_key,
-        prompt=plan_prompt,
-        preferred_keys=PLAN_PREFERRED_KEYS,
-        required_keys=PLAN_REQUIRED_KEYS,
-    )
-    ctx.log("self_improve_fix_phase", phase="plan", fix_type=fix_packet.get("fix_type"))
-
-    implement_prompt = textwrap.dedent(
-        f"""
-        Load the `improve-gap-task` skill first.
-
-        This is the implement phase.
-        Apply the planned change in the writable clone and keep the change tightly focused.
-        Return JSON only.
-
-        Fix packet:
-        ```json
-        {json.dumps(fix_packet, indent=2, ensure_ascii=False)}
-        ```
-
-        Research output:
-        ```json
-        {json.dumps(research, indent=2, ensure_ascii=False)}
-        ```
-
-        Plan output:
-        ```json
-        {json.dumps(plan, indent=2, ensure_ascii=False)}
-        ```
-        """
-    ).strip()
-    implementation = await _run_phase(
-        ctx,
-        phase_name="implement",
-        agent_thread_key=agent_thread_key,
-        prompt=implement_prompt,
-        preferred_keys=IMPLEMENT_PREFERRED_KEYS,
-        required_keys=IMPLEMENT_REQUIRED_KEYS,
-    )
-    ctx.log("self_improve_fix_phase", phase="implement", fix_type=fix_packet.get("fix_type"))
-
-    validate_prompt = textwrap.dedent(
-        f"""
-        Load the `improve-gap-task` skill first.
-
-        This is the validate phase.
-        Run the smallest relevant checks for this focused change.
-        Return JSON only.
-
-        Plan output:
-        ```json
-        {json.dumps(plan, indent=2, ensure_ascii=False)}
-        ```
-
-        Implement output:
-        ```json
-        {json.dumps(implementation, indent=2, ensure_ascii=False)}
-        ```
-        """
-    ).strip()
-    validation = await _run_phase(
-        ctx,
-        phase_name="validate",
-        agent_thread_key=agent_thread_key,
-        prompt=validate_prompt,
-        preferred_keys=VALIDATE_PREFERRED_KEYS,
-        required_keys=VALIDATE_REQUIRED_KEYS,
-    )
-    ctx.log("self_improve_fix_phase", phase="validate", fix_type=fix_packet.get("fix_type"))
-
-    open_pr_prompt = textwrap.dedent(
-        f"""
-        Load the `improve-gap-task` skill first.
-
-        This is the open PR phase.
-        Commit the focused change, push the branch, and open one focused PR.
-        The PR must include labels `self-improve` and `fix-type:{fix_packet.get('fix_type', 'unknown')}`.
+        The PR must include labels `self-improve` and `fix-type:{fix_type}`.
         The PR body must include this hidden metadata block exactly:
 
         {metadata_block}
 
-        After opening the PR, verify with `gh pr view` that the labels and metadata block are
-        present. Fix the PR if verification fails.
+        After opening the PR, verify with `gh pr view` that the labels and
+        metadata block are present. Fix the PR if verification fails.
 
-        Return JSON only with:
-        - branch
-        - commit
-        - pr_number
-        - pr_url
-        - pr_title
-        - verified_handoff
+        Return JSON only with these top-level keys:
+        - `research`: object with root_cause, fix_type, affected_files,
+          acceptance_criteria, verification_plan, risks, confidence
+        - `plan`: object with files, plan, validation, pr_title, expected_impact
+        - `changed_files`: array of edited file paths
+        - `validation`: object with checks (array of command+status), summary,
+          regression_check
+        - `branch`: the branch name you pushed
+        - `commit`: the commit sha
+        - `pr_number`: the created PR number
+        - `pr_url`: the created PR URL
+        - `pr_title`: the final PR title
+        - `verified_handoff`: true if `gh pr view` confirmed labels + metadata
 
-        Plan output:
+        Fix packet:
         ```json
-        {json.dumps(plan, indent=2, ensure_ascii=False)}
-        ```
-
-        Validate output:
-        ```json
-        {json.dumps(validation, indent=2, ensure_ascii=False)}
+        {json.dumps(fix_packet, indent=2, ensure_ascii=False)}
         ```
         """
     ).strip()
-    pr = await _run_phase(
+
+    execute_result = await _run_phase(
         ctx,
-        phase_name="open_pr",
-        agent_thread_key=agent_thread_key,
-        prompt=open_pr_prompt,
-        preferred_keys=OPEN_PR_PREFERRED_KEYS,
-        required_keys=OPEN_PR_REQUIRED_KEYS,
+        phase_name="execute_fix",
+        agent_thread_key=f"workflow:{ctx.run_id}:fix",
+        prompt=execute_prompt,
+        preferred_keys=EXECUTE_PREFERRED_KEYS,
+        required_keys=EXECUTE_REQUIRED_KEYS,
     )
     ctx.log(
         "self_improve_fix_phase",
-        phase="open_pr",
-        fix_type=fix_packet.get("fix_type"),
-        pr_number=pr.get("pr_number"),
+        phase="execute_fix",
+        fix_type=fix_type,
+        pr_number=execute_result.get("pr_number"),
     )
 
+    plan_out = execute_result.get("plan") if isinstance(execute_result.get("plan"), dict) else {}
     return {
         "mode": "fix_child",
         "title": fix_packet.get("title"),
-        "fix_type": fix_packet.get("fix_type"),
+        "fix_type": fix_type,
         "source_threads": fix_packet.get("source_threads", []),
-        "research": research,
-        "plan": plan,
-        "implementation": implementation,
-        "validation": validation,
-        "pr_number": pr.get("pr_number"),
-        "pr_url": pr.get("pr_url"),
-        "branch": pr.get("branch"),
-        "title_draft": pr.get("pr_title") or plan.get("pr_title"),
-        "verified_handoff": bool(pr.get("verified_handoff", False)),
+        "research": execute_result.get("research"),
+        "plan": plan_out,
+        "implementation": {
+            "changed_files": execute_result.get("changed_files", []),
+            "summary": execute_result.get("pr_title", ""),
+        },
+        "validation": execute_result.get("validation"),
+        "pr_number": execute_result.get("pr_number"),
+        "pr_url": execute_result.get("pr_url"),
+        "branch": execute_result.get("branch"),
+        "title_draft": execute_result.get("pr_title") or plan_out.get("pr_title"),
+        "verified_handoff": bool(execute_result.get("verified_handoff", False)),
     }
 
 
