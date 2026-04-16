@@ -33,8 +33,6 @@ NOTIFIER_STATS_WINDOW_HOURS = 24
 CHILD_TIMEOUT_HOURS = 2
 DEDUP_WINDOW_HOURS = 72
 MAX_DELIVERY_TEXT_CHARS = 2000
-PR_METADATA_START = "<!-- self_improve_metadata_v1:start -->"
-PR_METADATA_END = "<!-- self_improve_metadata_v1:end -->"
 
 TRIAGE_PREFERRED_KEYS = ("selected_task_ids", "task_assessments")
 TRIAGE_REQUIRED_KEYS = ("selected_task_ids",)
@@ -1036,22 +1034,6 @@ def _build_scorecard_markdown(
     ).strip()
 
 
-def _make_pr_metadata_block(ctx: WorkflowContext, fix_packet: dict[str, Any]) -> str:
-    payload = {
-        "parent_run_id": fix_packet.get("parent_run_id"),
-        "child_run_id": ctx.run_id,
-        "fix_type": fix_packet.get("fix_type"),
-        "source_threads": _normalize_source_threads(fix_packet.get("source_threads")),
-        "summary": fix_packet.get("title") or fix_packet.get("why_now") or "Self-improvement fix",
-    }
-    return "\n".join(
-        [
-            PR_METADATA_START,
-            json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
-            PR_METADATA_END,
-        ]
-    )
-
 
 async def _start_fix_children(
     ctx: WorkflowContext,
@@ -1445,7 +1427,6 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         )
 
     fix_packet["source_threads"] = _normalize_source_threads(fix_packet.get("source_threads"))
-    metadata_block = _make_pr_metadata_block(ctx, fix_packet)
     fix_type = fix_packet.get("fix_type", "unknown")
 
     # Run research → plan → implement → validate → open_pr as one agent turn.
@@ -1473,9 +1454,15 @@ async def _run_fix_child(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         a code, workflow, prompt, or tool fix.
 
         The PR must include labels `self-improve` and `fix-type:{fix_type}`.
-        The PR body must include this hidden metadata block exactly:
 
-        {metadata_block}
+        Write the PR like a senior engineer. The body must have:
+        Summary (1-3 bullets), Problem (root cause in system terms),
+        Fix (what changed and why), Verification (checks run).
+
+        CRITICAL privacy rule: the PR title, body, and commits must NEVER
+        contain user names, Slack handles, thread URLs, task IDs, or any
+        content from specific user conversations. Describe system behavior
+        patterns, not individual sessions.
 
         After opening the PR, verify with `gh pr view` that the labels and
         metadata block are present. Fix the PR if verification fails.

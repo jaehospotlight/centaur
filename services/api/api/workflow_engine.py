@@ -532,7 +532,7 @@ class WorkflowContext:
         """Create a child workflow run and checkpoint its run metadata."""
 
         async def _start() -> dict[str, Any]:
-            return await create_workflow_run(
+            response = await create_workflow_run(
                 self._pool,
                 workflow_name=workflow_name,
                 run_input=run_input,
@@ -540,6 +540,13 @@ class WorkflowContext:
                 eager_start=eager_start,
                 parent_run_id=self.run_id,
             )
+            # Strip execution_id so ctx.step does not auto-link the parent's
+            # child_workflow_start checkpoint to the child's execution. The
+            # child owns that execution_id in its own checkpoint namespace;
+            # duplicating it here violates the global unique index on
+            # workflow_checkpoints.execution_id.
+            response.pop("execution_id", None)
+            return response
 
         return await self.step(
             name,

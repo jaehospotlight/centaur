@@ -111,11 +111,51 @@ If the selected fix type is `new_skill` or `new_persona`, include an explicit ju
 
 Do not hand-wave this. Make the justification concrete and tied to evidence from the reviewed tasks.
 
-## PR Metadata Block
+## PR Quality
 
-The PR body must include the hidden metadata block provided by the workflow.
+Write the PR like a senior engineer explaining a thoughtful improvement to
+the codebase. The PR title and body are the public face of the self-improvement
+loop — they should be clear, well-reasoned, and useful to a reviewer.
 
-Do not edit the markers. Preserve the JSON payload exactly.
+### PR body structure
+
+Use this structure:
+
+```
+## Summary
+1-3 bullet points: what changed and why.
+
+## Problem
+Explain the failure pattern or capability gap that motivated this fix.
+Describe the root cause concretely — cite the specific code, prompt, or
+workflow behavior that was wrong or missing. Do NOT describe individual
+user sessions, tasks, thread contents, or conversations.
+
+## Fix
+Explain the change and why it addresses the root cause. A reviewer who
+has never seen the gap-analysis output should understand the reasoning.
+
+## Verification
+What checks were run. Include command output summaries where useful.
+```
+
+### Privacy rules (critical)
+
+The PR body, title, and commit messages must NEVER contain:
+
+- User names, user IDs, Slack handles, or email addresses
+- Specific Slack thread content, quotes from user messages, or thread URLs
+- Task IDs, thread keys, or any identifier that maps to a specific user session
+- Company names, project names, or internal jargon from user conversations
+
+Frame everything in terms of the **system behavior** that was wrong, not the
+**user interaction** where it was observed. For example:
+
+- Good: "The agent fails to use handoff when approaching the context limit"
+- Bad: "User @alice asked for a robotics market map and the agent hit the context limit"
+
+If you need to cite evidence, describe the **pattern** ("3 of 5 reviewed tasks
+hit the context limit without using handoff") not the **specific sessions**.
 
 ## PR Labels
 
