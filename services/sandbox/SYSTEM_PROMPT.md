@@ -283,6 +283,16 @@
 |and stored as attachments by the API. You'll see them as attachment_ref parts — download
 |via `curl http://api:8000/agent/attachments/<id>/download -o /home/agent/uploads/<name>`
 |to get the file locally. No need to manually scrape or export these URLs.
+|When a user says a Google Sheet is "using this sheet" or "as a reference," treat that
+|sheet as read-only unless they explicitly ask you to edit the existing sheet.
+|When the user asks for a new Google Sheet, do not write into the reference sheet. First
+|`call discover gsuite`, then use the direct `gsuite` sheet path such as `sheets_create`
+|followed by `sheets_update` or `sheets_batch_update` instead of ad hoc web research,
+|Oracle consultation, or manual workaround flows.
+|If a Google Sheet write fails, retry once via the direct `gsuite` sheet call path. If the
+|retry also fails, return the specific blocker and the next step (for example, missing share
+|permissions for the service account or the sheet ID/range you need confirmed) instead of
+|a bare generic error.
 |
 |If a Google Doc/Sheet/Drive file fails to download (auth wall, no attachment found),
 |ask the user to share the file with **svc_ai@paradigm.xyz** (Viewer access).
