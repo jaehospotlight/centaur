@@ -12,7 +12,7 @@ source /app/scripts/bootstrap-secrets.sh
 
 bootstrap_required_secrets DATABASE_URL SLACK_SIGNING_SECRET
 
-# Install dependencies from bind-mounted tool directories (tools-paradigm, etc.)
+# Install dependencies from bind-mounted overlay tool directories.
 # These aren't baked into the image — install at startup so tool loading doesn't fail.
 if [[ -n "${TOOL_DIRS:-}" ]]; then
   IFS=':' read -ra _dirs <<< "$TOOL_DIRS"
@@ -36,7 +36,7 @@ print('\n'.join(sorted(deps)))
   fi
 fi
 
-# Bootstrap gcloud credentials for SSH tunneling (paradigmdb tool).
+# Bootstrap gcloud credentials for tools that need gcloud-backed SSH tunneling.
 _gcp_cred="$(_fetch_secret GCP_GCLOUD_CREDENTIAL 2>/dev/null || true)"
 if [[ -n "$_gcp_cred" ]]; then
   _gcloud_dir="${HOME}/.config/gcloud"
