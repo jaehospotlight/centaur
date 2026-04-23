@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Centaur Tool Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav>
+    <div class="nav-left">
+      <span class="logo">Centaur Tools</span>
+      <span class="subtitle">agent tool usage dashboard</span>
+    </div>
+    <div class="nav-right">
+      <div class="radio-group view-toggle">
+        <label class="radio-pill active">
+          <input type="radio" name="view" value="tools" checked> Tools
+        </label>
+        <label class="radio-pill">
+          <input type="radio" name="view" value="users"> Users
+        </label>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <div class="controls">
+      <input type="text" id="search" class="search-input" placeholder="Search...">
+
+      <div class="filter-row" id="tools-filters">
+        <span class="filter-label">Min calls:</span>
+        <div class="radio-group">
+          <label class="radio-pill active"><input type="radio" name="min-calls" value="0" checked> All</label>
+          <label class="radio-pill"><input type="radio" name="min-calls" value="5"> 5+</label>
+          <label class="radio-pill"><input type="radio" name="min-calls" value="20"> 20+</label>
+          <label class="radio-pill"><input type="radio" name="min-calls" value="100"> 100+</label>
+        </div>
+        <span class="filter-label">Min users:</span>
+        <div class="radio-group">
+          <label class="radio-pill active"><input type="radio" name="min-users" value="0" checked> All</label>
+          <label class="radio-pill"><input type="radio" name="min-users" value="3"> 3+</label>
+          <label class="radio-pill"><input type="radio" name="min-users" value="10"> 10+</label>
+        </div>
+      </div>
+
+      <div class="filter-row" id="users-filters" hidden>
+        <span class="filter-label">Min calls:</span>
+        <div class="radio-group">
+          <label class="radio-pill active"><input type="radio" name="user-min-calls" value="0" checked> All</label>
+          <label class="radio-pill"><input type="radio" name="user-min-calls" value="10"> 10+</label>
+          <label class="radio-pill"><input type="radio" name="user-min-calls" value="50"> 50+</label>
+          <label class="radio-pill"><input type="radio" name="user-min-calls" value="200"> 200+</label>
+        </div>
+        <span class="filter-label">Min threads:</span>
+        <div class="radio-group">
+          <label class="radio-pill active"><input type="radio" name="user-min-threads" value="0" checked> All</label>
+          <label class="radio-pill"><input type="radio" name="user-min-threads" value="3"> 3+</label>
+          <label class="radio-pill"><input type="radio" name="user-min-threads" value="10"> 10+</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-info">
+      <span id="row-count"></span>
+    </div>
+
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
