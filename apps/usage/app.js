@@ -1,7 +1,7 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
-let DATA = { tools: [], users: [], teams: [] };
+let DATA = { tools: [], users: [], teams: [], skills: [] };
 let state = {
   view: "tools",
   sort: "threads",
@@ -52,7 +52,21 @@ const TEAM_COLS = [
   { key: "member_list", label: "Members",  num: false, w: "48%", noSort: true, cls: "member-list" },
 ];
 
-const DEFAULT_SORT = { tools: "threads", users: "threads", teams: "threads_per_member" };
+const SKILL_COLS = [
+  { key: "rank",     label: "#",        num: true,  noSort: true, w: "3.5%" },
+  { key: "skill",    label: "Skill",    num: false, w: "16%",     cls: "tool-name" },
+  { key: "calls",    label: "Calls",    num: true,  w: "7%" },
+  { key: "threads",  label: "Threads",  num: true,  w: "7%" },
+  { key: "users",    label: "Users",    num: true,  w: "6%" },
+  { key: "calls_per_thread", label: "C/T", num: true, w: "5%", cls: "col-cpt" },
+  { key: "user1",    label: "#1 User",  num: false, w: "14%", noSort: true, cls: "method" },
+  { key: "user2",    label: "#2 User",  num: false, w: "14%", noSort: true, cls: "method col-method2" },
+  { key: "user3",    label: "#3 User",  num: false, w: "14%", noSort: true, cls: "method col-method3" },
+  { key: "first_seen", label: "First",  num: false, w: "7%",  cls: "col-first" },
+  { key: "last_seen",  label: "Last",   num: false, w: "7%",  cls: "col-last" },
+];
+
+const DEFAULT_SORT = { tools: "threads", skills: "threads", users: "threads", teams: "threads_per_member" };
 
 function fmt(n) {
   if (n == null) return "\u2014";
@@ -67,6 +81,7 @@ function escapeHtml(s) {
 
 function getCols() {
   if (state.view === "tools") return TOOL_COLS;
+  if (state.view === "skills") return SKILL_COLS;
   if (state.view === "teams") return TEAM_COLS;
   return USER_COLS;
 }
@@ -74,6 +89,7 @@ function getCols() {
 function getRows() {
   let src;
   if (state.view === "tools") src = DATA.tools;
+  else if (state.view === "skills") src = DATA.skills;
   else if (state.view === "teams") src = DATA.teams;
   else src = DATA.users;
 
@@ -84,6 +100,7 @@ function getRows() {
     rows = rows.filter((r) => {
       let fields;
       if (state.view === "tools") fields = [r.tool, r.method1, r.method2, r.method3];
+      else if (state.view === "skills") fields = [r.skill, r.user1, r.user2, r.user3];
       else if (state.view === "teams") fields = [r.team, r.member_list];
       else fields = [r.name, r.handle, r.team, r.tool1, r.tool2, r.tool3];
       return fields.some((f) => f && f.toLowerCase().includes(q));
@@ -185,7 +202,7 @@ function render() {
 }
 
 const BASE_PATH = "/apps/usage";
-const VIEWS = ["tools", "teams", "users"];
+const VIEWS = ["tools", "skills", "teams", "users"];
 
 function viewPath(view) {
   return `${BASE_PATH}/${view}`;

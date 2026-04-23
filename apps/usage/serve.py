@@ -4,7 +4,7 @@ import os
 PORT = int(os.environ.get("PORT", 3000))
 PREFIX = "/apps/usage"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VIEWS = {"tools", "teams", "users", ""}
+VIEWS = {"tools", "skills", "teams", "users", ""}
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
