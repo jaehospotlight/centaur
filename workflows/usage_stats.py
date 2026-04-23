@@ -8,6 +8,7 @@ stats to the usage_stats table as a single JSONB blob.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter, defaultdict
 from typing import Any
@@ -15,6 +16,8 @@ from typing import Any
 import httpx
 
 from api.workflow_engine import WorkflowContext
+
+log = logging.getLogger(__name__)
 
 WORKFLOW_NAME = "usage_stats"
 INTERVAL = 300  # every 5 minutes
@@ -136,8 +139,14 @@ INTERNAL_TOOLS = frozenset({
     "productivity", "comms", "nano-banana", "read_web_page",
 })
 
+STATIC_EXTS = frozenset({
+    "css", "js", "png", "ico", "json", "svg", "jpg",
+    "woff", "woff2", "map", "webp",
+})
+
 CALL_RE = re.compile(r"call\s+([a-z][a-z0-9_-]*)\s+([a-z][a-z0-9_-]*)")
 CURL_RE = re.compile(r"/tools/([a-z][a-z0-9_-]+)/([a-z][a-z0-9_-]+)")
+DATA_WINDOW_DAYS = 90
 
 
 def _thread_to_slack_url(thread_key: str) -> str | None:
@@ -147,6 +156,24 @@ def _thread_to_slack_url(thread_key: str) -> str | None:
     if not channel.startswith(("C", "D", "G")):
         return None
     return f"https://slack.com/archives/{channel}/p{ts.replace('.', '')}"
+
+
+def _parse_tool_call(cmd: str) -> tuple[str, str] | None:
+    m = CALL_RE.match(cmd)
+    if m and m.group(1) != "discover":
+        return m.group(1), m.group(2)
+    m = CURL_RE.search(cmd)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+def _fmt_user(uid: str, cnt: int) -> str:
+    if uid == "unknown":
+        return f"Centaur ({cnt})"
+    name = USER_MAP.get(uid, (uid,))[0]
+    short = name.split()[0] if " " in name else name
+    return f"{short} ({cnt})"
 
 
 async def _get_thread_users(pool) -> dict[str, str]:
@@ -160,16 +187,22 @@ async def _get_thread_users(pool) -> dict[str, str]:
     return {r["thread_key"]: r["user_id"] for r in rows}
 
 
-async def _extract_tools(pool, thread_users: dict[str, str]) -> list[dict]:
+async def _extract_tools_and_users(
+    pool, thread_users: dict[str, str],
+) -> tuple[list[dict], list[dict]]:
+    """Single pass over shell_command events to build both tool and user stats."""
     rows = await pool.fetch(
         "SELECT thread_key, created_at, event_json::text as ej "
         "FROM agent_execution_events "
         "WHERE event_kind = 'amp_raw_event' "
         "  AND event_json->>'type' = 'assistant' "
-        "  AND (event_json::text LIKE '%shell_command%')"
+        "  AND event_json::text LIKE '%shell_command%'"
+        "  AND created_at > NOW() - INTERVAL '%s days'" % DATA_WINDOW_DAYS
     )
 
     tool_stats: dict[str, dict] = {}
+    user_stats: dict[str, dict] = {}
+
     for row in rows:
         ej = json.loads(row["ej"])
         for block in ej.get("message", {}).get("content", []):
@@ -178,42 +211,53 @@ async def _extract_tools(pool, thread_users: dict[str, str]) -> list[dict]:
             if block.get("name") != "shell_command":
                 continue
             cmd = block.get("input", {}).get("command", "")
-            tool = method = None
-            m = CALL_RE.match(cmd)
-            if m and m.group(1) != "discover":
-                tool, method = m.group(1), m.group(2)
-            if not tool:
-                m = CURL_RE.search(cmd)
-                if m:
-                    tool, method = m.group(1), m.group(2)
-            if not tool or tool in NOISE_WORDS:
+            parsed = _parse_tool_call(cmd)
+            if not parsed:
                 continue
+            tool, method = parsed
+            if tool in NOISE_WORDS:
+                continue
+
             uid = thread_users.get(row["thread_key"], "unknown")
             day = row["created_at"].strftime("%Y-%m-%d")
-            key = tool
-            if key not in tool_stats:
-                tool_stats[key] = {
+
+            # Tool stats
+            if tool not in tool_stats:
+                tool_stats[tool] = {
                     "count": 0, "threads": set(), "users": Counter(),
                     "methods": Counter(), "first": "9999", "last": "0000",
                     "first_thread": None, "last_thread": None,
                 }
-            s = tool_stats[key]
-            s["count"] += 1
-            s["threads"].add(row["thread_key"])
-            s["users"][uid] += 1
-            s["methods"][method] += 1
-            if day < s["first"]:
-                s["first"] = day
-                s["first_thread"] = row["thread_key"]
-            if day >= s["last"]:
-                s["last"] = day
-                s["last_thread"] = row["thread_key"]
+            ts = tool_stats[tool]
+            ts["count"] += 1
+            ts["threads"].add(row["thread_key"])
+            ts["users"][uid] += 1
+            ts["methods"][method] += 1
+            if day < ts["first"]:
+                ts["first"] = day
+                ts["first_thread"] = row["thread_key"]
+            if day >= ts["last"]:
+                ts["last"] = day
+                ts["last_thread"] = row["thread_key"]
 
-    result = []
+            # User stats
+            if uid not in user_stats:
+                user_stats[uid] = {
+                    "count": 0, "threads": set(), "tools": set(),
+                    "top_tools": Counter(),
+                }
+            us = user_stats[uid]
+            us["count"] += 1
+            us["threads"].add(row["thread_key"])
+            us["tools"].add(tool)
+            us["top_tools"][tool] += 1
+
+    # Build tool rows
+    tool_rows = []
     for tool in sorted(tool_stats, key=lambda t: len(tool_stats[t]["threads"]), reverse=True):
         s = tool_stats[tool]
         top = s["methods"].most_common(3)
-        result.append({
+        tool_rows.append({
             "tool": tool,
             "calls": s["count"],
             "threads": len(s["threads"]),
@@ -229,7 +273,30 @@ async def _extract_tools(pool, thread_users: dict[str, str]) -> list[dict]:
             "last_url": _thread_to_slack_url(s["last_thread"] or ""),
             "icon": "centaur.png" if tool in INTERNAL_TOOLS else f"icons/{tool}.png",
         })
-    return result
+
+    # Build user rows
+    user_rows = []
+    for uid in sorted(user_stats, key=lambda u: user_stats[u]["count"], reverse=True):
+        s = user_stats[uid]
+        name_handle = USER_MAP.get(uid, ("Centaur", "\u2014") if uid == "unknown" else (uid, uid))
+        name, handle = name_handle
+        team = TEAM_MAP.get(uid, "Centaur" if uid == "unknown" else "Other")
+        top = s["top_tools"].most_common(3)
+        user_rows.append({
+            "name": name,
+            "handle": handle,
+            "team": team,
+            "team_emoji": TEAM_EMOJIS.get(team, ""),
+            "calls": s["count"],
+            "threads": len(s["threads"]),
+            "tools": len(s["tools"]),
+            "calls_per_thread": round(s["count"] / len(s["threads"]), 1),
+            "tool1": f"{top[0][0]} ({top[0][1]:,})" if len(top) > 0 else "",
+            "tool2": f"{top[1][0]} ({top[1][1]:,})" if len(top) > 1 else "",
+            "tool3": f"{top[2][0]} ({top[2][1]:,})" if len(top) > 2 else "",
+        })
+
+    return tool_rows, user_rows
 
 
 async def _extract_skills(pool, thread_users: dict[str, str]) -> list[dict]:
@@ -243,6 +310,7 @@ async def _extract_skills(pool, thread_users: dict[str, str]) -> list[dict]:
         "  AND elem->>'type' = 'tool_use' "
         "  AND elem->>'name' = 'skill' "
         "  AND elem->'input'->>'name' IS NOT NULL"
+        "  AND e.created_at > NOW() - INTERVAL '%s days'" % DATA_WINDOW_DAYS
     )
 
     skill_stats: dict[str, dict] = {}
@@ -271,12 +339,6 @@ async def _extract_skills(pool, thread_users: dict[str, str]) -> list[dict]:
     for skill in sorted(skill_stats, key=lambda k: len(skill_stats[k]["threads"]), reverse=True):
         s = skill_stats[skill]
         top_users = s["users"].most_common(3)
-
-        def _fmt_user(uid: str, cnt: int) -> str:
-            name = USER_MAP.get(uid, ("Centaur",))[0] if uid == "unknown" else USER_MAP.get(uid, (uid,))[0]
-            short = name.split()[0] if " " in name else name
-            return f"{short} ({cnt})"
-
         result.append({
             "skill": skill,
             "calls": s["count"],
@@ -291,71 +353,6 @@ async def _extract_skills(pool, thread_users: dict[str, str]) -> list[dict]:
             "first_url": _thread_to_slack_url(s["first_thread"] or ""),
             "last_url": _thread_to_slack_url(s["last_thread"] or ""),
             "emoji": SKILL_EMOJIS.get(skill, "\U0001F4AC"),
-        })
-    return result
-
-
-async def _extract_users(
-    pool, thread_users: dict[str, str],
-) -> list[dict]:
-    rows = await pool.fetch(
-        "SELECT thread_key, created_at, event_json::text as ej "
-        "FROM agent_execution_events "
-        "WHERE event_kind = 'amp_raw_event' "
-        "  AND event_json->>'type' = 'assistant' "
-        "  AND event_json::text LIKE '%shell_command%'"
-    )
-
-    user_stats: dict[str, dict] = {}
-    for row in rows:
-        ej = json.loads(row["ej"])
-        for block in ej.get("message", {}).get("content", []):
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            if block.get("name") != "shell_command":
-                continue
-            cmd = block.get("input", {}).get("command", "")
-            tool = None
-            m = CALL_RE.match(cmd)
-            if m and m.group(1) != "discover":
-                tool = m.group(1)
-            if not tool:
-                m = CURL_RE.search(cmd)
-                if m:
-                    tool = m.group(1)
-            if not tool or tool in NOISE_WORDS:
-                continue
-            uid = thread_users.get(row["thread_key"], "unknown")
-            if uid not in user_stats:
-                user_stats[uid] = {
-                    "count": 0, "threads": set(), "tools": set(),
-                    "top_tools": Counter(),
-                }
-            s = user_stats[uid]
-            s["count"] += 1
-            s["threads"].add(row["thread_key"])
-            s["tools"].add(tool)
-            s["top_tools"][tool] += 1
-
-    result = []
-    for uid in sorted(user_stats, key=lambda u: user_stats[u]["count"], reverse=True):
-        s = user_stats[uid]
-        name_handle = USER_MAP.get(uid, ("Centaur", "\u2014") if uid == "unknown" else (uid, uid))
-        name, handle = name_handle
-        team = TEAM_MAP.get(uid, "Centaur" if uid == "unknown" else "Other")
-        top = s["top_tools"].most_common(3)
-        result.append({
-            "name": name,
-            "handle": handle,
-            "team": team,
-            "team_emoji": TEAM_EMOJIS.get(team, ""),
-            "calls": s["count"],
-            "threads": len(s["threads"]),
-            "tools": len(s["tools"]),
-            "calls_per_thread": round(s["count"] / len(s["threads"]), 1),
-            "tool1": f"{top[0][0]} ({top[0][1]:,})" if len(top) > 0 else "",
-            "tool2": f"{top[1][0]} ({top[1][1]:,})" if len(top) > 1 else "",
-            "tool3": f"{top[2][0]} ({top[2][1]:,})" if len(top) > 2 else "",
         })
     return result
 
@@ -422,8 +419,7 @@ async def _extract_apps(pool) -> list[dict]:
                 app = app_m.group(1)
                 subpath = app_m.group(2) or "/"
                 ext = subpath.rsplit(".", 1)[-1] if "." in subpath else ""
-                static_exts = {"css", "js", "png", "ico", "json", "svg", "jpg", "woff", "woff2", "map", "webp"}
-                is_static = ext in static_exts
+                is_static = ext in STATIC_EXTS
                 status_m = re.search(r'" (\d{3}) ', msg)
                 status = int(status_m.group(1)) if status_m else 0
                 ip_m = re.search(r'"(\d+\.\d+\.\d+\.\d+)"$', msg)
@@ -439,7 +435,7 @@ async def _extract_apps(pool) -> list[dict]:
                     s["views"] += 1
                     s["paths"][subpath] += 1
     except Exception:
-        pass
+        log.warning("failed to query VictoriaLogs for app traffic", exc_info=True)
 
     result = []
     for app in sorted(app_stats, key=lambda a: app_stats[a]["views"], reverse=True):
@@ -472,21 +468,16 @@ async def handler(_inp: dict[str, Any], ctx: WorkflowContext) -> dict[str, Any]:
         step_kind="gather",
     )
 
-    tools = await ctx.step(
-        "extract_tools",
-        lambda: _extract_tools(pool, thread_users),
+    tools_and_users = await ctx.step(
+        "extract_tools_and_users",
+        lambda: _extract_tools_and_users(pool, thread_users),
         step_kind="gather",
     )
+    tools, users = tools_and_users
 
     skills = await ctx.step(
         "extract_skills",
         lambda: _extract_skills(pool, thread_users),
-        step_kind="gather",
-    )
-
-    users = await ctx.step(
-        "extract_users",
-        lambda: _extract_users(pool, thread_users),
         step_kind="gather",
     )
 

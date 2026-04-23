@@ -58,7 +58,7 @@ async def usage_stats() -> Response:
             "SELECT data_json, generated_at FROM usage_stats WHERE id = 'current'"
         )
     except Exception:
-        return JSONResponse(status_code=404, content={"detail": "No stats generated yet"})
+        return JSONResponse(status_code=503, content={"detail": "Database unavailable"})
     if not row:
         return JSONResponse(status_code=404, content={"detail": "No stats generated yet"})
     data = row["data_json"]
@@ -66,7 +66,7 @@ async def usage_stats() -> Response:
         import json
         data = json.loads(data)
     data["generated_at"] = row["generated_at"].isoformat() if row["generated_at"] else None
-    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=60"})
+    return JSONResponse(content=data, headers={"Cache-Control": "public, max-age=240"})
 
 
 @router.get("/health/tools", dependencies=[Depends(verify_operator_api_key)])
