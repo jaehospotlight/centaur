@@ -1,7 +1,7 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
-let DATA = { tools: [], users: [] };
+let DATA = { tools: [], users: [], teams: [] };
 let state = {
   view: "tools",
   sort: "threads",
@@ -31,14 +31,27 @@ const TOOL_COLS = [
 const USER_COLS = [
   { key: "rank",     label: "#",       num: true,  noSort: true, w: "3%" },
   { key: "name",     label: "Name",    num: false, w: "16%",     cls: "user-name", hasPfp: true },
+  { key: "team",     label: "Team",    num: false, w: "10%",     cls: "col-team" },
   { key: "calls",    label: "Calls",   num: true,  w: "7%" },
   { key: "threads",  label: "Threads", num: true,  w: "7%" },
-  { key: "tools",    label: "Tools",   num: true,  w: "6%" },
+  { key: "tools",    label: "Tools",   num: true,  w: "5%" },
   { key: "calls_per_thread", label: "C/T", num: true, w: "5%", cls: "col-cpt" },
-  { key: "tool1",    label: "#1 Tool", num: false, w: "18%", noSort: true, cls: "method" },
-  { key: "tool2",    label: "#2 Tool", num: false, w: "18%", noSort: true, cls: "method col-method2" },
-  { key: "tool3",    label: "#3 Tool", num: false, w: "16%", noSort: true, cls: "method col-method3 col-tool3" },
+  { key: "tool1",    label: "#1 Tool", num: false, w: "16%", noSort: true, cls: "method" },
+  { key: "tool2",    label: "#2 Tool", num: false, w: "16%", noSort: true, cls: "method col-method2" },
+  { key: "tool3",    label: "#3 Tool", num: false, w: "13%", noSort: true, cls: "method col-method3 col-tool3" },
 ];
+
+const TEAM_COLS = [
+  { key: "rank",        label: "#",        num: true,  noSort: true, w: "3.5%" },
+  { key: "team",        label: "Team",     num: false, w: "14%",     cls: "tool-name" },
+  { key: "members",     label: "Members",  num: true,  w: "7%" },
+  { key: "calls",       label: "Calls",    num: true,  w: "8%" },
+  { key: "threads",     label: "Threads",  num: true,  w: "8%" },
+  { key: "calls_per_member", label: "C/M", num: true,  w: "6%" },
+  { key: "member_list", label: "Members",  num: false, w: "54%", noSort: true, cls: "member-list" },
+];
+
+const DEFAULT_SORT = { tools: "threads", users: "calls", teams: "calls" };
 
 function fmt(n) {
   if (n == null) return "\u2014";
@@ -52,19 +65,26 @@ function escapeHtml(s) {
 }
 
 function getCols() {
-  return state.view === "tools" ? TOOL_COLS : USER_COLS;
+  if (state.view === "tools") return TOOL_COLS;
+  if (state.view === "teams") return TEAM_COLS;
+  return USER_COLS;
 }
 
 function getRows() {
-  const src = state.view === "tools" ? DATA.tools : DATA.users;
-  let rows = [...src];
+  let src;
+  if (state.view === "tools") src = DATA.tools;
+  else if (state.view === "teams") src = DATA.teams;
+  else src = DATA.users;
+
+  let rows = [...(src || [])];
 
   if (state.search) {
     const q = state.search.toLowerCase();
     rows = rows.filter((r) => {
-      const fields = state.view === "tools"
-        ? [r.tool, r.method1, r.method2, r.method3]
-        : [r.name, r.handle, r.tool1, r.tool2, r.tool3];
+      let fields;
+      if (state.view === "tools") fields = [r.tool, r.method1, r.method2, r.method3];
+      else if (state.view === "teams") fields = [r.team, r.member_list];
+      else fields = [r.name, r.handle, r.team, r.tool1, r.tool2, r.tool3];
       return fields.some((f) => f && f.toLowerCase().includes(q));
     });
   }
@@ -72,7 +92,7 @@ function getRows() {
   if (state.view === "tools") {
     if (state.minCalls > 0) rows = rows.filter((r) => r.calls >= state.minCalls);
     if (state.minUsers > 0) rows = rows.filter((r) => r.users >= state.minUsers);
-  } else {
+  } else if (state.view === "users") {
     if (state.userMinCalls > 0) rows = rows.filter((r) => r.calls >= state.userMinCalls);
     if (state.userMinThreads > 0) rows = rows.filter((r) => r.threads >= state.userMinThreads);
   }
@@ -154,7 +174,7 @@ function syncUrl() {
   if (state.view === "tools") {
     if (state.minCalls > 0) p.set("minCalls", state.minCalls);
     if (state.minUsers > 0) p.set("minUsers", state.minUsers);
-  } else {
+  } else if (state.view === "users") {
     if (state.userMinCalls > 0) p.set("minCalls", state.userMinCalls);
     if (state.userMinThreads > 0) p.set("minThreads", state.userMinThreads);
   }
@@ -172,7 +192,7 @@ function loadStateFromUrl() {
   if (state.view === "tools") {
     if (p.has("minCalls")) state.minCalls = Number(p.get("minCalls"));
     if (p.has("minUsers")) state.minUsers = Number(p.get("minUsers"));
-  } else {
+  } else if (state.view === "users") {
     if (p.has("minCalls")) state.userMinCalls = Number(p.get("minCalls"));
     if (p.has("minThreads")) state.userMinThreads = Number(p.get("minThreads"));
   }
@@ -186,6 +206,11 @@ function syncPills(name, value) {
   });
 }
 
+function syncFilterVisibility() {
+  $("#tools-filters").hidden = state.view !== "tools";
+  $("#users-filters").hidden = state.view !== "users";
+}
+
 function syncAllPills() {
   syncPills("view", state.view);
   syncPills("min-calls", state.minCalls);
@@ -193,8 +218,7 @@ function syncAllPills() {
   syncPills("user-min-calls", state.userMinCalls);
   syncPills("user-min-threads", state.userMinThreads);
   $("#search").value = state.search;
-  $("#tools-filters").hidden = state.view !== "tools";
-  $("#users-filters").hidden = state.view !== "users";
+  syncFilterVisibility();
 }
 
 function init() {
@@ -204,6 +228,12 @@ function init() {
     .then((r) => r.json())
     .then((d) => {
       DATA = d;
+      // Compute calls_per_member for teams
+      if (DATA.teams) {
+        for (const t of DATA.teams) {
+          t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
+        }
+      }
       syncAllPills();
       render();
     });
@@ -211,12 +241,11 @@ function init() {
   $$('input[name="view"]').forEach((r) => {
     r.addEventListener("change", () => {
       state.view = r.value;
-      state.sort = r.value === "tools" ? "threads" : "calls";
+      state.sort = DEFAULT_SORT[r.value] || "calls";
       state.dir = "desc";
       state.search = "";
       $("#search").value = "";
-      $("#tools-filters").hidden = state.view !== "tools";
-      $("#users-filters").hidden = state.view !== "users";
+      syncFilterVisibility();
       syncPills("view", state.view);
       render();
     });

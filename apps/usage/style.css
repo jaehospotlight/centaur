@@ -246,8 +246,15 @@ tbody td.rank {
   font-size: 12px;
 }
 
+tbody td.member-list {
+  white-space: normal;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
 @media (max-width: 1024px) {
-  .col-method3, .col-first, .col-last { display: none; }
+  .col-method3, .col-first, .col-last, .col-team { display: none; }
 }
 
 @media (max-width: 768px) {
