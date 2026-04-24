@@ -6,7 +6,6 @@ import pytest
 
 from api.sandbox.docker import (
     DockerSandboxBackend,
-    _inject_amp_api_key,
     _repo_host_dir,
     _resolve_host_bind_path,
 )
@@ -77,32 +76,6 @@ def test_repo_host_dir_defaults_to_repo_root(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.delenv("REPO_HOST_DIR", raising=False)
 
     assert _repo_host_dir() == str(Path(__file__).resolve().parents[3])
-
-
-@pytest.mark.asyncio
-async def test_inject_amp_api_key_replaces_only_amp_placeholder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("AGENT_LOCAL_DEV", raising=False)
-
-    async def fake_fetch_control_secret(key: str) -> str | None:
-        assert key == "AMP_API_KEY"
-        return "real-amp-key"
-
-    monkeypatch.setattr(
-        "api.sandbox.docker.fetch_control_secret",
-        fake_fetch_control_secret,
-    )
-
-    env = await _inject_amp_api_key([
-        "AMP_API_KEY=AMP_API_KEY",
-        "OPENAI_API_KEY=OPENAI_API_KEY",
-    ])
-
-    assert env == [
-        "AMP_API_KEY=real-amp-key",
-        "OPENAI_API_KEY=OPENAI_API_KEY",
-    ]
 
 
 @pytest.mark.asyncio
@@ -201,6 +174,9 @@ async def test_create_hardens_sandbox_container(monkeypatch: pytest.MonkeyPatch)
         for name, container in fake_client.containers.by_name.items()
         if name.startswith("centaur-sandbox-")
     )
+    env = dict(item.split("=", 1) for item in sandbox.config["Env"])
+
+    assert env["AMP_API_KEY"] == "AMP_API_KEY"
     assert sandbox.config["User"] == "1001:1001"
     assert sandbox.config["HostConfig"]["CapDrop"] == ["ALL"]
     assert sandbox.config["HostConfig"]["SecurityOpt"] == ["no-new-privileges"]

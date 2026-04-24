@@ -10,7 +10,6 @@ from api.sandbox.docker import _container_env as docker_container_env
 from api.sandbox.kubernetes import (
     KubernetesExecutorBackend,
     STDOUT_CHANNEL,
-    _inject_amp_api_key,
 )
 from api.sandbox.registry import auto_configure
 
@@ -110,32 +109,6 @@ def test_container_env_includes_firewall_host_for_secret_bootstrap(
 
 
 @pytest.mark.asyncio
-async def test_inject_amp_api_key_replaces_only_amp_placeholder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("AGENT_LOCAL_DEV", raising=False)
-
-    async def fake_fetch_control_secret(key: str) -> str | None:
-        assert key == "AMP_API_KEY"
-        return "real-amp-key"
-
-    monkeypatch.setattr(
-        "api.sandbox.kubernetes.fetch_control_secret",
-        fake_fetch_control_secret,
-    )
-
-    env = await _inject_amp_api_key([
-        "AMP_API_KEY=AMP_API_KEY",
-        "OPENAI_API_KEY=OPENAI_API_KEY",
-    ])
-
-    assert env == [
-        "AMP_API_KEY=real-amp-key",
-        "OPENAI_API_KEY=OPENAI_API_KEY",
-    ]
-
-
-@pytest.mark.asyncio
 async def test_ensure_clients_disables_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeApiClient:
         def __init__(self, configuration=None, heartbeat=None) -> None:  # noqa: ANN001
@@ -224,6 +197,7 @@ async def test_create_builds_pod_and_prompt_secret(monkeypatch: pytest.MonkeyPat
         lambda *_args, **_kwargs: [
             "CENTAUR_API_URL=http://api.internal:8000",
             "CENTAUR_API_KEY=sandbox-token",
+            "AMP_API_KEY=AMP_API_KEY",
         ],
     )
     monkeypatch.setattr("api.sandbox.kubernetes._build_harness_cmd", lambda *_args: ["amp-wrapper"])
@@ -273,6 +247,7 @@ async def test_create_builds_pod_and_prompt_secret(monkeypatch: pytest.MonkeyPat
     assert container["tty"] is False
     assert env["CENTAUR_API_URL"] == "http://api.internal:8000"
     assert env["CENTAUR_API_KEY"] == "sandbox-token"
+    assert env["AMP_API_KEY"] == "AMP_API_KEY"
     assert env["AGENT_PERSONA"] == "eng"
     assert env["AGENT_REPO"] == "paradigmxyz/centaur"
     assert pod_body["metadata"]["annotations"]["centaur.ai/thread-key"] == "slack:C123:123.456"

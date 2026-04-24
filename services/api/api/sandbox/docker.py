@@ -16,7 +16,6 @@ import aiodocker
 import structlog
 
 from api.deps import mint_sandbox_token
-from api.firewall import fetch_control_secret
 from api.sandbox.base import SandboxBackend, SandboxSession
 
 log = structlog.get_logger()
@@ -99,21 +98,6 @@ def _dind_enabled() -> bool:
 
 _HARNESS_STUB_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AMP_API_KEY", "GITHUB_TOKEN")
 _AGENT_USER = "1001:1001"
-
-
-async def _inject_amp_api_key(env: list[str]) -> list[str]:
-    if os.getenv("AGENT_LOCAL_DEV", "").lower() in ("1", "true"):
-        return env
-    try:
-        amp_api_key = await fetch_control_secret("AMP_API_KEY")
-    except Exception:
-        return env
-    if not amp_api_key:
-        return env
-    return [
-        f"AMP_API_KEY={amp_api_key}" if item == "AMP_API_KEY=AMP_API_KEY" else item
-        for item in env
-    ]
 
 
 def _build_harness_cmd(engine: str, model: str | None = None) -> list[str]:
@@ -269,7 +253,6 @@ class DockerSandboxBackend(SandboxBackend):
             container_name,
             resume_thread_id=resume_thread_id,
         )
-        env = await _inject_amp_api_key(env)
         if persona:
             env.append(f"AGENT_PERSONA={persona}")
         if repo:
