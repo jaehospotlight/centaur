@@ -33,7 +33,7 @@ import urllib.request
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from mitmproxy import http
+from mitmproxy import http, tls
 
 from centaur_sdk.logging import configure_json_logging
 
@@ -315,6 +315,23 @@ class CredentialInjector:
             log.info("host rewrites configured: %d", len(HOST_REWRITES))
         self._start_health_server()
         self._start_keys_refresh()
+
+    # ------------------------------------------------------------------
+    # TLS handshake customization
+    # ------------------------------------------------------------------
+
+    def tls_start_server(self, tls_start: tls.TlsData) -> None:
+        client_sni = tls_start.context.client.sni
+        if not client_sni:
+            return
+
+        source_host = client_sni.lower().rstrip(".")
+        target_host = HOST_REWRITES.get(source_host)
+        if not target_host:
+            return
+
+        tls_start.conn.sni = target_host
+        log.info("tls sni rewrite: %s → %s", source_host, target_host)
 
     # ------------------------------------------------------------------
     # Health server
@@ -718,18 +735,18 @@ class CredentialInjector:
                 return True
         return False
 
-    def _try_host_rewrite(self, flow: http.HTTPFlow, host: str) -> bool:
-        """Rewrite exact alias hosts to public upstream hosts before SSRF checks."""
+    def _try_host_rewrite(self, flow: http.HTTPFlow, host: str) -> str | None:
+        """Override upstream TLS SNI/Host while keeping the original TCP target."""
         target_host = HOST_REWRITES.get(host)
         if not target_host:
-            return False
+            return None
 
-        flow.request.host = target_host
         flow.request.port = 443
         flow.request.scheme = "https"
         flow.request.headers["host"] = target_host
-        log.info("host rewrite: %s → %s", host, target_host)
-        return True
+        flow.server_conn.sni = target_host
+        log.info("host rewrite: %s → %s (tcp target unchanged)", host, target_host)
+        return target_host
 
     # ------------------------------------------------------------------
     # Provider rewriting
@@ -976,8 +993,9 @@ class CredentialInjector:
 
         # 3. Rewrite exact internal aliases before SSRF so sandbox callers can
         #    keep stable names while the firewall uses the correct upstream SNI.
-        self._try_host_rewrite(flow, host)
-        host = flow.request.pretty_host.lower().rstrip(".")
+        host_rewritten_to = self._try_host_rewrite(flow, host)
+        if host_rewritten_to:
+            host = host_rewritten_to
 
         # 4. SSRF protection: resolve destination IP, block if private/internal
         if self._block_private_ip(flow, host):
