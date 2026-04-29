@@ -1,5 +1,5 @@
 import type { CanonicalEvent } from "@centaur/harness-events";
-import type { StreamChunk } from "chat";
+import type { StreamChunk } from "@/lib/slack/types";
 
 /**
  * ProgressTracker — converts CanonicalEvents into Slack streaming chunks.
@@ -17,20 +17,12 @@ import type { StreamChunk } from "chat";
 type TaskStatus = "pending" | "in_progress" | "complete" | "error";
 type ActiveTool = { name: string; input: Record<string, unknown> };
 
-// The chat library's TaskUpdateChunk only has `output?: string`.
-// Slack's API also supports `details` (markdown). The adapter passes
-// chunks through as-is, so extra fields work at runtime.
-type RichTaskChunk = StreamChunk & {
-  details?: string;
-  output?: string;
-};
-
 function taskChunk(
   id: string, title: string, status: TaskStatus,
   opts?: { details?: string; output?: string },
 ): StreamChunk {
   const chunk: StreamChunk = { type: "task_update", id, title, status };
-  if (opts?.details) (chunk as any).details = opts.details;
+  if (opts?.details) chunk.details = opts.details;
   if (opts?.output) chunk.output = opts.output;
   return chunk;
 }
@@ -44,8 +36,6 @@ export class ProgressTracker {
   agentThreadId = "";
   /** Overflow chunks when the final text exceeds Slack's message limit. */
   overflowChunks: string[] = [];
-  /** Full markdown of the streamed message (used for post-stream table reformatting). */
-  streamedMarkdown = "";
 
   private activeTools = new Map<string, ActiveTool>();
   private tasks = new Map<string, { title: string; status: TaskStatus }>();

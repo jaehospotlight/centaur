@@ -3,12 +3,12 @@ import { describe, it, expect, vi } from "vitest";
 /**
  * Simulates the attachment extraction logic from bot.ts onNewMention.
  *
- * Problem: Slack app_mention events don't include `files`, so the Chat SDK
- * returns message.attachments = []. The fix re-fetches the message via
+ * Problem: Slack app_mention events don't always include `files`, so the
+ * normalized message can have message.attachments = []. The fix re-fetches the message via
  * adapter.fetchMessage() which uses conversations.replies (includes files).
  */
 
-// ── Simulate the Chat SDK's createAttachment (from @chat-adapter/slack) ──
+// ── Simulate the Slack adapter's createAttachment mapping ──
 
 function createAttachment(file: {
   url_private?: string;

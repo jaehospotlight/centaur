@@ -97,6 +97,15 @@ export interface WorkflowRunAccepted {
   idempotent?: boolean;
 }
 
+export interface ThreadMessageRecord {
+  id: string;
+  role: string;
+  parts: Array<Record<string, unknown>>;
+  user_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  created_at?: string | null;
+}
+
 export interface StreamEvent {
   eventId: number;
   eventKind: string;
@@ -281,6 +290,21 @@ export class CentaurClient {
   async getExecution(executionId: string) {
     const { data } = await this.http.get(`/agent/executions/${encodeURIComponent(executionId)}`);
     return data as Record<string, unknown>;
+  }
+
+  async getMessages(threadKey: string, opts?: { cursor?: string; limit?: number }) {
+    const { data } = await this.http.get("/agent/messages", {
+      params: {
+        thread_key: threadKey,
+        cursor: opts?.cursor,
+        limit: opts?.limit ?? 50,
+      },
+    });
+    return data as {
+      messages: ThreadMessageRecord[];
+      cursor: string | null;
+      has_more: boolean;
+    };
   }
 
   async listExecutions(threadKey: string, limit = 20) {

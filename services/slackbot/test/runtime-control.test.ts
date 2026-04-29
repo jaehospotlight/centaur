@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { StreamChunk } from "chat";
+import type { StreamChunk } from "../src/lib/slack/types";
 
 import { SlackBot, type BotMessage, type BotThread, type SlackAdapter } from "../src/lib/bot/bot";
 

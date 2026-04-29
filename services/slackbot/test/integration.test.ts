@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { SlackBot, type BotThread, type BotMessage } from "@/lib/bot/bot";
 import { CentaurClient } from "@centaur/api-client";
-import type { StreamChunk } from "chat";
+import type { StreamChunk } from "@/lib/slack/types";
 
 // ── Config ────────────────────────────────────────────────────────────────
 
