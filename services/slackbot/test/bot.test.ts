@@ -517,10 +517,7 @@ describe("execute streams structured progress immediately", () => {
     expect(mockClient.execute).toHaveBeenCalledOnce();
     expect(thread.post).toHaveBeenCalledOnce();
     expect(thread.post).toHaveBeenCalledWith(expect.anything(), { taskDisplayMode: "plan" });
-    expect(postedChunks).toEqual([
-      { type: "markdown_text", text: "\u200b" },
-      ...streamedChunks,
-    ]);
+    expect(postedChunks).toEqual(streamedChunks);
   });
 });
 

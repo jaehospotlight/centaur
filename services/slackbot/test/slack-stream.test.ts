@@ -53,7 +53,7 @@ describe("Slack stream payloads", () => {
     }));
   });
 
-  it("sends structured stream chunks without markdown_text", async () => {
+  it("uses chunk-mode for markdown and structured updates", async () => {
     const adapter = createAdapter();
 
     await adapter.stream("slack:C123:1700000000.000001", (async function* () {
@@ -65,17 +65,21 @@ describe("Slack stream payloads", () => {
     const start = streamCallParams("chat.startStream")[0];
     const appends = streamCallParams("chat.appendStream");
 
-    expect(start).toEqual(expect.objectContaining({ markdown_text: "\u200b" }));
-    expect(start).not.toHaveProperty("chunks");
+    expect(start).toEqual(expect.objectContaining({
+      chunks: [{ type: "markdown_text", text: "\u200b" }],
+    }));
+    expect(start).not.toHaveProperty("markdown_text");
     expect(appends[0]).toEqual(expect.objectContaining({
       chunks: [{ type: "plan_update", title: "Completed" }],
     }));
     expect(appends[0]).not.toHaveProperty("markdown_text");
-    expect(appends[1]).toEqual(expect.objectContaining({ markdown_text: "pong" }));
-    expect(appends[1]).not.toHaveProperty("chunks");
+    expect(appends[1]).toEqual(expect.objectContaining({
+      chunks: [{ type: "markdown_text", text: "pong" }],
+    }));
+    expect(appends[1]).not.toHaveProperty("markdown_text");
   });
 
-  it("bootstraps the stream when the first yielded chunk is structured", async () => {
+  it("can start directly with a structured chunk", async () => {
     const adapter = createAdapter();
 
     await adapter.stream("slack:C123:1700000000.000001", (async function* () {
@@ -85,11 +89,10 @@ describe("Slack stream payloads", () => {
     const start = streamCallParams("chat.startStream")[0];
     const appends = streamCallParams("chat.appendStream");
 
-    expect(start).toEqual(expect.objectContaining({ markdown_text: "\u200b" }));
-    expect(start).not.toHaveProperty("chunks");
-    expect(appends[0]).toEqual(expect.objectContaining({
+    expect(start).toEqual(expect.objectContaining({
       chunks: [{ type: "plan_update", title: "Working" }],
     }));
-    expect(appends[0]).not.toHaveProperty("markdown_text");
+    expect(start).not.toHaveProperty("markdown_text");
+    expect(appends).toHaveLength(0);
   });
 });

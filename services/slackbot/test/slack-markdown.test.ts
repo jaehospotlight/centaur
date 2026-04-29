@@ -1,0 +1,35 @@
+import { describe, expect, it } from "vitest";
+
+import { renderMarkdownForSlack } from "../src/lib/slack/markdown";
+
+describe("Slack markdown rendering", () => {
+  it("omits fenced code language labels from Slack mrkdwn", () => {
+    const rendered = renderMarkdownForSlack([
+      "```rust",
+      "fn main() {",
+      "    println!(\"Hello, world!\");",
+      "}",
+      "```",
+    ].join("\n"));
+
+    expect(rendered.text).toBe([
+      "```",
+      "fn main() {",
+      "    println!(\"Hello, world!\");",
+      "}",
+      "```",
+    ].join("\n"));
+  });
+
+  it("renders markdown tables as native Slack table blocks", () => {
+    const rendered = renderMarkdownForSlack([
+      "Summary",
+      "",
+      "| Asset | Value |",
+      "| --- | --- |",
+      "| BTC | $1.00M |",
+    ].join("\n"));
+
+    expect(rendered.blocks?.some((block) => block.type === "table")).toBe(true);
+  });
+});

@@ -70,9 +70,7 @@ type SlackHistoryMessage = {
   attachments?: BotAttachment[];
 };
 
-type StreamPayload =
-  | { markdown_text: string; chunks?: never }
-  | { chunks: StreamChunk[]; markdown_text?: never };
+type StreamPayload = { chunks: StreamChunk[] };
 
 function threadIdFromEvent(event: SlackMessageEvent): string | null {
   if (!event.channel) return null;
@@ -234,17 +232,9 @@ class WebClientSlackAdapter implements SlackAdapter {
             recipient_team_id: options?.recipientTeamId,
           }),
       ...(options?.taskDisplayMode ? { task_display_mode: options.taskDisplayMode } : {}),
-      ...("chunks" in firstPayload ? { markdown_text: STREAM_BOOTSTRAP_TEXT } : firstPayload),
+      ...firstPayload,
     });
     const ts = String(start.ts || "");
-
-    if ("chunks" in firstPayload) {
-      await this.call("chat.appendStream", {
-        channel,
-        ts,
-        ...firstPayload,
-      });
-    }
 
     while (true) {
       const next = await iterator.next();
@@ -360,8 +350,12 @@ class WebClientSlackAdapter implements SlackAdapter {
   }
 
   private streamPayloadForChunk(chunk: string | StreamChunk): StreamPayload {
-    if (typeof chunk === "string") return { markdown_text: chunk || STREAM_BOOTSTRAP_TEXT };
-    if (chunk.type === "markdown_text") return { markdown_text: chunk.text || STREAM_BOOTSTRAP_TEXT };
+    if (typeof chunk === "string") {
+      return { chunks: [{ type: "markdown_text", text: chunk || STREAM_BOOTSTRAP_TEXT }] };
+    }
+    if (chunk.type === "markdown_text") {
+      return { chunks: [{ type: "markdown_text", text: chunk.text || STREAM_BOOTSTRAP_TEXT }] };
+    }
     return { chunks: [chunk] };
   }
 

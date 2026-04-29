@@ -177,7 +177,7 @@ function nodeToMrkdwn(node: Content): string {
   }
 
   if (isCodeNode(node)) {
-    return `\`\`\`${node.lang || ""}\n${node.value}\n\`\`\``;
+    return `\`\`\`\n${node.value}\n\`\`\``;
   }
 
   if (isLinkNode(node)) {

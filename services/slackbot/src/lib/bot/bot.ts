@@ -543,11 +543,6 @@ export class SlackBot {
         if (firstChunk) {
           sentMessage = await thread.post(
             (async function* () {
-              if (firstChunk.type !== "markdown_text") {
-                // Slack's structured streaming chunks can be rejected if they arrive
-                // before any markdown delta has established the stream state.
-                yield { type: "markdown_text", text: STREAM_BOOTSTRAP_TEXT };
-              }
               yield firstChunk;
               while (true) {
                 const next = await iter.next();
@@ -566,7 +561,12 @@ export class SlackBot {
         // or the accumulated streamed text exceeded Slack's message length limit.
         // Fall back to posting a plain message with whatever result we accumulated,
         // or poll the API for the final result if we don't have one yet.
-        if (errMsg.includes("message_not_in_streaming_state") || errMsg.includes("msg_too_long")) {
+        if (
+          errMsg.includes("message_not_in_streaming_state")
+          || errMsg.includes("msg_too_long")
+          || errMsg.includes("streaming_mode_mismatch")
+          || errMsg.includes("cannot_provide_both_markdown_text_and_chunks")
+        ) {
           log.warn("slack_stream_fallback", { thread_key: threadKey, error: errMsg, execution_id: executionId });
           let fallback = convertDashboardBlocks((tracker.resultText || tracker.lastAssistantText).trim());
 
