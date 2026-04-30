@@ -319,6 +319,20 @@ function init() {
     };
     // Merge pfps
     for (const u of DATA.users) { if (!u.pfp && PFP_MAP[u.handle]) u.pfp = PFP_MAP[u.handle]; }
+    // Ensure all teams appear, even with zero activity
+    const ALL_TEAMS = {
+      "I&R": "\ud83d\udd2c", "Finance": "\ud83d\udcb0", "Admin": "\ud83d\udcc5",
+      "Policy": "\ud83c\udfdb", "Communications": "\ud83d\udce2", "Legal": "\u2696\ufe0f",
+      "Trading": "\ud83d\udcc8", "Events": "\ud83c\udf89", "Engineering": "\ud83d\udd27",
+      "Talent": "\ud83d\udc65", "Operations": "\u2699\ufe0f", "Centaur Internal": "\ud83e\udd16",
+      "Other": "\ud83d\udcac",
+    };
+    const present = new Set(DATA.teams.map(t => t.team));
+    for (const [name, emoji] of Object.entries(ALL_TEAMS)) {
+      if (!present.has(name)) {
+        DATA.teams.push({ team: name, members: 0, calls: 0, threads: 0, calls_per_member: 0, threads_per_member: 0, member_list: "", emoji });
+      }
+    }
     // Compute calls_per_member for teams
     for (const t of DATA.teams) {
       t.calls_per_member = t.members > 0 ? Math.round(t.calls / t.members * 10) / 10 : 0;
