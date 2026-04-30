@@ -17,11 +17,51 @@ import base64
 import os
 import re
 from io import BytesIO
+from urllib.parse import urlencode
 
 import httpx
 from PIL import Image
 
 from centaur_sdk import secret
+
+BROWSER_USE_PROXY_COUNTRY = os.environ.get("BROWSER_USE_PROXY_COUNTRY", "")  # noqa: TID251
+BROWSER_USE_PROFILE_ID = os.environ.get("BROWSER_USE_PROFILE_ID", "")  # noqa: TID251
+
+
+def _browser_use_api_key() -> str:
+    value = secret("BROWSER_USE_API_KEY", "")
+    if value == "BROWSER_USE_API_KEY":
+        value = os.environ.get("BROWSER_USE_API_KEY", "")  # noqa: TID251
+    return value
+
+
+def _prepare_playwright_tls() -> None:
+    cert_path = "/firewall-certs/ca-cert.pem"
+    if os.path.exists(cert_path) and not os.environ.get("NODE_EXTRA_CA_CERTS"):  # noqa: TID251
+        os.environ["NODE_EXTRA_CA_CERTS"] = cert_path
+    node_options = os.environ.get("NODE_OPTIONS", "")  # noqa: TID251
+    if "--use-system-ca" not in node_options.split():
+        os.environ["NODE_OPTIONS"] = f"{node_options} --use-system-ca".strip()
+
+
+def _browser_use_ws_url(api_key: str) -> str:
+    params = {
+        "apiKey": api_key,
+        "browserScreenWidth": "1920",
+        "browserScreenHeight": "1080",
+    }
+    if BROWSER_USE_PROXY_COUNTRY:
+        params["proxyCountryCode"] = BROWSER_USE_PROXY_COUNTRY.lower()
+    if BROWSER_USE_PROFILE_ID:
+        params["profileId"] = BROWSER_USE_PROFILE_ID
+    return f"wss://connect.browser-use.com?{urlencode(params)}"
+
+
+def _redact_browser_use_secret(error: Exception, api_key: str) -> str:
+    text = str(error)
+    if api_key:
+        text = text.replace(api_key, "<redacted>")
+    return re.sub(r"apiKey=[^&\\s]+", "apiKey=<redacted>", text)
 
 
 
@@ -68,45 +108,21 @@ class DocsendClient:
         if not re.match(r"https?://", url):
             url = f"https://{url}"
 
-        api_key = os.environ.get("BROWSER_USE_API_KEY") or secret("BROWSER_USE_API_KEY", "")
+        api_key = _browser_use_api_key()
         if not api_key:
             return _err("BROWSER_USE_API_KEY not configured")
 
         try:
-            from browser_use_sdk import AsyncBrowserUse
             from playwright.async_api import async_playwright
         except ImportError:
-            return _err("browser_use_sdk or playwright not installed")
+            return _err("playwright not installed")
 
-        bu = AsyncBrowserUse(api_key=api_key)
-        session = None
         browser = None
 
         try:
-            # 1. Create cloud browser session
-            session_kwargs = {
-                "timeout": 240,
-                "browser_screen_width": 1920,
-                "browser_screen_height": 1080,
-            }
-            for env_key, kwarg in [
-                ("BROWSER_USE_PROXY_COUNTRY", "proxy_country_code"),
-                ("BROWSER_USE_PROFILE_ID", "profile_id"),
-            ]:
-                val = os.environ.get(env_key, "")
-                if val:
-                    session_kwargs[kwarg] = val.lower() if "country" in kwarg else val
-
-            create = getattr(bu.browsers, "create_browser_session", None) or bu.browsers.create
-            session = await create(**session_kwargs)
-            cdp_url = _attr(session, "cdp_url", "cdpUrl")
-            session_id = _attr(session, "id", "session_id", "sessionId")
-            if not cdp_url or not session_id:
-                return _err("Cloud browser session missing cdp_url or id")
-
-            # 2. Connect Playwright
+            _prepare_playwright_tls()
             async with async_playwright() as p:
-                browser = await p.chromium.connect_over_cdp(cdp_url)
+                browser = await p.chromium.connect_over_cdp(_browser_use_ws_url(api_key))
                 ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
@@ -223,21 +239,11 @@ class DocsendClient:
                 }
 
         except Exception as e:
-            return _err(str(e))
+            return _err(_redact_browser_use_secret(e, api_key))
         finally:
             if browser:
                 try:
                     await browser.close()
-                except Exception:
-                    pass
-            if session:
-                try:
-                    sid = str(_attr(session, "id", "session_id", "sessionId"))
-                    stop = getattr(bu.browsers, "update_browser_session", None)
-                    if stop:
-                        await stop(session_id=sid, action="stop")
-                    elif hasattr(bu.browsers, "stop"):
-                        await bu.browsers.stop(sid)
                 except Exception:
                     pass
 

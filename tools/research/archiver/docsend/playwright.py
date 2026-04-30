@@ -23,6 +23,7 @@ from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode
 
 import httpx
 from browser_use_sdk import AsyncBrowserUse
@@ -37,6 +38,42 @@ DEFAULT_EMAIL = ""
 API_KEY = secret("BROWSER_USE_API_KEY", "")
 BROWSER_USE_PROXY_COUNTRY = os.environ.get("BROWSER_USE_PROXY_COUNTRY", "")  # noqa: TID251
 BROWSER_USE_PROFILE_ID = os.environ.get("BROWSER_USE_PROFILE_ID", "")  # noqa: TID251
+
+
+def browser_use_api_key() -> str:
+    value = secret("BROWSER_USE_API_KEY", "")
+    if value == "BROWSER_USE_API_KEY":
+        value = os.environ.get("BROWSER_USE_API_KEY", "")  # noqa: TID251
+    return value
+
+
+def prepare_playwright_tls() -> None:
+    cert_path = "/firewall-certs/ca-cert.pem"
+    if os.path.exists(cert_path) and not os.environ.get("NODE_EXTRA_CA_CERTS"):  # noqa: TID251
+        os.environ["NODE_EXTRA_CA_CERTS"] = cert_path
+    node_options = os.environ.get("NODE_OPTIONS", "")  # noqa: TID251
+    if "--use-system-ca" not in node_options.split():
+        os.environ["NODE_OPTIONS"] = f"{node_options} --use-system-ca".strip()
+
+
+def browser_use_ws_url(api_key: str, config: "ScrapeConfig") -> str:
+    params = {
+        "apiKey": api_key,
+        "browserScreenWidth": str(config.browser_width),
+        "browserScreenHeight": str(config.browser_height),
+    }
+    if BROWSER_USE_PROXY_COUNTRY:
+        params["proxyCountryCode"] = BROWSER_USE_PROXY_COUNTRY.lower()
+    if BROWSER_USE_PROFILE_ID:
+        params["profileId"] = BROWSER_USE_PROFILE_ID
+    return f"wss://connect.browser-use.com?{urlencode(params)}"
+
+
+def redact_browser_use_secret(error: Exception, api_key: str) -> str:
+    text = str(error)
+    if api_key:
+        text = text.replace(api_key, "<redacted>")
+    return re.sub(r"apiKey=[^&\\s]+", "apiKey=<redacted>", text)
 
 
 def _session_value(session: object, *keys: str) -> object | None:
@@ -344,7 +381,6 @@ async def download_images(
                 continue
 
             success = False
-            last_error = None
 
             for attempt in range(config.max_retries):
                 try:
@@ -359,12 +395,11 @@ async def download_images(
                     break
 
                 except httpx.HTTPStatusError as e:
-                    last_error = f"HTTP {e.response.status_code}"
                     if e.response.status_code in (401, 403, 404):
                         # Don't retry auth/not found errors
                         break
-                except Exception as e:
-                    last_error = str(e)
+                except Exception:
+                    pass
 
                 if attempt < config.max_retries - 1:
                     await asyncio.sleep(config.retry_delay)
@@ -418,46 +453,19 @@ async def scrape_docsend(
         company_dir = output_dir / company.replace(" ", "_").replace("/", "_")
         company_dir.mkdir(parents=True, exist_ok=True)
 
-        bu_client = AsyncBrowserUse(api_key=API_KEY)
-        browser_session = None
+        api_key = browser_use_api_key()
+        if not api_key:
+            result.status = ScrapeStatus.ERROR
+            result.error = "BROWSER_USE_API_KEY not configured"
+            return result
         playwright_browser = None
 
         try:
-            # Step 1: Create cloud browser session with retry
-            async def create_session():
-                session_kwargs = {
-                    "timeout": config.browser_timeout,
-                    "browser_screen_width": config.browser_width,
-                    "browser_screen_height": config.browser_height,
-                }
-                if BROWSER_USE_PROXY_COUNTRY:
-                    session_kwargs["proxy_country_code"] = BROWSER_USE_PROXY_COUNTRY.lower()
-                if BROWSER_USE_PROFILE_ID:
-                    session_kwargs["profile_id"] = BROWSER_USE_PROFILE_ID
-                return await _create_browser_session(bu_client, **session_kwargs)
-
-            try:
-                browser_session = await retry_async(
-                    create_session,
-                    max_retries=config.max_retries,
-                    delay=config.retry_delay,
-                )
-            except Exception as e:
-                result.status = ScrapeStatus.ERROR
-                result.error = f"Failed to create browser session: {e}"
-                return result
-
-            cdp_url = _session_value(browser_session, "cdp_url", "cdpUrl")
-            session_id = _session_value(browser_session, "id", "session_id", "sessionId")
-            live_url = _session_value(browser_session, "live_url", "liveUrl")
-            if not cdp_url or not session_id:
-                result.status = ScrapeStatus.ERROR
-                result.error = "Browser session missing required fields (cdp_url/session_id)"
-                return result
-
-            # Step 2: Connect Playwright to cloud browser
+            prepare_playwright_tls()
             async with async_playwright() as p:
-                playwright_browser = await p.chromium.connect_over_cdp(cdp_url)
+                playwright_browser = await p.chromium.connect_over_cdp(
+                    browser_use_ws_url(api_key, config)
+                )
 
                 # Get the default context and page
                 contexts = playwright_browser.contexts
@@ -614,21 +622,13 @@ async def scrape_docsend(
 
         except Exception as e:
             result.status = ScrapeStatus.ERROR
-            result.error = str(e)
+            result.error = redact_browser_use_secret(e, api_key)
 
         finally:
             # Clean up
             if playwright_browser:
                 try:
                     await playwright_browser.close()
-                except Exception:
-                    pass
-
-            if browser_session:
-                try:
-                    session_id = _session_value(browser_session, "id", "session_id", "sessionId")
-                    if session_id:
-                        await _stop_browser_session(bu_client, str(session_id))
                 except Exception:
                     pass
 

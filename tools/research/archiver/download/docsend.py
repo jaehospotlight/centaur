@@ -14,7 +14,6 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 from browser_use_sdk import AsyncBrowserUse
@@ -30,12 +29,15 @@ from ..docsend.playwright import (
     ScrapeConfig,
     ScrapeResult,
     ScrapeStatus,
+    browser_use_api_key,
+    browser_use_ws_url,
     create_pdf,
     download_images,
     enter_password,
     fetch_slide_urls,
     get_slide_count,
-    retry_async,
+    prepare_playwright_tls,
+    redact_browser_use_secret,
 )
 
 # Configuration
@@ -622,45 +624,19 @@ async def route_docsend(
     async def _route():
         result = ScrapeResult(url=url, company=company)
 
-        bu_client = AsyncBrowserUse(api_key=API_KEY)
-        browser_session = None
+        api_key = browser_use_api_key()
+        if not api_key:
+            result.status = ScrapeStatus.ERROR
+            result.error = "BROWSER_USE_API_KEY not configured"
+            return result
         playwright_browser = None
 
         try:
-            # Create cloud browser session
-
-            async def create_session():
-                session_kwargs = {
-                    "timeout": config.browser_timeout,
-                    "browser_screen_width": config.browser_width,
-                    "browser_screen_height": config.browser_height,
-                }
-                if BROWSER_USE_PROXY_COUNTRY:
-                    session_kwargs["proxy_country_code"] = BROWSER_USE_PROXY_COUNTRY.lower()
-                if BROWSER_USE_PROFILE_ID:
-                    session_kwargs["profile_id"] = BROWSER_USE_PROFILE_ID
-                return await _create_browser_session(bu_client, **session_kwargs)
-
-            try:
-                browser_session = await retry_async(
-                    create_session,
-                    max_retries=config.max_retries,
-                    delay=config.retry_delay,
-                )
-            except Exception as e:
-                result.status = ScrapeStatus.ERROR
-                result.error = f"Failed to create browser session: {e}"
-                return result
-
-            cdp_url = _session_value(browser_session, "cdp_url", "cdpUrl")
-            session_id = _session_value(browser_session, "id", "session_id", "sessionId")
-            if not cdp_url or not session_id:
-                result.status = ScrapeStatus.ERROR
-                result.error = "Browser session missing required fields (cdp_url/session_id)"
-                return result
-
+            prepare_playwright_tls()
             async with async_playwright() as p:
-                playwright_browser = await p.chromium.connect_over_cdp(cdp_url)
+                playwright_browser = await p.chromium.connect_over_cdp(
+                    browser_use_ws_url(api_key, config)
+                )
 
                 contexts = playwright_browser.contexts
                 if contexts:
@@ -812,21 +788,13 @@ async def route_docsend(
 
         except Exception as e:
             result.status = ScrapeStatus.ERROR
-            result.error = str(e)
+            result.error = redact_browser_use_secret(e, api_key)
             return result
 
         finally:
             if playwright_browser:
                 try:
                     await playwright_browser.close()
-                except Exception:
-                    pass
-
-            if browser_session:
-                try:
-                    session_id = _session_value(browser_session, "id", "session_id", "sessionId")
-                    if session_id:
-                        await _stop_browser_session(bu_client, str(session_id))
                 except Exception:
                     pass
 
