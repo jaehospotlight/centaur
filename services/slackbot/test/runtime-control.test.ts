@@ -80,6 +80,7 @@ function createImmediateStreamClient(): any {
     markFinalFailed: vi.fn(async () => ({ ok: true })),
     renewFinalDeliveryLease: vi.fn(async () => ({ ok: true })),
     claimFinalDeliveries: vi.fn(async () => ({ deliveries: [] })),
+    listExecutions: vi.fn(async (threadKey: string) => ({ thread_key: threadKey, executions: [] })),
     getExecution: vi.fn(async () => ({ status: "completed", result_text: "done" })),
   };
 }
@@ -237,6 +238,68 @@ describe("SlackBot runtime control", () => {
     ).toBe(true);
   });
 
+  it("maps failed-permanent hydration to a friendly retry message", async () => {
+    const client = createImmediateStreamClient();
+    client.streamEvents = vi.fn(() => (async function* () {
+      // Force hydration from the durable execution row.
+    })());
+    client.getExecution = vi.fn(async () => ({
+      status: "failed_permanent",
+      terminal_reason: "harness_error",
+      error_text: "Connection error.",
+    }));
+
+    const bot = new SlackBot(client as any);
+    const runtime = createThread();
+
+    await bot.onSubscribedMessage(runtime.thread, userMessage("follow-up", {
+      id: "1700000000.000004",
+      isMention: true,
+    }));
+
+    expect(
+      runtime.streamedChunks.some(
+        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("Agent hit a runtime issue before finishing. Please retry."),
+      ),
+    ).toBe(true);
+    expect(
+      runtime.streamedChunks.some(
+        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("Connection error."),
+      ),
+    ).toBe(false);
+  });
+
+  it("maps cancelled hydration to a friendly cancellation message", async () => {
+    const client = createImmediateStreamClient();
+    client.streamEvents = vi.fn(() => (async function* () {
+      // Force hydration from the durable execution row.
+    })());
+    client.getExecution = vi.fn(async () => ({
+      status: "cancelled",
+      terminal_reason: "cancel_requested",
+      error_text: "cancel_requested",
+    }));
+
+    const bot = new SlackBot(client as any);
+    const runtime = createThread();
+
+    await bot.onSubscribedMessage(runtime.thread, userMessage("follow-up", {
+      id: "1700000000.000004",
+      isMention: true,
+    }));
+
+    expect(
+      runtime.streamedChunks.some(
+        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("Request cancelled. Send another message when you want to retry."),
+      ),
+    ).toBe(true);
+    expect(
+      runtime.streamedChunks.some(
+        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("cancel_requested"),
+      ),
+    ).toBe(false);
+  });
+
   it("claims only Slack final deliveries and posts completed results once", async () => {
     const client = createImmediateStreamClient();
     client.claimFinalDeliveries = vi.fn(async () => ({
@@ -255,6 +318,13 @@ describe("SlackBot runtime control", () => {
         },
       ],
     }));
+    client.listExecutions = vi.fn(async () => ({
+      thread_key: normalizedThreadKey,
+      executions: [
+        { execution_id: "exe-completed", status: "completed" },
+        { execution_id: "exe-cancelled", status: "cancelled" },
+      ],
+    }));
     const slack = createSlackAdapter({
       postMessage: vi.fn(async () => ({ id: "msg-final" })),
     });
@@ -269,6 +339,38 @@ describe("SlackBot runtime control", () => {
       { markdown: "final answer" },
     );
     expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-completed", expect.any(String));
+    expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-cancelled", expect.any(String));
+  });
+
+  it("posts a friendly cancellation message for the latest cancelled final delivery", async () => {
+    const client = createImmediateStreamClient();
+    client.claimFinalDeliveries = vi.fn(async () => ({
+      deliveries: [
+        {
+          execution_id: "exe-cancelled",
+          thread_key: normalizedThreadKey,
+          delivery: { platform: "slack" },
+          final_payload: { status: "cancelled", terminal_reason: "cancel_requested", error_text: "cancel_requested" },
+        },
+      ],
+    }));
+    client.listExecutions = vi.fn(async () => ({
+      thread_key: normalizedThreadKey,
+      executions: [
+        { execution_id: "exe-cancelled", status: "cancelled" },
+      ],
+    }));
+    const slack = createSlackAdapter({
+      postMessage: vi.fn(async () => ({ id: "msg-final" })),
+    });
+    const bot = new SlackBot(client as any, "", slack);
+
+    await (bot as any).drainFinalDeliveriesOnce();
+
+    expect(slack.postMessage).toHaveBeenCalledWith(
+      `slack:${normalizedThreadKey}`,
+      { markdown: "Request cancelled. Send another message when you want to retry." },
+    );
     expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-cancelled", expect.any(String));
   });
 
@@ -348,5 +450,39 @@ describe("SlackBot runtime control", () => {
     });
     expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-table", expect.any(String));
     expect(client.markFinalFailed).not.toHaveBeenCalled();
+  });
+
+  it("maps silence-deadline final delivery to a friendly retry message", async () => {
+    const client = createImmediateStreamClient();
+    client.claimFinalDeliveries = vi.fn(async () => ({
+      deliveries: [
+        {
+          execution_id: "exe-silent",
+          thread_key: normalizedThreadKey,
+          delivery: { platform: "slack" },
+          final_payload: {
+            status: "failed_permanent",
+            terminal_reason: "silence_deadline_exceeded",
+            error_text: "execution made no progress before silence deadline",
+          },
+        },
+      ],
+    }));
+    const slack = createSlackAdapter({
+      postMessage: vi.fn(async () => ({ id: "msg-final" })),
+    });
+    const bot = new SlackBot(client as any, "", slack);
+
+    await (bot as any).drainFinalDeliveriesOnce();
+
+    expect(slack.postMessage).toHaveBeenCalledWith(
+      `slack:${normalizedThreadKey}`,
+      { markdown: "Agent stopped after making no visible progress. Please retry." },
+    );
+    expect(slack.postMessage).not.toHaveBeenCalledWith(
+      `slack:${normalizedThreadKey}`,
+      { markdown: "execution made no progress before silence deadline" },
+    );
+    expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-silent", expect.any(String));
   });
 });

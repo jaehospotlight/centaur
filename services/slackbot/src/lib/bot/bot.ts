@@ -29,6 +29,9 @@ const PROMPT_FLAG_ALIASES = new Map<string, string>([
   ["pi", "pi-mono"],
 ]);
 const STREAM_BOOTSTRAP_TEXT = "\u200b";
+const CANCELLED_EXECUTION_MESSAGE = "Request cancelled. Send another message when you want to retry.";
+const SILENCE_DEADLINE_MESSAGE = "Agent stopped after making no visible progress. Please retry.";
+const EXECUTION_FAILED_MESSAGE = "Agent hit a runtime issue before finishing. Please retry.";
 
 /**
  * Split text into chunks that fit within Slack's message limit.
@@ -104,6 +107,66 @@ function flattenMarkdownTables(markdown: string): string {
 
 function isSlackInvalidBlocksError(message: string): boolean {
   return message.includes("invalid_blocks");
+}
+
+function normalizedTerminalString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isCancellationTerminalState(status: string, terminalReason: string, resultText = "", errorText = ""): boolean {
+  const rawValues = [terminalReason, resultText, errorText]
+    .map((value) => value.toLowerCase())
+    .filter(Boolean);
+  return status === "cancelled"
+    || rawValues.includes("cancel_requested")
+    || rawValues.includes("cancelled")
+    || rawValues.includes("released")
+    || rawValues.includes("user cancelled (sigint/sigterm)");
+}
+
+function renderTerminalResultCopy(opts: {
+  status?: unknown;
+  terminalReason?: unknown;
+  resultText?: unknown;
+  errorText?: unknown;
+  isError?: unknown;
+}): string {
+  const status = normalizedTerminalString(opts.status);
+  const terminalReason = normalizedTerminalString(opts.terminalReason);
+  const resultText = normalizedTerminalString(opts.resultText);
+  const errorText = normalizedTerminalString(opts.errorText);
+  const rawValues = [terminalReason, resultText, errorText]
+    .map((value) => value.toLowerCase())
+    .filter(Boolean);
+  const rawBlob = rawValues.join("\n");
+
+  if (status === "completed") {
+    return resultText;
+  }
+
+  if (isCancellationTerminalState(status, terminalReason, resultText, errorText)) {
+    return CANCELLED_EXECUTION_MESSAGE;
+  }
+
+  if (terminalReason === "silence_deadline_exceeded"
+    || rawBlob.includes("execution made no progress before silence deadline")
+    || rawBlob.includes("silence deadline")) {
+    return SILENCE_DEADLINE_MESSAGE;
+  }
+
+  if (status === "failed_permanent"
+    || Boolean(opts.isError)
+    || rawValues.includes("harness_error")
+    || rawValues.includes("amp_reconnect_timeout")
+    || rawValues.includes("execution_error")
+    || rawValues.includes("stream_ended_without_turn_done")
+    || rawValues.includes("assignment_missing")
+    || rawValues.includes("hard_deadline_exceeded")
+    || rawBlob.includes("connection error")) {
+    return EXECUTION_FAILED_MESSAGE;
+  }
+
+  return resultText;
 }
 
 type SlackRawMessage = {
@@ -642,11 +705,14 @@ export class SlackBot {
       try {
         const data = await this.client.getExecution(executionId);
         const status = String(data.status || "");
-        const result = data.result_text;
-        if (typeof result === "string" && result.trim()) return result.trim();
-        if (status === "failed_permanent" || status === "cancelled") {
-          const err = typeof data.error_text === "string" ? data.error_text : "Execution failed";
-          return err;
+        const text = renderTerminalResultCopy({
+          status,
+          terminalReason: data.terminal_reason,
+          resultText: data.result_text,
+          errorText: data.error_text,
+        });
+        if (text) {
+          return text;
         }
       } catch {
         // best-effort — keep polling
@@ -672,7 +738,12 @@ export class SlackBot {
       const terminalReason = typeof data.terminal_reason === "string"
         ? data.terminal_reason.trim()
         : "";
-      tracker.resultText = result || error || terminalReason;
+      tracker.resultText = renderTerminalResultCopy({
+        status,
+        terminalReason,
+        resultText: result,
+        errorText: error,
+      });
       return true;
     } catch {
       return false;
@@ -800,22 +871,27 @@ export class SlackBot {
 
           if (eventType === "turn.done") {
             const result = String(payload.result || "").trim();
-            if (result) tracker.resultText = result;
+            const errorText = String(payload.error || "").trim();
+            const rendered = renderTerminalResultCopy({
+              resultText: result,
+              errorText,
+              isError: payload.is_error,
+            });
+            if (rendered) tracker.resultText = rendered;
             terminal = true;
             break;
           }
 
           if (eventType === "execution.state") {
             const status = String(payload.status || "");
-            if (status === "completed") {
-              const result = String(payload.result_text || "").trim();
-              if (result) tracker.resultText = result;
-              terminal = true;
-              break;
-            }
-            if (status === "failed_permanent" || status === "cancelled") {
-              const err = String(payload.error_text || payload.terminal_reason || "Execution failed").trim();
-              if (err && !tracker.resultText) tracker.resultText = err;
+            if (["completed", "failed_permanent", "cancelled"].includes(status)) {
+              const rendered = renderTerminalResultCopy({
+                status,
+                terminalReason: payload.terminal_reason,
+                resultText: payload.result_text,
+                errorText: payload.error_text,
+              });
+              if (rendered) tracker.resultText = rendered;
               terminal = true;
               break;
             }
@@ -971,7 +1047,7 @@ export class SlackBot {
       return;
     }
 
-    if (this.shouldSuppressFinalDelivery(finalPayload)) {
+    if (await this.shouldSuppressFinalDelivery(threadKey, executionId, finalPayload)) {
       log.info("final_delivery_suppressed", {
         execution_id: executionId,
         thread_key: threadKey,
@@ -1030,18 +1106,55 @@ export class SlackBot {
     return false;
   }
 
-  private shouldSuppressFinalDelivery(finalPayload: Record<string, unknown>): boolean {
+  private async shouldSuppressFinalDelivery(
+    threadKey: string,
+    executionId: string,
+    finalPayload: Record<string, unknown>,
+  ): Promise<boolean> {
     const status = typeof finalPayload.status === "string" ? finalPayload.status : "";
     const terminalReason = typeof finalPayload.terminal_reason === "string"
       ? finalPayload.terminal_reason
       : "";
-    return status === "cancelled" || terminalReason === "cancel_requested" || terminalReason === "cancelled";
+    const resultText = normalizedTerminalString(finalPayload.result_text);
+    const errorText = normalizedTerminalString(finalPayload.error_text);
+    if (!isCancellationTerminalState(status, terminalReason, resultText, errorText)) {
+      return false;
+    }
+
+    const current = this.inFlightExecutions.get(threadKey);
+    if (current && current.executionId !== executionId && !current.abortController.signal.aborted) {
+      return true;
+    }
+
+    try {
+      const { executions } = await this.client.listExecutions(threadKey, 2);
+      const latestExecutionId = Array.isArray(executions) && typeof executions[0]?.execution_id === "string"
+        ? executions[0].execution_id
+        : "";
+      return Boolean(latestExecutionId && latestExecutionId !== executionId);
+    } catch (err) {
+      log.warn("final_delivery_suppress_lookup_failed", {
+        thread_key: threadKey,
+        execution_id: executionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
   }
 
   private renderFinalDeliveryMarkdown(threadKey: string, finalPayload: Record<string, unknown>): string {
+    const status = typeof finalPayload.status === "string" ? finalPayload.status : "";
+    const terminalReason = typeof finalPayload.terminal_reason === "string"
+      ? finalPayload.terminal_reason
+      : "";
     const resultText = typeof finalPayload.result_text === "string" ? finalPayload.result_text.trim() : "";
     const errorText = typeof finalPayload.error_text === "string" ? finalPayload.error_text.trim() : "";
-    const rendered = convertDashboardBlocks((resultText || errorText).trim());
+    const rendered = convertDashboardBlocks(renderTerminalResultCopy({
+      status,
+      terminalReason,
+      resultText,
+      errorText,
+    }));
     const viewerSuffix = this.viewerUrl
       ? `\n\n[Thread Viewer](${this.viewerUrl}/${encodeURIComponent(threadKey)})`
       : "";
@@ -1054,7 +1167,7 @@ export class SlackBot {
       return `Agent completed. [View full output](${this.viewerUrl}/${encodeURIComponent(threadKey)})`;
     }
 
-    return errorText || "Agent completed with no output.";
+    return "Agent completed with no output.";
   }
 
   private async postSlackMarkdown(
