@@ -236,6 +236,11 @@ function executionIdFromError(err: unknown): string {
   return typeof executionId === "string" ? executionId : "";
 }
 
+function isIdempotencyMismatch(err: unknown): boolean {
+  const resp = (err as { response?: { status?: number; data?: { code?: string } } })?.response;
+  return resp?.status === 409 || resp?.data?.code === "IDEMPOTENCY_PAYLOAD_MISMATCH";
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
@@ -526,25 +531,44 @@ export class SlackBot {
       await this.releaseForPromptSwitch(threadKey, delivery.messageId);
     }
     const { channel, threadTs } = splitThreadKey(thread.id);
-    const accepted = await this.client.startWorkflowRun({
-      workflowName: "slack_thread_turn",
-      triggerKey: delivery.messageId ? `slack-thread-turn:${threadKey}:${delivery.messageId}` : undefined,
-      eagerStart: true,
-      input: {
-        thread_key: threadKey,
-        parts,
-        user_id: delivery.userId,
-        message_id: delivery.messageId,
-        prompt_selector: promptSelector,
-        delivery: {
-          channel,
-          thread_ts: threadTs,
-          platform: "slack",
-          recipient_user_id: delivery.userId,
-          recipient_team_id: delivery.teamId,
-        },
+    const workflowInput = {
+      thread_key: threadKey,
+      parts,
+      user_id: delivery.userId,
+      message_id: delivery.messageId,
+      prompt_selector: promptSelector,
+      delivery: {
+        channel,
+        thread_ts: threadTs,
+        platform: "slack",
+        recipient_user_id: delivery.userId,
+        recipient_team_id: delivery.teamId,
       },
-    });
+    };
+    const triggerKey = delivery.messageId ? `slack-thread-turn:${threadKey}:${delivery.messageId}` : undefined;
+    let accepted: Awaited<ReturnType<CentaurClient["startWorkflowRun"]>>;
+    try {
+      accepted = await this.client.startWorkflowRun({
+        workflowName: "slack_thread_turn",
+        triggerKey,
+        eagerStart: true,
+        input: workflowInput,
+      });
+    } catch (err) {
+      if (triggerKey && isIdempotencyMismatch(err)) {
+        log.warn("idempotency_mismatch_retry", {
+          thread_key: threadKey,
+          trigger_key: triggerKey,
+        });
+        accepted = await this.client.startWorkflowRun({
+          workflowName: "slack_thread_turn",
+          eagerStart: true,
+          input: workflowInput,
+        });
+      } else {
+        throw err;
+      }
+    }
     if (!accepted.execution_id) {
       const errorText = typeof accepted.error_text === "string"
         ? accepted.error_text.trim()

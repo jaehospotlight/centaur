@@ -291,6 +291,34 @@ describe("SlackBot runtime control", () => {
     expect(markdownCalls).not.toContain("Agent request failed before execution started. Please retry.");
   });
 
+  it("retries without triggerKey on 409 idempotency mismatch", async () => {
+    let callCount = 0;
+    const client = createImmediateStreamClient();
+    client.startWorkflowRun = vi.fn(async (opts: any) => {
+      callCount += 1;
+      if (callCount === 1) {
+        const err: any = new Error("Request failed with status code 409");
+        err.response = { status: 409, data: { code: "IDEMPOTENCY_PAYLOAD_MISMATCH" } };
+        throw err;
+      }
+      return { execution_id: "exe-retry", status: "waiting" };
+    });
+
+    const bot = new SlackBot(client as any);
+    const runtime = createThread();
+
+    await bot.onSubscribedMessage(runtime.thread, userMessage("follow-up", {
+      id: "1700000000.000005",
+      isMention: true,
+    }));
+
+    expect(client.startWorkflowRun).toHaveBeenCalledTimes(2);
+    // First call has triggerKey, retry does not
+    expect(client.startWorkflowRun.mock.calls[0][0].triggerKey).toBeDefined();
+    expect(client.startWorkflowRun.mock.calls[1][0].triggerKey).toBeUndefined();
+    expect(runtime.postedMarkdown).not.toContain("Agent request failed before execution started. Please retry.");
+  });
+
   it("maps failed-permanent hydration to a friendly retry message", async () => {
     const client = createImmediateStreamClient();
     client.streamEvents = vi.fn(() => (async function* () {
