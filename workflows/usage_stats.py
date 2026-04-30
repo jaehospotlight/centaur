@@ -185,6 +185,13 @@ CURL_RE = re.compile(r"/tools/([a-z][a-z0-9_-]+)/([a-z][a-z0-9_-]+)")
 WINDOWS = {"all": None, "30d": 30, "7d": 7, "1d": 1}
 
 
+def _session_key(thread_key: str) -> str:
+    if thread_key.startswith("workflow:wfr_") and thread_key.count(":") >= 2:
+        parts = thread_key.split(":", 2)
+        return f"{parts[0]}:{parts[1]}"
+    return thread_key
+
+
 def _thread_to_slack_url(thread_key: str) -> str | None:
     if ":" not in thread_key:
         return None
@@ -314,7 +321,7 @@ def _aggregate_tools(events: list[dict]) -> list[dict]:
             }
         s = stats[tool]
         s["count"] += 1
-        s["threads"].add(e["thread"])
+        s["threads"].add(_session_key(e["thread"]))
         s["users"][e["uid"]] += 1
         s["methods"][e["method"]] += 1
         if e["day"] < s["first"]:
@@ -355,7 +362,7 @@ def _aggregate_users(events: list[dict]) -> list[dict]:
             stats[uid] = {"count": 0, "threads": set(), "tools": set(), "top_tools": Counter()}
         s = stats[uid]
         s["count"] += 1
-        s["threads"].add(e["thread"])
+        s["threads"].add(_session_key(e["thread"]))
         s["tools"].add(e["tool"])
         s["top_tools"][e["tool"]] += 1
 
@@ -392,7 +399,7 @@ def _aggregate_skills(events: list[dict]) -> list[dict]:
             }
         s = stats[skill]
         s["count"] += 1
-        s["threads"].add(e["thread"])
+        s["threads"].add(_session_key(e["thread"]))
         s["users"][e["uid"]] += 1
         if e["day"] < s["first"]:
             s["first"] = e["day"]
