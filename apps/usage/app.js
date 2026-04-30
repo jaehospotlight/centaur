@@ -27,16 +27,14 @@ const TOOL_COLS = [
 
 const USER_COLS = [
   { key: "rank",     label: "#",       num: true,  noSort: true, w: "3.5%" },
-  { key: "name",     label: "Name",    num: false, w: "15%",     cls: "user-name", hasPfp: true },
+  { key: "name",     label: "Name",    num: false, w: "16%",     cls: "user-name", hasPfp: true },
   { key: "team",     label: "Team",    num: false, w: "12%",     cls: "col-team" },
-  { key: "calls",    label: "Calls",   num: true,  w: "6%" },
   { key: "threads",  label: "Sessions", num: true,  w: "7%" },
   { key: "tokens",   label: "Tokens",  num: true,  w: "6%", fmt: "compact" },
-  { key: "tools",    label: "Tools",   num: true,  w: "5%" },
-  { key: "calls_per_thread", label: "C/S", num: true, w: "4.5%", cls: "col-cpt" },
-  { key: "tool1",    label: "#1 Tool", num: false, w: "14%", noSort: true, cls: "method" },
-  { key: "tool2",    label: "#2 Tool", num: false, w: "14%", noSort: true, cls: "method col-method2" },
-  { key: "tool3",    label: "#3 Tool", num: false, w: "14%", noSort: true, cls: "method col-method3 col-tool3" },
+  { key: "tools",    label: "Tools",   num: true,  w: "5.5%" },
+  { key: "tool1",    label: "#1 Tool", num: false, w: "16%", noSort: true, cls: "method" },
+  { key: "tool2",    label: "#2 Tool", num: false, w: "16%", noSort: true, cls: "method col-method2" },
+  { key: "tool3",    label: "#3 Tool", num: false, w: "16%", noSort: true, cls: "method col-method3 col-tool3" },
 ];
 
 const TEAM_COLS = [
