@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from collections import Counter
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -506,7 +507,7 @@ async def _extract_workflows(pool) -> list[dict]:
         s["total"] += cnt
         if status == "completed":
             s["completed"] += cnt
-            s["avg_duration_s"] = round(row["avg_duration_s"], 1) if row["avg_duration_s"] else None
+            s["avg_duration_s"] = round(float(row["avg_duration_s"]), 1) if row["avg_duration_s"] else None
         elif status == "failed":
             s["failed"] += cnt
         else:
@@ -593,7 +594,7 @@ async def handler(_inp: dict[str, Any], ctx: WorkflowContext) -> dict[str, Any]:
             "INSERT INTO usage_stats (id, data_json, generated_at) "
             "VALUES ('current', $1::jsonb, NOW()) "
             "ON CONFLICT (id) DO UPDATE SET data_json = $1::jsonb, generated_at = NOW()",
-            json.dumps(data),
+            json.dumps(data, default=lambda o: float(o) if isinstance(o, Decimal) else str(o)),
         ),
         step_kind="persist",
     )
