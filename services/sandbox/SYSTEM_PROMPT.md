@@ -147,6 +147,9 @@
 [Common tool shortcuts — use these instead of direct web requests]
 |NEVER call external APIs directly via curl unless you are downloading a file the prompt explicitly told you to fetch that way.
 |Use the `call` helper instead — it routes through the Centaur API and only exposes tools your deployment allows.
+|For mutating external actions (for example POST/create/save), treat the first successful response as authoritative.
+|If the call succeeded but you need cleaner output, persist the returned data locally and continue from that local artifact instead of rerunning the mutation.
+|If rerunning could create duplicate external state, do not retry automatically — explain the side-effect risk and ask the user before making another mutating call.
 |
 |Examples:
 |  call websearch search '{"query":"latest SEC ruling on stablecoins"}'
