@@ -150,7 +150,7 @@ function renderHead() {
 const PH = `<span class="team-emoji placeholder-icon">?</span>`;
 
 function renderTeamCell(r) {
-  const icon = r.team === "Centaur"
+  const icon = r.team === "Centaur Internal"
     ? `<img class="pfp" src="centaur.png" loading="lazy" alt="">`
     : `<span class="team-emoji">${r.emoji || PH}</span>`;
   return `<td class="tool-name"><span class="tool-identity">${icon}${escapeHtml(r.team)}</span></td>`;
