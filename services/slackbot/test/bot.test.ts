@@ -520,6 +520,75 @@ describe("execute streams structured progress immediately", () => {
     expect(thread.post).toHaveBeenCalledWith(expect.anything(), { taskDisplayMode: "plan" });
     expect(postedChunks).toEqual(streamedChunks);
   });
+
+  it("upgrades streamed table replies through edit() after the stream completes", async () => {
+    const mockClient = {
+      execute: vi.fn().mockResolvedValue({ execution_id: "exe-stream-table-upgrade" }),
+    };
+
+    const { SlackBot } = await import("../src/lib/bot/bot");
+    const bot = new SlackBot(mockClient as any);
+
+    vi.spyOn(bot as any, "streamExecution").mockImplementation(async function* (
+      _threadKey: string,
+      _executionId: string,
+      tracker: { lastAssistantText: string },
+    ) {
+      tracker.lastAssistantText = [
+        "Summary",
+        "",
+        "| Time | Block |",
+        "| --- | --- |",
+        "| 8:00 | Breakfast |",
+      ].join("\n");
+      yield { type: "markdown_text", text: "\u200b" };
+      yield {
+        type: "blocks",
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: "Summary" } },
+          {
+            type: "table",
+            rows: [
+              [
+                { type: "raw_text", text: "Time" },
+                { type: "raw_text", text: "Block" },
+              ],
+              [
+                { type: "raw_text", text: "8:00" },
+                { type: "raw_text", text: "Breakfast" },
+              ],
+            ],
+          },
+        ],
+      };
+    });
+    vi.spyOn(bot as any, "ackFinalDelivery").mockResolvedValue(undefined);
+    vi.spyOn(bot as any, "setAssistantTitle").mockResolvedValue(undefined);
+
+    const edit = vi.fn(async () => {});
+    const thread = {
+      id: "C123456:1770000000.000200",
+      post: vi.fn(async () => ({ id: "m-2", edit })),
+    };
+
+    await (bot as any).execute(thread, thread.id, {
+      assignmentGeneration: 8,
+      userId: "U123456",
+      teamId: "T123456",
+    });
+
+    expect(thread.post).toHaveBeenCalledOnce();
+    expect(edit).toHaveBeenCalledOnce();
+    expect(edit).toHaveBeenCalledWith({
+      markdown: [
+        "Summary",
+        "",
+        "| Time | Block |",
+        "| --- | --- |",
+        "| 8:00 | Breakfast |",
+      ].join("\n"),
+    });
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

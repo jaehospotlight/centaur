@@ -622,6 +622,7 @@ export class SlackBot {
     log.info("execute_start", { thread_key: threadKey, user_id: opts.userId, execution_id: executionId });
 
     let deliveredToSlack = false;
+    let streamedReply: Awaited<ReturnType<BotThread["post"]>> | undefined;
     try {
       try {
         const stream = this.streamExecution(threadKey, executionId, tracker, t0, ac.signal);
@@ -636,7 +637,7 @@ export class SlackBot {
         }
 
         if (firstChunk) {
-          await thread.post(
+          streamedReply = await thread.post(
             (async function* () {
               yield firstChunk;
               while (true) {
@@ -709,6 +710,23 @@ export class SlackBot {
 
       const finalText = (tracker.resultText || tracker.lastAssistantText).trim();
       log.info("execute_complete", { thread_key: threadKey, duration_s: Math.round((Date.now() - t0) / 100) / 10, result_length: finalText.length, overflow_chunks: tracker.overflowChunks.length });
+
+      if (streamedReply) {
+        const streamedMarkdown = this.renderStreamedExecutionMarkdown(threadKey, finalText, tracker.repoContext);
+        const streamedBlocks = renderMarkdownForSlack(streamedMarkdown).blocks;
+        const containsTableBlock = Boolean(streamedBlocks?.some((block) => block.type === "table"));
+        if (containsTableBlock && tracker.overflowChunks.length === 0) {
+          try {
+            await streamedReply.edit({ markdown: streamedMarkdown });
+          } catch (err) {
+            log.warn("streamed_reply_block_upgrade_failed", {
+              thread_key: threadKey,
+              execution_id: executionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
 
       if (deliveredToSlack) {
         await this.ackFinalDelivery(executionId, threadKey, { requireLease: false });
@@ -1216,21 +1234,19 @@ export class SlackBot {
       : "";
     const resultText = typeof finalPayload.result_text === "string" ? finalPayload.result_text.trim() : "";
     const errorText = typeof finalPayload.error_text === "string" ? finalPayload.error_text.trim() : "";
-    const rendered = rewriteSlackFileLinks(
-      convertDashboardBlocks(renderTerminalResultCopy({
+    const rendered = this.renderStreamedExecutionMarkdown(
+      threadKey,
+      renderTerminalResultCopy({
         status,
         terminalReason,
         resultText,
         errorText,
-      })),
+      }),
       normalizeRepoContext(finalPayload.repo_context),
     );
-    const viewerSuffix = this.viewerUrl
-      ? `\n\n[Thread Viewer](${this.viewerUrl}/${encodeURIComponent(threadKey)})`
-      : "";
 
     if (rendered) {
-      return `${rendered}${viewerSuffix}`;
+      return rendered;
     }
 
     if (this.viewerUrl) {
@@ -1238,6 +1254,22 @@ export class SlackBot {
     }
 
     return "Agent completed with no output.";
+  }
+
+  private renderStreamedExecutionMarkdown(
+    threadKey: string,
+    text: string,
+    repoContext?: SlackRepoContext,
+  ): string {
+    const rendered = rewriteSlackFileLinks(
+      convertDashboardBlocks(text.trim()),
+      repoContext,
+    );
+    if (!rendered) return "";
+    const viewerSuffix = this.viewerUrl
+      ? `\n\n[Thread Viewer](${this.viewerUrl}/${encodeURIComponent(threadKey)})`
+      : "";
+    return `${rendered}${viewerSuffix}`;
   }
 
   private async postSlackMarkdown(
