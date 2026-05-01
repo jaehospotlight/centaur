@@ -137,6 +137,20 @@ def test_container_env_includes_firewall_host_for_secret_bootstrap(
     assert env_map["no_proxy"] == env_map["NO_PROXY"]
 
 
+def test_prompt_bundle_includes_live_capability_inventory_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api.sandbox.kubernetes import _prompt_bundle
+
+    monkeypatch.delenv("CENTAUR_OVERLAY_DIR", raising=False)
+
+    prompt = _prompt_bundle(None)
+
+    assert "[Authoritative deployment-capability answers]" in prompt
+    assert "prefer a live capability listing over workspace files or memory" in prompt
+    assert "partial and non-exhaustive" in prompt
+
+
 @pytest.mark.asyncio
 async def test_ensure_clients_disables_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeApiClient:
