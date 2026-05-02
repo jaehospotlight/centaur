@@ -42,7 +42,26 @@ RUN useradd -m -s /bin/bash -u 1001 agent \
 
 # ── Global npm CLIs (root, cached) ──────────────────────────────────────────
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    npm install -g @anthropic-ai/claude-code@1.0.16 @openai/codex@0.121.0 @mariozechner/pi-coding-agent@0.67.2 agent-browser@0.25.4
+    npm install -g @anthropic-ai/claude-code@1.0.16 @openai/codex@0.121.0 @mariozechner/pi-coding-agent@0.67.2 agent-browser@0.26.0
+
+# ── agent-browser system deps (must run as root before USER agent) ───────────
+# Chrome for Testing doesn't provide Linux ARM64 builds; fall back to system chromium
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        libxcb-shm0 libx11-xcb1 libx11-6 libxcb1 libxext6 libxrandr2 \
+        libxcomposite1 libxcursor1 libxdamage1 libxfixes3 libxi6 \
+        libgtk-3-0t64 libpangocairo-1.0-0 libpango-1.0-0 libatk1.0-0t64 \
+        libcairo-gobject2 libcairo2 libgdk-pixbuf-2.0-0 libxrender1 \
+        libasound2t64 libfreetype6 libfontconfig1 libdbus-1-3 libnss3 \
+        libnspr4 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 \
+        libatspi2.0-0t64 libcups2t64 libxshmfence1 libgbm1 \
+        fonts-noto-color-emoji fonts-noto-cjk fonts-freefont-ttf; \
+    else \
+      apt-get update && apt-get install -y --no-install-recommends \
+        chromium-browser || true; \
+    fi
 
 USER agent
 WORKDIR /home/agent
@@ -71,13 +90,9 @@ RUN set -eux; \
     ln -sf "$HOME/.amp/bin/amp" "$HOME/.local/bin/amp"; \
     rm -f /tmp/amp.sha256
 
-# ── agent-browser (Chromium + system deps — heavy, keep isolated) ────────────
-# Chrome for Testing doesn't provide Linux ARM64 builds; fall back to system chromium
+# ── agent-browser: download Chrome binary (runs as agent, deps already installed) ─
 RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
-      agent-browser install --with-deps; \
-    else \
-      apt-get update && apt-get install -y --no-install-recommends chromium-browser || true \
-      && rm -rf /var/lib/apt/lists/*; \
+      agent-browser install; \
     fi
 
 # ── Agent skills + workspace setup (rarely changes) ─────────────────────────
