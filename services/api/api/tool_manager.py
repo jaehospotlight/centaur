@@ -252,6 +252,7 @@ class LoadedTool:
         methods: list[ToolMethod],
         hosts: list[str] | None = None,
         secrets_keys: list[str] | None = None,
+        optional_secrets_keys: list[str] | None = None,
     ):
         self.name = name
         self.description = description
@@ -259,6 +260,7 @@ class LoadedTool:
         self.methods = methods
         self.hosts: list[str] = hosts or []
         self.secrets_keys: list[str] = secrets_keys or []
+        self.optional_secrets_keys: list[str] = optional_secrets_keys or []
 
 
 @dataclass
@@ -350,6 +352,7 @@ class ToolManager:
                 name = tool_dir.name
                 hosts = tool_conf.get("hosts", [])
                 secrets_keys = tool_conf.get("secrets", [])
+                optional_secrets_keys = tool_conf.get("optional_secrets", [])
 
                 # Validate host patterns
                 for h in hosts:
@@ -370,6 +373,7 @@ class ToolManager:
                     "module": tool_conf.get("module", "client.py"),
                     "hosts": hosts,
                     "secrets_keys": secrets_keys,
+                    "optional_secrets_keys": optional_secrets_keys,
                 }
 
                 if name in seen:
@@ -510,10 +514,11 @@ class ToolManager:
 
         # 2. Dynamic tool entries
         for lt in self.tools.values():
-            if not lt.hosts or not lt.secrets_keys:
+            all_keys = lt.secrets_keys + lt.optional_secrets_keys
+            if not lt.hosts or not all_keys:
                 continue
             for host in lt.hosts:
-                result.setdefault(host, set()).update(lt.secrets_keys)
+                result.setdefault(host, set()).update(all_keys)
 
         return {host: sorted(keys) for host, keys in sorted(result.items())}
 
@@ -594,6 +599,7 @@ class ToolManager:
             methods=methods,
             hosts=manifest.get("hosts", []),
             secrets_keys=manifest.get("secrets_keys", []),
+            optional_secrets_keys=manifest.get("optional_secrets_keys", []),
         )
         log.info(
             "tool_loaded",
@@ -722,8 +728,9 @@ class ToolManager:
         log.info("tool_call_started", **call_fields)
 
         ctx = lt.ctx
-        if lt.secrets_keys:
-            resolved = await _resolve_secrets(lt.secrets_keys)
+        all_secret_keys = lt.secrets_keys + lt.optional_secrets_keys
+        if all_secret_keys:
+            resolved = await _resolve_secrets(all_secret_keys)
             if resolved:
                 ctx = ToolContext(
                     name=lt.name,

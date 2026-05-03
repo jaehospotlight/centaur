@@ -25,4 +25,5 @@ packages = ["."]
 [tool.ai-v2]
 module = "client.py"
 hosts = ["slack.com"]
-secrets = ["SLACK_BOT_TOKEN", "SLACK_SEARCH_TOKEN"]
+secrets = ["SLACK_BOT_TOKEN"]
+optional_secrets = ["SLACK_SEARCH_TOKEN"]
