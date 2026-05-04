@@ -14,6 +14,7 @@ WORKFLOW_NAME = "slack_thread_turn"
 
 _RECOVERY_COMMANDS = frozenset(
     {
+        "again",
         "continue",
         "do it again",
         "finish the job",
@@ -66,8 +67,23 @@ class Input:
 
 
 def _normalize_recovery_command(text: str) -> str:
-    normalized = _RECOVERY_NORMALIZE_RE.sub(" ", text.lower())
-    return " ".join(normalized.split())
+    normalized = " ".join(_RECOVERY_NORMALIZE_RE.sub(" ", text.lower()).split())
+    if normalized in _RECOVERY_COMMANDS:
+        return normalized
+
+    # Slack retries often start with a direct mention of the bot before the
+    # actual retry command, e.g. "@Centaur AI again" or "<@U123> retry".
+    stripped = text.lstrip()
+    if not stripped.startswith(("@", "<@")):
+        return normalized
+
+    tokens = normalized.split()
+    for start in range(1, len(tokens)):
+        candidate = " ".join(tokens[start:])
+        if candidate in _RECOVERY_COMMANDS:
+            return candidate
+
+    return normalized
 
 
 def _extract_text_parts(parts: Any) -> str | None:
