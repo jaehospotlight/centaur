@@ -178,6 +178,14 @@ class TestExtractThreadId:
         event = {"type": "system", "subtype": "init", "session_id": ""}
         assert extract_thread_id("amp", event) is None
 
+    def test_amp_assistant_session_id(self):
+        event = {
+            "type": "assistant",
+            "session_id": "T-assistant",
+            "message": {"stop_reason": "end_turn", "content": []},
+        }
+        assert extract_thread_id("amp", event) == "T-assistant"
+
     def test_codex_thread_started(self):
         event = {"type": "thread.started", "thread_id": "T-abc"}
         assert extract_thread_id("codex", event) == "T-abc"

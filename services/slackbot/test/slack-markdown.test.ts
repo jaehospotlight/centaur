@@ -6,7 +6,7 @@ import {
 } from "../src/lib/slack/markdown";
 
 describe("Slack markdown rendering", () => {
-  it("omits fenced code language labels from Slack mrkdwn", () => {
+  it("keeps fenced code languages in markdown blocks for Slack highlighting", () => {
     const rendered = renderMarkdownForSlack([
       "```rust",
       "fn main() {",
@@ -15,12 +15,20 @@ describe("Slack markdown rendering", () => {
       "```",
     ].join("\n"));
 
+    expect(rendered.blocks).toEqual([{
+      type: "markdown",
+      text: [
+        "```rust",
+        "fn main() {",
+        "    println!(\"Hello, world!\");",
+        "}",
+        "```",
+      ].join("\n"),
+    }]);
     expect(rendered.text).toBe([
-      "```",
       "fn main() {",
       "    println!(\"Hello, world!\");",
       "}",
-      "```",
     ].join("\n"));
   });
 
@@ -36,7 +44,7 @@ describe("Slack markdown rendering", () => {
     expect(rendered.blocks?.some((block) => block.type === "table")).toBe(true);
   });
 
-  it("renders headings as separate Slack section blocks", () => {
+  it("renders headings as separate Slack markdown blocks", () => {
     const rendered = renderMarkdownForSlack([
       "# Summary",
       "",
@@ -48,14 +56,14 @@ describe("Slack markdown rendering", () => {
     ].join("\n"));
 
     expect(rendered.blocks).toEqual([
-      { type: "section", text: { type: "mrkdwn", text: "*Summary*" } },
-      { type: "section", text: { type: "mrkdwn", text: "Short intro." } },
-      { type: "section", text: { type: "mrkdwn", text: "*Details*" } },
-      { type: "section", text: { type: "mrkdwn", text: "- One" } },
+      { type: "markdown", text: "# Summary" },
+      { type: "markdown", text: "Short intro." },
+      { type: "markdown", text: "## Details" },
+      { type: "markdown", text: "- One" },
     ]);
   });
 
-  it("renders separate paragraphs as separate Slack section blocks", () => {
+  it("renders separate paragraphs as separate Slack markdown blocks", () => {
     const rendered = renderMarkdownForSlack([
       "First paragraph.",
       "",
@@ -65,9 +73,38 @@ describe("Slack markdown rendering", () => {
     ].join("\n"));
 
     expect(rendered.blocks).toEqual([
-      { type: "section", text: { type: "mrkdwn", text: "First paragraph." } },
-      { type: "section", text: { type: "mrkdwn", text: "Second paragraph." } },
-      { type: "section", text: { type: "mrkdwn", text: "Third paragraph." } },
+      { type: "markdown", text: "First paragraph." },
+      { type: "markdown", text: "Second paragraph." },
+      { type: "markdown", text: "Third paragraph." },
+    ]);
+  });
+
+  it("renders Amp footers as Slack rich text blocks", () => {
+    const rendered = renderMarkdownForSlack([
+      "Final answer.",
+      "",
+      "[View in Amp](https://ampcode.com/threads/T-final-thread) · `amp threads continue T-final-thread` · `490cd7ae`",
+    ].join("\n"));
+
+    expect(rendered.blocks).toEqual([
+      { type: "markdown", text: "Final answer." },
+      {
+        type: "rich_text",
+        elements: [{
+          type: "rich_text_section",
+          elements: [
+            {
+              type: "link",
+              url: "https://ampcode.com/threads/T-final-thread",
+              text: "View in Amp",
+            },
+            { type: "text", text: " · " },
+            { type: "text", text: "amp threads continue T-final-thread", style: { code: true } },
+            { type: "text", text: " · " },
+            { type: "text", text: "490cd7ae", style: { code: true } },
+          ],
+        }],
+      },
     ]);
   });
 
@@ -81,9 +118,9 @@ describe("Slack markdown rendering", () => {
     expect(renderMarkdownForSlack(chunks[1]).blocks).toHaveLength(6);
   });
 
-  it("keeps plain text messages together up to Slack's 40k text limit", () => {
+  it("splits plain text messages at Slack's markdown block budget", () => {
     const text = "a".repeat(39_999);
 
-    expect(splitMarkdownForSlackMessages(text)).toEqual([text]);
+    expect(splitMarkdownForSlackMessages(text)).toHaveLength(4);
   });
 });

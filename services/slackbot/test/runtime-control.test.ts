@@ -41,6 +41,19 @@ function createThread(id = "slack:C123:1700000000.000100") {
   };
 }
 
+function streamText(chunks: StreamChunk[]): string {
+  return chunks.map((chunk) => {
+    if (chunk.type === "markdown_text") return chunk.text;
+    if (chunk.type === "blocks") {
+      return chunk.blocks
+        .filter((block) => block.type === "markdown")
+        .map((block) => typeof block.text === "string" ? block.text : "")
+        .join("");
+    }
+    return "";
+  }).join("");
+}
+
 function userMessage(text: string, opts?: { id?: string; teamId?: string; isMention?: boolean }): BotMessage {
   const ts = opts?.id || "1700000000.000100";
   return {
@@ -245,7 +258,7 @@ describe("SlackBot runtime control", () => {
 
     expect(client.cancelExecution).toHaveBeenCalledWith("exe-1");
     expect(runtime.postCount).toBe(1);
-    expect(streamedChunks.some((chunk) => chunk.type === "markdown_text")).toBe(true);
+    expect(streamText(streamedChunks).trim()).not.toBe("");
   });
 
   it("acks live streamed deliveries without requiring an outbox lease", async () => {
@@ -278,11 +291,7 @@ describe("SlackBot runtime control", () => {
     }));
 
     expect(client.getExecution).toHaveBeenCalledWith("exe-new");
-    expect(
-      runtime.streamedChunks.some(
-        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("stored answer"),
-      ),
-    ).toBe(true);
+    expect(streamText(runtime.streamedChunks)).toContain("stored answer");
   });
 
   it("suppresses the pre-start failure message when a live execution hits a Slack fallback error", async () => {
@@ -367,16 +376,8 @@ describe("SlackBot runtime control", () => {
       isMention: true,
     }));
 
-    expect(
-      runtime.streamedChunks.some(
-        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("Agent hit a runtime issue before finishing. Please retry."),
-      ),
-    ).toBe(true);
-    expect(
-      runtime.streamedChunks.some(
-        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("Connection error."),
-      ),
-    ).toBe(false);
+    expect(streamText(runtime.streamedChunks)).toContain("Agent hit a runtime issue before finishing. Please retry.");
+    expect(streamText(runtime.streamedChunks)).not.toContain("Connection error.");
   });
 
   it("maps cancelled hydration to a friendly cancellation message", async () => {
@@ -398,16 +399,8 @@ describe("SlackBot runtime control", () => {
       isMention: true,
     }));
 
-    expect(
-      runtime.streamedChunks.some(
-        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("Request cancelled. Send another message when you want to retry."),
-      ),
-    ).toBe(true);
-    expect(
-      runtime.streamedChunks.some(
-        (chunk) => chunk.type === "markdown_text" && chunk.text.includes("cancel_requested"),
-      ),
-    ).toBe(false);
+    expect(streamText(runtime.streamedChunks)).toContain("Request cancelled. Send another message when you want to retry.");
+    expect(streamText(runtime.streamedChunks)).not.toContain("cancel_requested");
   });
 
   it("rewrites streamed file links to GitHub blob URLs before posting to Slack", async () => {
@@ -484,6 +477,44 @@ describe("SlackBot runtime control", () => {
     expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-cancelled", expect.any(String));
   });
 
+  it("adds Amp and commit footer to completed final deliveries", async () => {
+    const client = createImmediateStreamClient();
+    client.claimFinalDeliveries = vi.fn(async () => ({
+      deliveries: [
+        {
+          execution_id: "exe-completed",
+          thread_key: normalizedThreadKey,
+          delivery: { platform: "slack" },
+          final_payload: {
+            status: "completed",
+            result_text: "final answer",
+            agent_thread_id: "T-final-thread",
+            repo_context: {
+              git_commit: "490cd7aed56fb93efd52e4fa3dd06874d762d88a",
+            },
+          },
+        },
+      ],
+    }));
+    const slack = createSlackAdapter({
+      postMessage: vi.fn(async () => ({ id: "msg-final" })),
+    });
+    const bot = new SlackBot(client, "", slack);
+
+    await (bot as any).drainFinalDeliveriesOnce();
+
+    expect(slack.postMessage).toHaveBeenCalledWith(
+      `slack:${normalizedThreadKey}`,
+      {
+        markdown: [
+          "final answer",
+          "",
+          "[View in Amp](https://ampcode.com/threads/T-final-thread) · `amp threads continue T-final-thread` · `490cd7ae`",
+        ].join("\n"),
+      },
+    );
+  });
+
   it("uses explicit Slack delivery destination for workflow final deliveries", async () => {
     const client = createImmediateStreamClient();
     client.claimFinalDeliveries = vi.fn(async () => ({
@@ -545,7 +576,11 @@ describe("SlackBot runtime control", () => {
     expect(slack.postMessage).toHaveBeenCalledWith(
       `slack:${normalizedThreadKey}`,
       {
-        markdown: "See [bot.ts](https://github.com/paradigmxyz/centaur/blob/490cd7aed56fb93efd52e4fa3dd06874d762d88a/services/slackbot/src/lib/bot/bot.ts#L1-L5)",
+        markdown: [
+          "See [bot.ts](https://github.com/paradigmxyz/centaur/blob/490cd7aed56fb93efd52e4fa3dd06874d762d88a/services/slackbot/src/lib/bot/bot.ts#L1-L5)",
+          "",
+          "`490cd7ae`",
+        ].join("\n"),
       },
     );
     expect(client.markFinalDelivered).toHaveBeenCalledWith("exe-file-link", expect.any(String));

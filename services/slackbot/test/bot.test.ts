@@ -11,6 +11,7 @@ import {
   rewriteSlackFileLinks,
 } from "../src/lib/bot/bot";
 import { normalizeHarnessEvent, type CanonicalEvent } from "@centaur/harness-events";
+import { CentaurClient } from "@centaur/api-client";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -545,7 +546,7 @@ describe("execute streams structured progress immediately", () => {
       yield {
         type: "blocks",
         blocks: [
-          { type: "section", text: { type: "mrkdwn", text: "Summary" } },
+          { type: "markdown", text: "Summary" },
           {
             type: "table",
             rows: [
@@ -665,9 +666,11 @@ describe("consumeWire reconnects on graceful EOF without turn.done", () => {
     expect(streamCalls).toBeGreaterThanOrEqual(2);
 
     // Verify the final output contains the answer (not "Agent completed with no output")
-    const markdownChunks = chunks.filter((c) => c.type === "markdown_text");
-    expect(markdownChunks.length).toBeGreaterThan(0);
-    const finalOutput = markdownChunks.map((c) => c.text).join("");
+    const finalOutput = chunks
+      .flatMap((chunk) => chunk.type === "blocks" ? chunk.blocks : [])
+      .filter((block) => block.type === "markdown")
+      .map((block) => block.text)
+      .join("");
     expect(finalOutput).toContain("Here is the answer.");
     expect(finalOutput).not.toContain("no output");
   });
@@ -776,23 +779,81 @@ describe("consumeWire reconnects on graceful EOF without turn.done", () => {
     }
 
     const contextChunk = chunks.find(
-      (chunk) => chunk.type === "blocks" && chunk.blocks[0]?.type === "context",
+      (chunk) => chunk.type === "blocks" && chunk.blocks[0]?.type === "rich_text",
     );
     const appName = process.env.APP_NAME || "Centaur";
-    expect(contextChunk?.blocks[0].elements[0].text).toContain(
-      `${appName} · <https://ampcode.com/threads/T-test-thread|agent> · `,
-    );
+    expect(contextChunk?.blocks[0].elements[0].elements).toEqual([
+      { type: "text", text: `${appName} · ` },
+      {
+        type: "link",
+        url: "https://ampcode.com/threads/T-test-thread",
+        text: "agent",
+      },
+      expect.objectContaining({ type: "text", text: expect.stringContaining(" · ") }),
+    ]);
     expect(chunks.some((chunk) => chunk.type === "markdown_text" && chunk.text.includes("Centaur"))).toBe(false);
     expect(chunks).toContainEqual({
       type: "blocks",
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: "*Summary*" } },
-        { type: "section", text: { type: "mrkdwn", text: "Hello." } },
+        { type: "markdown", text: "# Summary" },
+        { type: "markdown", text: "Hello." },
+        {
+          type: "rich_text",
+          elements: [{
+            type: "rich_text_section",
+            elements: [
+              {
+                type: "link",
+                url: "https://ampcode.com/threads/T-test-thread",
+                text: "View in Amp",
+              },
+              { type: "text", text: " · " },
+              {
+                type: "text",
+                text: "amp threads continue T-test-thread",
+                style: { code: true },
+              },
+            ],
+          }],
+        },
       ],
     });
   });
 
-  it("streams long plain text in one Slack message before using overflow posts", async () => {
+  it("uses turn.done agent_thread_id when system init was missed", async () => {
+    const mockClient = {
+      streamEvents: () => (async function* () {
+        yield {
+          eventId: 1,
+          eventKind: "amp_raw_event",
+          data: {
+            type: "turn.done",
+            turn_id: 1,
+            result: "Hello.",
+            agent_thread_id: "T-turn-done-thread",
+          },
+        };
+      })(),
+      markFinalDelivered: async () => ({ ok: true }),
+    } as unknown as CentaurClient
+    const { SlackBot } = await import("../src/lib/bot/bot");
+    const bot = new SlackBot(mockClient);
+
+    const chunks: any[] = [];
+    for await (const chunk of (bot as any).streamExecution(
+      "test:turn-done-thread",
+      "exe-turn-done-thread",
+      new ProgressTracker(),
+      Date.now() - 1200,
+      new AbortController().signal,
+    )) {
+      chunks.push(chunk);
+    }
+
+    expect(JSON.stringify(chunks)).toContain("https://ampcode.com/threads/T-turn-done-thread");
+  });
+
+  it("splits long plain text at Slack's markdown block payload budget", async () => {
     const result = "a".repeat(13_000);
     const mockClient = {
       streamEvents: () => (async function* () {
@@ -819,10 +880,13 @@ describe("consumeWire reconnects on graceful EOF without turn.done", () => {
       chunks.push(chunk);
     }
 
-    const markdownChunks = chunks.filter((chunk) => chunk.type === "markdown_text");
-    expect(markdownChunks).toHaveLength(2);
-    expect(markdownChunks.map((chunk) => chunk.text).join("")).toBe(result);
-    expect(tracker.overflowChunks).toEqual([]);
+    const markdownBlocks = chunks
+      .flatMap((chunk) => chunk.type === "blocks" ? chunk.blocks : [])
+      .filter((block) => block.type === "markdown");
+    expect(markdownBlocks).toHaveLength(1);
+    expect(markdownBlocks[0].text + tracker.overflowChunks.join("")).toBe(result);
+    expect(markdownBlocks[0].text.length).toBeLessThanOrEqual(12_000);
+    expect(tracker.overflowChunks).toHaveLength(1);
   });
 });
 

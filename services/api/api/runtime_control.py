@@ -987,10 +987,12 @@ async def enqueue_execution(
 
 async def get_execution(pool, execution_id: str) -> dict[str, Any] | None:
     row = await pool.fetchrow(
-        "SELECT execution_id, thread_key, assignment_generation, execute_id, status, "
-        "durable_turn_id, terminal_reason, result_text, error_text, metadata, created_at, "
-        "started_at, completed_at, updated_at "
-        "FROM agent_execution_requests WHERE execution_id = $1",
+        "SELECT e.execution_id, e.thread_key, e.assignment_generation, e.execute_id, e.status, "
+        "e.durable_turn_id, e.terminal_reason, e.result_text, e.error_text, e.metadata, "
+        "e.created_at, e.started_at, e.completed_at, e.updated_at, s.agent_thread_id "
+        "FROM agent_execution_requests e "
+        "LEFT JOIN sandbox_sessions s ON s.thread_key = e.thread_key "
+        "WHERE e.execution_id = $1",
         execution_id,
     )
     if not row:
@@ -1005,6 +1007,7 @@ async def get_execution(pool, execution_id: str) -> dict[str, Any] | None:
         "terminal_reason": row["terminal_reason"],
         "result_text": row["result_text"],
         "error_text": row["error_text"],
+        "agent_thread_id": row["agent_thread_id"] or "",
         "metadata": decode_jsonb(row["metadata"], {}),
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "started_at": row["started_at"].isoformat() if row["started_at"] else None,
@@ -1252,6 +1255,11 @@ async def _mark_execution_terminal(
     prompt_ref = None
     prompt_sha = None
     repo_context: dict[str, str] = {}
+    raw_agent_thread_id = await pool.fetchval(
+        "SELECT agent_thread_id FROM sandbox_sessions WHERE thread_key = $1",
+        thread_key,
+    )
+    agent_thread_id = raw_agent_thread_id.strip() if isinstance(raw_agent_thread_id, str) else ""
     if row:
         ag = row["assignment_generation"]
         metadata = decode_jsonb(row["metadata"], {})
@@ -1298,6 +1306,7 @@ async def _mark_execution_terminal(
             "terminal_reason": terminal_reason,
             "result_text": result_text,
             **({"error_text": error_text} if error_text else {}),
+            **({"agent_thread_id": agent_thread_id} if agent_thread_id else {}),
             **({"repo_context": repo_context} if repo_context else {}),
         },
     )
@@ -1313,6 +1322,7 @@ async def _mark_execution_terminal(
                 "terminal_reason": terminal_reason,
                 "result_text": result_text,
                 **({"error_text": error_text} if error_text else {}),
+                **({"agent_thread_id": agent_thread_id} if agent_thread_id else {}),
                 **({"repo_context": repo_context} if repo_context else {}),
             }
         ),

@@ -340,6 +340,15 @@ async def test_mark_execution_terminal_delays_outbox_claimability(db_pool):
 
     execution_id = f"exe-{uuid.uuid4().hex[:10]}"
     thread_key = f"slack:C-test:{uuid.uuid4().hex}"
+    agent_thread_id = "T-terminal-thread"
+    await db_pool.execute(
+        "INSERT INTO sandbox_sessions ("
+        "thread_key, sandbox_id, harness, engine, state, agent_thread_id"
+        ") VALUES ($1, $2, 'amp', 'amp', 'idle', $3)",
+        thread_key,
+        f"rt-{uuid.uuid4().hex[:8]}",
+        agent_thread_id,
+    )
     await db_pool.execute(
         "INSERT INTO agent_final_delivery_outbox ("
         "execution_id, thread_key, delivery, state, lease_owner, lease_expires_at"
@@ -361,7 +370,7 @@ async def test_mark_execution_terminal_delays_outbox_claimability(db_pool):
         )
 
     row = await db_pool.fetchrow(
-        "SELECT state, next_attempt_at, lease_owner, lease_expires_at "
+        "SELECT state, next_attempt_at, lease_owner, lease_expires_at, final_payload "
         "FROM agent_final_delivery_outbox WHERE execution_id = $1",
         execution_id,
     )
@@ -370,6 +379,22 @@ async def test_mark_execution_terminal_delays_outbox_claimability(db_pool):
     assert row["next_attempt_at"] >= started_at + dt.timedelta(seconds=1.5)
     assert row["lease_owner"] is None
     assert row["lease_expires_at"] is None
+    final_payload = row["final_payload"]
+    if isinstance(final_payload, str):
+        final_payload = json.loads(final_payload)
+    assert final_payload["agent_thread_id"] == agent_thread_id
+
+    state_event = await db_pool.fetchrow(
+        "SELECT event_json FROM agent_execution_events "
+        "WHERE execution_id = $1 AND event_kind = 'execution_state' "
+        "ORDER BY event_id DESC LIMIT 1",
+        execution_id,
+    )
+    assert state_event is not None
+    event_json = state_event["event_json"]
+    if isinstance(event_json, str):
+        event_json = json.loads(event_json)
+    assert event_json["agent_thread_id"] == agent_thread_id
 
 
 @pytest.mark.asyncio

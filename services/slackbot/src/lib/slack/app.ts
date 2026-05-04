@@ -8,7 +8,8 @@ import { SlackBot, type BotAttachment, type BotMessage, type BotThread, type Pos
 import {
   markdownToPlainText,
   renderMarkdownForSlack,
-  slackMrkdwnToAst,
+  slackFormattedTextToAst,
+  slackFormattedTextToMarkdown,
   type Root,
 } from "./markdown";
 import { classifySlackError, SlackApiCallError } from "./errors";
@@ -328,11 +329,11 @@ class WebClientSlackAdapter implements SlackAdapter {
     event: SlackMessageEvent,
     options?: { skipSelfMention?: boolean },
   ): Promise<BotMessage> {
-    const mrkdwn = await this.resolveInlineMentions(event.text || "", options?.skipSelfMention ?? true);
+    const slackText = await this.resolveInlineMentions(event.text || "", options?.skipSelfMention ?? true);
     return {
       id: event.ts,
-      text: markdownToPlainText(mrkdwn),
-      formatted: slackMrkdwnToAst(mrkdwn),
+      text: markdownToPlainText(slackFormattedTextToMarkdown(slackText)),
+      formatted: slackFormattedTextToAst(slackText),
       raw: {
         ts: event.ts,
         team_id: event.team_id ?? event.team,

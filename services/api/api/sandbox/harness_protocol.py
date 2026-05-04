@@ -95,6 +95,8 @@ def extract_thread_id(engine: str, event: dict) -> str | None:
     if engine in ("amp", "claude-code"):
         if t == "system" and event.get("subtype") == "init":
             return event.get("session_id") or None
+        if t == "assistant":
+            return event.get("session_id") or None
     elif engine == "codex":
         if t == "thread.started":
             return event.get("thread_id") or None

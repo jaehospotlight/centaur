@@ -28,7 +28,7 @@ import type { SlackBlock } from "./types";
 export const SLACK_BLOCKS_PER_MESSAGE = 50;
 export const SLACK_BLOCK_TEXT_BUDGET_CHARS = 12_000;
 export const SLACK_PLAIN_TEXT_MESSAGE_CHARS = 40_000;
-export const SLACK_SECTION_TEXT_SAFE_CHARS = 2_900;
+export const SLACK_MARKDOWN_BLOCK_TEXT_SAFE_CHARS = 12_000;
 
 export type {
   Blockquote,
@@ -129,8 +129,8 @@ export function getNodeChildren(node: Content | Root): Content[] {
   return "children" in node && Array.isArray(node.children) ? (node.children as Content[]) : [];
 }
 
-export function slackMrkdwnToMarkdown(mrkdwn: string): string {
-  let markdown = mrkdwn;
+export function slackFormattedTextToMarkdown(text: string): string {
+  let markdown = text;
 
   markdown = markdown.replace(/<@([A-Z0-9_]+)\|([^<>]+)>/g, "@$2");
   markdown = markdown.replace(/<@([A-Z0-9_]+)>/g, "@$1");
@@ -144,8 +144,8 @@ export function slackMrkdwnToMarkdown(mrkdwn: string): string {
   return markdown;
 }
 
-export function slackMrkdwnToAst(mrkdwn: string): Root {
-  return parseMarkdown(slackMrkdwnToMarkdown(mrkdwn));
+export function slackFormattedTextToAst(text: string): Root {
+  return parseMarkdown(slackFormattedTextToMarkdown(text));
 }
 
 export function renderMarkdownForSlack(markdown: string): {
@@ -155,7 +155,7 @@ export function renderMarkdownForSlack(markdown: string): {
   const ast = parseMarkdown(markdown);
   const blocks = astToSlackBlocks(ast);
   return {
-    text: astToSlackMrkdwn(ast),
+    text: mdastToString(ast).trim(),
     ...(blocks ? { blocks } : {}),
   };
 }
@@ -289,90 +289,6 @@ function slackBlockTextLength(value: unknown): number {
   return total;
 }
 
-export function astToSlackMrkdwn(ast: Root): string {
-  return ast.children.map((child) => nodeToMrkdwn(child as Content)).join("\n\n").trim();
-}
-
-function nodeToMrkdwn(node: Content): string {
-  if (isParagraphNode(node)) {
-    return getNodeChildren(node).map(nodeToMrkdwn).join("");
-  }
-
-  if (isHeadingNode(node)) {
-    return `*${getNodeChildren(node).map(nodeToMrkdwn).join("")}*`;
-  }
-
-  if (isTextNode(node)) return node.value;
-
-  if (isStrongNode(node)) {
-    return `*${getNodeChildren(node).map(nodeToMrkdwn).join("")}*`;
-  }
-
-  if (isEmphasisNode(node)) {
-    return `_${getNodeChildren(node).map(nodeToMrkdwn).join("")}_`;
-  }
-
-  if (isDeleteNode(node)) {
-    return `~${getNodeChildren(node).map(nodeToMrkdwn).join("")}~`;
-  }
-
-  if (isInlineCodeNode(node)) {
-    return `\`${node.value}\``;
-  }
-
-  if (isCodeNode(node)) {
-    return `\`\`\`\n${node.value}\n\`\`\``;
-  }
-
-  if (isLinkNode(node)) {
-    return `<${node.url}|${getNodeChildren(node).map(nodeToMrkdwn).join("")}>`;
-  }
-
-  if (isBlockquoteNode(node)) {
-    return getNodeChildren(node)
-      .map((child) => nodeToMrkdwn(child).split("\n").map((line) => `> ${line}`).join("\n"))
-      .join("\n");
-  }
-
-  if (isListNode(node)) return renderList(node, 0);
-
-  if (node.type === "break") return "\n";
-  if (node.type === "thematicBreak") return "---";
-
-  if (isTableNode(node)) {
-    return `\`\`\`\n${tableToAscii(node)}\n\`\`\``;
-  }
-
-  return getNodeChildren(node).map(nodeToMrkdwn).join("");
-}
-
-function renderList(node: List, depth: number): string {
-  return node.children
-    .map((item, index) => renderListItem(item, depth, node.ordered ? `${index + 1}.` : "-"))
-    .join("\n");
-}
-
-function renderListItem(item: ListItem, depth: number, bullet: string): string {
-  const indent = "  ".repeat(depth);
-  const lines: string[] = [];
-
-  for (const child of getNodeChildren(item)) {
-    if (isListNode(child)) {
-      lines.push(renderList(child, depth + 1));
-      continue;
-    }
-    const rendered = nodeToMrkdwn(child);
-    if (!rendered.trim()) continue;
-    if (lines.length === 0) {
-      lines.push(`${indent}${bullet} ${rendered}`);
-      continue;
-    }
-    lines.push(`${indent}  ${rendered}`);
-  }
-
-  return lines.join("\n");
-}
-
 export function tableToAscii(node: Table): string {
   const rows = node.children.map((row) => row.children.map((cell) => mdastToString(cell)));
   if (rows.length === 0) return "";
@@ -390,11 +306,7 @@ export function tableToAscii(node: Table): string {
 }
 
 function astToSlackBlocks(ast: Root): SlackBlock[] | null {
-  const shouldUseBlocks = ast.children.some((node) => {
-    const content = node as Content;
-    return isHeadingNode(content) || isTableNode(content);
-  }) || ast.children.length > 1;
-  if (!shouldUseBlocks) return null;
+  if (ast.children.length === 0) return null;
 
   const blocks: SlackBlock[] = [];
   let usedNativeTable = false;
@@ -402,23 +314,22 @@ function astToSlackBlocks(ast: Root): SlackBlock[] | null {
   for (const child of ast.children) {
     const node = child as Content;
     if (isHeadingNode(node)) {
-      pushMrkdwnSections(blocks, nodeToMrkdwn(node));
+      pushMarkdownBlocks(blocks, stringifyMarkdown({ type: "root", children: [node] } as Root).trim());
       continue;
     }
 
     if (!isTableNode(node)) {
-      pushMrkdwnSections(blocks, nodeToMrkdwn(node));
+      const footer = richTextFooterBlock(node);
+      if (footer) {
+        blocks.push(footer);
+      } else {
+        pushMarkdownBlocks(blocks, stringifyMarkdown({ type: "root", children: [node] } as Root).trim());
+      }
       continue;
     }
 
     if (usedNativeTable) {
-      blocks.push({
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `\`\`\`\n${tableToAscii(node)}\n\`\`\``,
-        },
-      });
+      pushMarkdownBlocks(blocks, `\`\`\`\n${tableToAscii(node)}\n\`\`\``);
       continue;
     }
 
@@ -429,17 +340,59 @@ function astToSlackBlocks(ast: Root): SlackBlock[] | null {
   return blocks;
 }
 
-function pushMrkdwnSections(blocks: SlackBlock[], text: string): void {
-  for (const chunk of splitMrkdwnSectionText(text)) {
-    blocks.push({
-      type: "section",
-      text: { type: "mrkdwn", text: chunk },
-    });
+type RichTextElement = {
+  type: string;
+  text?: string;
+  url?: string;
+  style?: Record<string, boolean>;
+};
+
+function richTextFooterBlock(node: Content): SlackBlock | null {
+  if (!isParagraphNode(node)) return null;
+
+  const children = getNodeChildren(node);
+  const hasAmpLink = children.some((child) =>
+    isLinkNode(child)
+    && child.url.startsWith("https://ampcode.com/threads/")
+    && mdastToString(child).trim() === "View in Amp"
+  );
+  if (!hasAmpLink) return null;
+
+  const elements = children.flatMap(richTextElementsForInlineNode);
+  if (elements.length === 0) return null;
+
+  return {
+    type: "rich_text",
+    elements: [{
+      type: "rich_text_section",
+      elements,
+    }],
+  };
+}
+
+function richTextElementsForInlineNode(node: Content): RichTextElement[] {
+  if (isTextNode(node)) return node.value ? [{ type: "text", text: node.value }] : [];
+  if (isInlineCodeNode(node)) {
+    return node.value ? [{ type: "text", text: node.value, style: { code: true } }] : [];
+  }
+  if (isLinkNode(node)) {
+    return [{
+      type: "link",
+      url: node.url,
+      text: mdastToString(node),
+    }];
+  }
+  return getNodeChildren(node).flatMap(richTextElementsForInlineNode);
+}
+
+function pushMarkdownBlocks(blocks: SlackBlock[], text: string): void {
+  for (const chunk of splitMarkdownBlockText(text)) {
+    blocks.push({ type: "markdown", text: chunk });
   }
 }
 
-function splitMrkdwnSectionText(text: string): string[] {
-  const limit = SLACK_SECTION_TEXT_SAFE_CHARS;
+function splitMarkdownBlockText(text: string): string[] {
+  const limit = SLACK_MARKDOWN_BLOCK_TEXT_SAFE_CHARS;
   if (text.length <= limit) return [text];
 
   const chunks: string[] = [];

@@ -20,7 +20,7 @@ import {
   renderTerminalResultCopy,
   splitSlackMessage,
 } from "@/lib/slack/delivery";
-import type { StreamChunk } from "@/lib/slack/types";
+import type { SlackBlock, StreamChunk } from "@/lib/slack/types";
 import { ProgressTracker } from "./progress-tracker";
 import { convertDashboardBlocks, type ChartRenderer, type DashboardFileUpload } from "./dashboard-to-slack";
 import { createChartRenderer } from "./chart-renderer";
@@ -295,6 +295,12 @@ function repoContextFromExecutionRecord(value: unknown): SlackRepoContext {
   return normalizeRepoContext(record.repo_context ?? metadata.repo_context);
 }
 
+function agentThreadIdFromRecord(value: unknown): string | undefined {
+  const record = asRecord(value);
+  const agentThreadId = record.agent_thread_id;
+  return typeof agentThreadId === "string" && agentThreadId.trim() ? agentThreadId.trim() : undefined;
+}
+
 function slackAdapterThreadId(threadKey: string): string {
   return threadKey.startsWith("slack:") ? threadKey : `slack:${threadKey}`;
 }
@@ -308,20 +314,41 @@ function slackDeliveryThreadId(threadKey: string, delivery: Record<string, unkno
   return slackAdapterThreadId(threadKey);
 }
 
-function slackLink(url: string, label: string): string {
-  return `<${url}|${label}>`;
-}
-
 function buildResponseFooter(
   ampThreadId: string | undefined,
   commitSha: string | undefined,
 ): string {
   const parts: string[] = [];
   if (ampThreadId) {
-    parts.push(slackLink(`https://ampcode.com/threads/${ampThreadId}`, "View in Amp"));
+    parts.push(`[View in Amp](https://ampcode.com/threads/${encodeURIComponent(ampThreadId)})`);
+    parts.push(`\`amp threads continue ${ampThreadId}\``);
   }
   if (commitSha) parts.push(`\`${commitSha.slice(0, 8)}\``);
   return parts.length ? `\n\n${parts.join(" · ")}` : "";
+}
+
+function buildResponseMetadataBlock(
+  appName: string,
+  ampThreadId: string | undefined,
+  durStr: string,
+): SlackBlock {
+  return {
+    type: "rich_text",
+    elements: [{
+      type: "rich_text_section",
+      elements: [
+        { type: "text", text: `${appName} · ` },
+        ...(ampThreadId
+          ? [{
+              type: "link",
+              url: `https://ampcode.com/threads/${encodeURIComponent(ampThreadId)}`,
+              text: "agent",
+            }]
+          : [{ type: "text", text: "agent" }]),
+        { type: "text", text: ` · ${durStr}` },
+      ],
+    }],
+  };
 }
 
 type SlackBlocks = Extract<StreamChunk, { type: "blocks" }>["blocks"];
@@ -761,15 +788,17 @@ export class SlackBot {
           log.warn("slack_stream_fallback", { thread_key: threadKey, error: errMsg, execution_id: executionId });
           let converted = await convertDashboardBlocks((tracker.resultText || tracker.lastAssistantText).trim(), { renderChart: this.chartRenderer });
           let fallback = rewriteSlackFileLinks(converted.markdown, tracker.repoContext);
+          let footer = buildResponseFooter(tracker.agentThreadId, tracker.repoContext?.gitCommit);
 
           if (!fallback) {
             const polled = await this.pollForResult(executionId);
             converted = await convertDashboardBlocks(polled.text, { renderChart: this.chartRenderer });
             fallback = rewriteSlackFileLinks(converted.markdown, polled.repoContext);
+            footer = buildResponseFooter(polled.agentThreadId, polled.repoContext?.gitCommit);
           }
 
           if (fallback) {
-            const chunks = splitMarkdownForSlackMessages(fallback);
+            const chunks = splitMarkdownForSlackMessages(`${fallback}${footer}`);
             for (let i = 0; i < chunks.length; i += 1) {
               const files = i === chunks.length - 1 && converted.files.length ? converted.files : undefined;
               await thread.post({ markdown: chunks[i], ...(files ? { files } : {}) });
@@ -818,7 +847,7 @@ export class SlackBot {
       log.info("execute_complete", { thread_key: threadKey, duration_s: Math.round((Date.now() - t0) / 100) / 10, result_length: finalText.length, overflow_chunks: tracker.overflowChunks.length });
 
       if (streamedReply) {
-        const streamedMarkdown = await this.renderStreamedExecutionMarkdown(threadKey, finalText, tracker.repoContext);
+        const streamedMarkdown = await this.renderStreamedExecutionMarkdown(finalText, tracker.agentThreadId, tracker.repoContext);
         const streamedBlocks = renderMarkdownForSlack(streamedMarkdown).blocks;
         if (streamedBlocks && tracker.overflowChunks.length === 0) {
           try {
@@ -853,12 +882,13 @@ export class SlackBot {
     }
   }
 
-  private async pollForResult(executionId: string): Promise<{ text: string; repoContext?: SlackRepoContext }> {
+  private async pollForResult(executionId: string): Promise<{ text: string; agentThreadId?: string; repoContext?: SlackRepoContext }> {
     const deadline = Date.now() + STREAM_EXPIRED_POLL_MAX_MS;
     while (Date.now() < deadline) {
       try {
         const data = await this.client.getExecution(executionId);
         const status = String(data.status || "");
+        const agentThreadId = agentThreadIdFromRecord(data);
         const repoContext = repoContextFromExecutionRecord(data);
         const text = renderTerminalResultCopy({
           status,
@@ -867,7 +897,7 @@ export class SlackBot {
           errorText: data.error_text,
         });
         if (text) {
-          return { text, repoContext };
+          return { text, agentThreadId, repoContext };
         }
       } catch {
         // best-effort — keep polling
@@ -894,6 +924,7 @@ export class SlackBot {
         ? data.terminal_reason.trim()
         : "";
       tracker.observeRepoContext(repoContextFromExecutionRecord(data));
+      tracker.agentThreadId = agentThreadIdFromRecord(data) || tracker.agentThreadId;
       tracker.resultText = renderTerminalResultCopy({
         status,
         terminalReason,
@@ -929,17 +960,11 @@ export class SlackBot {
     if (finalText) {
       const dur = (Date.now() - t0) / 1000;
       const durStr = dur < 10 ? `${dur.toFixed(1)}s` : `${Math.round(dur)}s`;
-      const harness = tracker.agentThreadId
-        ? slackLink(`https://ampcode.com/threads/${tracker.agentThreadId}`, "agent")
-        : "agent";
       const suffix = buildResponseFooter(tracker.agentThreadId, tracker.repoContext?.gitCommit);
       const fullMd = `${finalText}${suffix}`;
       yield {
         type: "blocks",
-        blocks: [{
-          type: "context",
-          elements: [{ type: "mrkdwn", text: [process.env.APP_NAME || "Centaur", harness, durStr].join(" · ") }],
-        }],
+        blocks: [buildResponseMetadataBlock(process.env.APP_NAME || "Centaur", tracker.agentThreadId, durStr)],
       };
 
       const [firstMessageMarkdown, ...overflowMarkdown] = splitMarkdownForSlackMessages(fullMd, {
@@ -1031,6 +1056,7 @@ export class SlackBot {
 
           if (eventType === "turn.done") {
             tracker.observeRepoContext(normalizeRepoContext(payload));
+            tracker.agentThreadId = agentThreadIdFromRecord(payload) || tracker.agentThreadId;
             const result = String(payload.result || "").trim();
             const errorText = String(payload.error || "").trim();
             const rendered = renderTerminalResultCopy({
@@ -1045,6 +1071,7 @@ export class SlackBot {
 
           if (eventType === "execution.state") {
             const status = String(payload.status || "");
+            tracker.agentThreadId = agentThreadIdFromRecord(payload) || tracker.agentThreadId;
             tracker.observeRepoContext(normalizeRepoContext(payload.repo_context));
             if (["completed", "failed_permanent", "cancelled"].includes(status)) {
               const rendered = renderTerminalResultCopy({
@@ -1344,7 +1371,7 @@ export class SlackBot {
     }), { renderChart: this.chartRenderer });
     const repoCtx = normalizeRepoContext(finalPayload.repo_context);
     const rendered = rewriteSlackFileLinks(converted.markdown, repoCtx);
-    const viewerSuffix = buildResponseFooter(finalPayload.agent_thread_id as string | undefined, repoCtx.gitCommit);
+    const viewerSuffix = buildResponseFooter(agentThreadIdFromRecord(finalPayload), repoCtx.gitCommit);
 
     if (rendered) {
       return { markdown: `${rendered}${viewerSuffix}`, files: converted.files };
@@ -1358,8 +1385,8 @@ export class SlackBot {
   }
 
   private async renderStreamedExecutionMarkdown(
-    threadKey: string,
     text: string,
+    ampThreadId: string | undefined,
     repoContext?: SlackRepoContext,
   ): Promise<string> {
     const converted = await convertDashboardBlocks(text.trim());
@@ -1368,7 +1395,7 @@ export class SlackBot {
       repoContext,
     );
     if (!rendered) return "";
-    const viewerSuffix = buildResponseFooter(undefined, repoContext?.gitCommit);
+    const viewerSuffix = buildResponseFooter(ampThreadId, repoContext?.gitCommit);
     return `${rendered}${viewerSuffix}`;
   }
 
