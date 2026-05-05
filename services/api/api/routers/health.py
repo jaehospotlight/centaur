@@ -8,7 +8,11 @@ from fastapi.responses import JSONResponse, Response
 from api.db import check_schema_compatibility
 from api.deps import verify_operator_api_key
 from api.vm_metrics import render_metrics
-from api.runtime_guardrails import check_runtime_credentials
+from api.runtime_guardrails import (
+    check_runtime_credentials,
+    public_runtime_credential_report,
+    runtime_credentials_blocking_failure,
+)
 
 router = APIRouter()
 
@@ -29,12 +33,9 @@ async def readyz() -> Response:
     payload = {
         "status": "ok",
         "schema_compatibility": report,
-        "runtime_credentials": credential_report,
+        "runtime_credentials": public_runtime_credential_report(credential_report),
     }
-    credentials_ok = (
-        not credential_report.get("enabled")
-        or credential_report.get("status") == "ok"
-    )
+    credentials_ok = not runtime_credentials_blocking_failure(credential_report)
     if report.get("compatible") and credentials_ok:
         return JSONResponse(status_code=200, content=payload)
     payload["status"] = "not_ready"
@@ -94,3 +95,8 @@ async def health_tools() -> dict[str, Any]:
             "total_methods": sum(len(item["methods"]) for item in loaded),
         },
     }
+
+
+@router.get("/health/runtime-credentials", dependencies=[Depends(verify_operator_api_key)])
+async def health_runtime_credentials(refresh: bool = False) -> dict[str, object]:
+    return await check_runtime_credentials(force_refresh=refresh)
