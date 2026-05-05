@@ -33,6 +33,8 @@ HEADERS = [
     "Notes",
 ]
 
+CHANGE_LOG_HEADERS = ["Change", "Details"]
+
 CRITERION_ALIASES = {
     "title_correspondence": ["title_correspondence", "title_match", "title"],
     "educational_foundation": [
@@ -55,6 +57,7 @@ CRITERION_ALIASES = {
 }
 
 MAX_SUBSCORE = 5.0
+SPREADSHEET_URL_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -66,11 +69,29 @@ def _build_parser() -> argparse.ArgumentParser:
     score_parser.add_argument("--output", help="Optional output path for scored JSON")
     score_parser.add_argument("--top-n", type=int, help="Optional cap after sorting")
 
-    publish_parser = subparsers.add_parser("publish", help="Create and share a Google Sheet")
+    publish_parser = subparsers.add_parser(
+        "publish", help="Create a Google Sheet or append a refined tab to an existing one"
+    )
     publish_parser.add_argument("--input", required=True, help="Path to candidate JSON")
     publish_parser.add_argument("--title", required=True, help="Spreadsheet title")
-    publish_parser.add_argument("--share-with", required=True, help="Requester email")
-    publish_parser.add_argument("--tab-name", default="Candidates", help="Worksheet tab title")
+    publish_parser.add_argument(
+        "--share-with",
+        help="Requester email; required when creating a new spreadsheet",
+    )
+    publish_parser.add_argument(
+        "--spreadsheet-id",
+        help="Existing spreadsheet ID or Google Sheets URL to append a new tab to",
+    )
+    publish_parser.add_argument(
+        "--tab-name",
+        help="Worksheet tab title; required when writing into an existing spreadsheet",
+    )
+    publish_parser.add_argument(
+        "--change-log-entry",
+        action="append",
+        default=[],
+        help="Short refinement note to write above the candidate table",
+    )
     publish_parser.add_argument("--top-n", type=int, help="Optional cap after sorting")
     publish_parser.add_argument("--dry-run", action="store_true", help="Do not call gsuite")
     publish_parser.add_argument(
@@ -225,6 +246,115 @@ def _sheet_rows(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _coerce_spreadsheet_reference(reference: str | None) -> str | None:
+    if reference is None:
+        return None
+
+    cleaned = reference.strip()
+    if not cleaned:
+        return None
+
+    url_match = SPREADSHEET_URL_RE.search(cleaned)
+    if url_match:
+        return url_match.group(1)
+
+    if re.fullmatch(r"[a-zA-Z0-9-_]+", cleaned):
+        return cleaned
+
+    _fail("--spreadsheet-id must be a spreadsheet ID or Google Sheets URL.")
+
+
+def _normalize_change_log_entries(entries: list[str]) -> list[str]:
+    return [entry.strip() for entry in entries if entry and entry.strip()]
+
+
+def _candidate_table_start_cell(change_log_entries: list[str]) -> str:
+    if not change_log_entries:
+        return "A1"
+    return f"A{len(change_log_entries) + 3}"
+
+
+def _change_log_rows(entries: list[str]) -> list[dict[str, str]]:
+    return [
+        {"Change": f"{index}.", "Details": entry}
+        for index, entry in enumerate(entries, start=1)
+    ]
+
+
+def _is_duplicate_tab_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return ("already exists" in message or "duplicate" in message) and (
+        "sheet" in message or "tab" in message
+    )
+
+
+def _write_count(payload: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = payload.get(key)
+        number = _coerce_number(value)
+        if number is not None:
+            return int(number)
+    return None
+
+
+def _check_write_counts(
+    result: Any,
+    *,
+    label: str,
+    body_row_count: int,
+    header_count: int,
+) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        _fail(f"{label} write returned an unexpected response: {result!r}")
+
+    expected_rows = body_row_count + 1
+    expected_cells = expected_rows * header_count
+    updated_rows = _write_count(result, "updated_rows", "updatedRows")
+    updated_cells = _write_count(result, "updated_cells", "updatedCells")
+
+    if updated_rows != expected_rows:
+        _fail(
+            f"{label} write updated {updated_rows} rows; expected {expected_rows}. "
+            "Re-run publish after checking the tab."
+        )
+    if updated_cells is None or updated_cells < expected_cells:
+        _fail(
+            f"{label} write updated {updated_cells} cells; expected at least {expected_cells}. "
+            "Re-run publish after checking the tab."
+        )
+
+    return result
+
+
+def _write_table_checked(
+    client: "ToolClient",
+    *,
+    spreadsheet_id: str,
+    sheet_title: str,
+    headers: list[str],
+    rows: list[dict[str, Any]],
+    start_cell: str,
+    label: str,
+) -> dict[str, Any]:
+    result = client.call(
+        "gsuite",
+        "sheets_write_table",
+        {
+            "spreadsheet_id": spreadsheet_id,
+            "sheet_title": sheet_title,
+            "headers": headers,
+            "rows": rows,
+            "start_cell": start_cell,
+        },
+    )
+    return _check_write_counts(
+        result,
+        label=label,
+        body_row_count=len(rows),
+        header_count=len(headers),
+    )
+
+
 class ToolClient:
     def __init__(self, api_url: str, api_key: str | None):
         self.api_url = api_url.rstrip("/")
@@ -343,11 +473,30 @@ def _command_publish(args: argparse.Namespace) -> int:
     candidates = _load_candidates(args.input)
     prepared = _prepare_candidates(candidates, args.top_n)
     rows = _sheet_rows(prepared)
+    spreadsheet_id = _coerce_spreadsheet_reference(args.spreadsheet_id)
+    change_log_entries = _normalize_change_log_entries(args.change_log_entry)
+
+    if spreadsheet_id is None and not args.share_with:
+        _fail("--share-with is required when creating a new spreadsheet.")
+
+    if spreadsheet_id is not None and not args.tab_name:
+        _fail("--tab-name is required when appending to an existing spreadsheet.")
+
+    if spreadsheet_id is not None and not change_log_entries:
+        _fail("--change-log-entry is required at least once when appending to an existing spreadsheet.")
+
+    tab_name = args.tab_name or "Candidates"
+    table_start_cell = _candidate_table_start_cell(change_log_entries)
 
     manifest = {
         "title": args.title,
         "share_with": args.share_with,
-        "tab_name": args.tab_name,
+        "spreadsheet_id": spreadsheet_id,
+        "created_new_sheet": spreadsheet_id is None,
+        "tab_name": tab_name,
+        "change_log": change_log_entries,
+        "change_log_entry_count": len(change_log_entries),
+        "table_start_cell": table_start_cell,
         "count": len(prepared),
         "top_candidates": [candidate["name"] for candidate in prepared[:5]],
         "rows": rows,
@@ -357,32 +506,57 @@ def _command_publish(args: argparse.Namespace) -> int:
         return 0
 
     client = ToolClient(api_url=args.api_url, api_key=args.api_key)
-    created = client.call("gsuite", "sheets_create", {"title": args.title})
-    spreadsheet_id = _extract_spreadsheet_id(created)
+    if spreadsheet_id is None:
+        created = client.call("gsuite", "sheets_create", {"title": args.title})
+        spreadsheet_id = _extract_spreadsheet_id(created)
+        existing_tab_reused = False
+    else:
+        created = {"spreadsheet_id": spreadsheet_id}
+        existing_tab_reused = False
 
-    if args.tab_name != "Sheet1":
-        client.call(
-            "gsuite",
-            "sheets_add_tab",
-            {"spreadsheet_id": spreadsheet_id, "title": args.tab_name},
+    if spreadsheet_id is None:
+        _fail("Spreadsheet creation did not return an ID.")
+
+    if args.spreadsheet_id is not None or tab_name != "Sheet1":
+        try:
+            client.call(
+                "gsuite",
+                "sheets_add_tab",
+                {"spreadsheet_id": spreadsheet_id, "title": tab_name},
+            )
+        except RuntimeError as exc:
+            if not (args.spreadsheet_id is not None and _is_duplicate_tab_error(exc)):
+                raise
+            existing_tab_reused = True
+
+    change_log_write = None
+    if change_log_entries:
+        change_log_rows = _change_log_rows(change_log_entries)
+        change_log_write = _write_table_checked(
+            client,
+            spreadsheet_id=spreadsheet_id,
+            sheet_title=tab_name,
+            headers=CHANGE_LOG_HEADERS,
+            rows=change_log_rows,
+            start_cell="A1",
+            label="Change log",
         )
 
-    client.call(
-        "gsuite",
-        "sheets_write_table",
-        {
-            "spreadsheet_id": spreadsheet_id,
-            "sheet_title": args.tab_name,
-            "headers": HEADERS,
-            "rows": rows,
-            "start_cell": "A1",
-        },
+    candidate_table_write = _write_table_checked(
+        client,
+        spreadsheet_id=spreadsheet_id,
+        sheet_title=tab_name,
+        headers=HEADERS,
+        rows=rows,
+        start_cell=table_start_cell,
+        label="Candidate table",
     )
-    client.call(
-        "gsuite",
-        "drive_share",
-        {"file_id": spreadsheet_id, "email": args.share_with, "role": "writer"},
-    )
+    if args.share_with:
+        client.call(
+            "gsuite",
+            "drive_share",
+            {"file_id": spreadsheet_id, "email": args.share_with, "role": "writer"},
+        )
 
     print(
         json.dumps(
@@ -390,6 +564,9 @@ def _command_publish(args: argparse.Namespace) -> int:
                 **manifest,
                 "spreadsheet_id": spreadsheet_id,
                 "url": _extract_sheet_url(created, spreadsheet_id),
+                "existing_tab_reused": existing_tab_reused,
+                "change_log_write": change_log_write,
+                "candidate_table_write": candidate_table_write,
             },
             indent=2,
         )
