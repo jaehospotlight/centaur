@@ -5,6 +5,10 @@ dns:
 proxy:
   tunnel_listen: ":8080"
 
+management:
+  listen: ":9092"
+  api_key_env: "IRON_MANAGEMENT_API_KEY"
+
 tls:
   mode: "mitm"
   ca_cert: "/etc/iron-proxy/ca.crt"

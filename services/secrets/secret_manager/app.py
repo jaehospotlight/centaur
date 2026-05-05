@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 
 from centaur_sdk.logging import configure_json_logging
-from secret_manager.backend import SecretManagerBackend
+from secret_manager.backend import SecretEntry, SecretManagerBackend
 
 log = configure_json_logging("secret_manager", uvicorn=True)
 
@@ -31,8 +31,8 @@ log = configure_json_logging("secret_manager", uvicorn=True)
 _REFRESH_INTERVAL = int(os.environ.get("SECRET_REFRESH_SECONDS", "300"))  # 5 min
 _REFRESH_RETRY_INTERVAL = int(os.environ.get("SECRET_REFRESH_RETRY_SECONDS", "15"))
 
-# In-memory cache: key → value
-_cache: dict[str, str] = {}
+# In-memory cache: key → entry (value + optional backend "item/field" path).
+_cache: dict[str, SecretEntry] = {}
 _last_refresh_error: str | None = None
 
 # Active backend — set during lifespan
@@ -76,8 +76,7 @@ async def _load_all() -> int:
     """Fetch secrets from the active backend and populate the cache."""
     global _cache, _last_refresh_error
     assert _backend is not None
-    new_cache = await _backend.load_all()
-    _cache = new_cache
+    _cache = await _backend.load_all()
     _last_refresh_error = None
     return len(_cache)
 
@@ -175,7 +174,24 @@ async def reload_secrets() -> dict:
 
 @app.get("/secrets/{key}")
 async def get_secret(key: str) -> dict:
-    value = _cache.get(key)
-    if value is None:
+    entry = _cache.get(key)
+    if entry is None:
         raise HTTPException(status_code=404, detail="not found")
-    return {"value": value}
+    return {"value": entry.value}
+
+
+@app.get("/secrets/{key}/ref")
+async def get_secret_ref(key: str) -> dict:
+    """Return a fully-qualified backend reference for this key.
+
+    Used by callers (e.g. firewall-manager) that need to point another
+    system at the underlying secret store directly (e.g.
+    ``op://vault/item/field``).  404 for keys whose backend doesn't expose
+    a native reference.
+    """
+    entry = _cache.get(key)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="not found")
+    if entry.ref is None:
+        raise HTTPException(status_code=404, detail="no ref metadata for key")
+    return {"ref": entry.ref}

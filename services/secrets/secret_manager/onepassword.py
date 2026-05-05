@@ -13,7 +13,7 @@ from typing import Any
 
 from onepassword.client import Client
 
-from secret_manager.backend import SecretManagerBackend
+from secret_manager.backend import SecretEntry, SecretManagerBackend
 
 log = logging.getLogger("secret_manager")
 
@@ -35,23 +35,28 @@ def _normalize(title: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", title.upper()).strip("_")
 
 
-def _extract_value(item: Any) -> str | None:
-    """Pick the best secret value from a fully-fetched Item's fields."""
+def _extract_value(item: Any) -> tuple[str | None, str | None]:
+    """Pick the best secret value from a fully-fetched Item's fields.
+
+    Returns ``(value, field_id)`` so callers can record which field id
+    actually held the secret — needed for downstream consumers that build
+    direct ``op://vault/item/field`` references.
+    """
     fields = getattr(item, "fields", []) or []
     # Try by field id first (most reliable), then by title.
     for target in _FIELD_IDS:
         for f in fields:
             if getattr(f, "id", "") == target and getattr(f, "value", ""):
-                return f.value
+                return f.value, target
     for target in _FIELD_IDS:
         for f in fields:
             if getattr(f, "title", "").lower() == target and getattr(f, "value", ""):
-                return f.value
+                return f.value, target
     # Fall back to notes.
     notes = getattr(item, "notes", "")
     if notes:
-        return notes
-    return None
+        return notes, "notesPlain"
+    return None, None
 
 
 def _extract_named_fields(item: Any) -> dict[str, str]:
@@ -130,7 +135,7 @@ class OnePasswordBackend(SecretManagerBackend):
             integration_version="1.0.0",
         )
 
-    async def load_all(self) -> dict[str, str]:
+    async def load_all(self) -> dict[str, SecretEntry]:
         if self._client is None:
             self._client = await self._init_client()
 
@@ -154,7 +159,8 @@ class OnePasswordBackend(SecretManagerBackend):
                 if r.content is not None:
                     full_items.append(r.content)
 
-        new_cache: dict[str, str] = {}
+        new_cache: dict[str, SecretEntry] = {}
+        vault_ref = self._vault_name
         for item in full_items:
             title = getattr(item, "title", "")
 
@@ -162,21 +168,29 @@ class OnePasswordBackend(SecretManagerBackend):
             named = _extract_named_fields(item)
             if named:
                 for field_name, field_value in named.items():
-                    new_cache[field_name] = field_value
+                    entry = SecretEntry(
+                        value=field_value,
+                        ref=f"op://{vault_ref}/{title}/{field_name}",
+                    )
+                    new_cache[field_name] = entry
                     norm = _normalize(field_name)
                     if norm != field_name:
-                        new_cache[norm] = field_value
+                        new_cache[norm] = entry
 
             # Single-value fallback: store under item title.
-            value = _extract_value(item)
+            value, field_id = _extract_value(item)
             if not value and not named:
                 log.debug("skipping item %s — no resolvable field", title)
                 continue
-            if value:
-                new_cache[title] = value
+            if value and field_id:
+                entry = SecretEntry(
+                    value=value,
+                    ref=f"op://{vault_ref}/{title}/{field_id}",
+                )
+                new_cache[title] = entry
                 norm = _normalize(title)
                 if norm != title:
-                    new_cache[norm] = value
+                    new_cache[norm] = entry
 
         # Apply aliases.
         for alias, sources in _ALIASES.items():

@@ -332,15 +332,50 @@ services:
     profiles: ["iron-proxy"]
     environment:
       SECRET_MANAGER_URL: http://secrets:8100
+      IRON_MANAGEMENT_API_KEY: ${IRON_MANAGEMENT_API_KEY:?IRON_MANAGEMENT_API_KEY must be set — generate with `openssl rand -hex 32` and store in the deployer env or GitHub Actions secrets}
+      OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN:-}
     volumes:
       - iron-proxy-config:/etc/iron-proxy
       - iron-proxy-certs:/certs
     networks:
       - default
       - secrets_net
+      - iron_proxy_control
     depends_on:
       secrets:
         condition: service_healthy
+    restart: unless-stopped
+
+  firewall-manager:
+    build:
+      context: .
+      dockerfile: services/firewall-manager/Dockerfile
+    profiles: ["iron-proxy"]
+    environment:
+      SECRET_MANAGER_URL: http://secrets:8100
+      IRON_PROXY_CONFIG_PATH: /etc/iron-proxy/proxy.yaml
+      IRON_PROXY_MANAGEMENT_URL: http://iron-proxy:9092
+      IRON_MANAGEMENT_API_KEY: ${IRON_MANAGEMENT_API_KEY:?IRON_MANAGEMENT_API_KEY must be set — generate with `openssl rand -hex 32` and store in the deployer env or GitHub Actions secrets}
+      FIREWALL_CONTROL_TOKEN: ${FIREWALL_CONTROL_TOKEN:?FIREWALL_CONTROL_TOKEN must be set — generate with `openssl rand -hex 32` and store in the deployer env or GitHub Actions secrets}
+      FIREWALL_MANAGER_SECRET_SOURCE: ${FIREWALL_MANAGER_SECRET_SOURCE:-onepassword}
+    volumes:
+      - iron-proxy-config:/etc/iron-proxy
+    networks:
+      - secrets_net
+      - control_net
+      - iron_proxy_control
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+      start_interval: 1s
+    depends_on:
+      secrets:
+        condition: service_healthy
+      iron-proxy:
+        condition: service_started
     restart: unless-stopped
 
   fluentbit:
@@ -396,4 +431,6 @@ networks:
   obs_net:
     internal: true
   control_net:
+    internal: true
+  iron_proxy_control:
     internal: true

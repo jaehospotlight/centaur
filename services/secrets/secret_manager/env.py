@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 
-from secret_manager.backend import SecretManagerBackend
+from secret_manager.backend import SecretEntry, SecretManagerBackend
 
 log = logging.getLogger("secret_manager")
 
@@ -55,15 +55,15 @@ class EnvSecretManagerBackend(SecretManagerBackend):
     def supports_refresh(self) -> bool:
         return False
 
-    async def load_all(self) -> dict[str, str]:
+    async def load_all(self) -> dict[str, SecretEntry]:
         if self._prefix:
-            result = {
+            raw = {
                 k[len(self._prefix) :]: v
                 for k, v in os.environ.items()
                 if k.startswith(self._prefix)
             }
         else:
-            result = {k: v for k, v in os.environ.items() if k not in _EXCLUDED_KEYS}
+            raw = {k: v for k, v in os.environ.items() if k not in _EXCLUDED_KEYS}
 
-        log.info("loaded %d keys from environment", len(result))
-        return result
+        log.info("loaded %d keys from environment", len(raw))
+        return {k: SecretEntry(value=v) for k, v in raw.items()}
