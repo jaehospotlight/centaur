@@ -7,6 +7,12 @@
 #   ./integration-slackbot.sh                          # defaults: slackbot at localhost:3001
 #   SLACKBOT_URL=http://slackbot:3001 ./integration-slackbot.sh  # inside docker network
 #   SMOKE_CHART_UPLOAD=1 ./integration-slackbot.sh      # opt into live LLM/tool chart smoke
+#   SMOKE_GENERATED_MEDIA_UPLOAD=1 ./integration-slackbot.sh  # opt into live generated MP4 smoke
+#
+# Live upload smokes are skipped by default. They require live Slack credentials,
+# a bot-accessible Slack channel, and a local stack that can run sandbox turns.
+# The generated-media smoke additionally needs a freshly built sandbox image with
+# ffmpeg and the slack-upload helper installed.
 #
 # Requires:  SLACK_SIGNING_SECRET in env (or sourced from .env).
 #            A bot-accessible Slack channel for live smoke replies.
@@ -27,6 +33,7 @@ SMOKE_POLL_ATTEMPTS="${SMOKE_POLL_ATTEMPTS:-30}"
 SMOKE_POLL_SLEEP_SECONDS="${SMOKE_POLL_SLEEP_SECONDS:-2}"
 EVENT_STREAM_TIMEOUT_SECONDS="${EVENT_STREAM_TIMEOUT_SECONDS:-120}"
 SMOKE_CHART_UPLOAD="${SMOKE_CHART_UPLOAD:-0}"
+SMOKE_GENERATED_MEDIA_UPLOAD="${SMOKE_GENERATED_MEDIA_UPLOAD:-0}"
 
 # ── Load .env values when present ────────────────────────────────────────────
 
@@ -371,9 +378,94 @@ capture_execution_events() {
   fi
 }
 
+sse_data_json() {
+  local events_file="$1"
+  jq -Rrc '
+    select(startswith("data:"))
+    | sub("^data:[[:space:]]*"; "")
+    | fromjson?
+    | select(type == "object")
+  ' "$events_file"
+}
+
+execution_terminal_text() {
+  local events_file="$1"
+  sse_data_json "$events_file" | jq -s -r '
+    [
+      .[]
+      | if .type == "turn.done" then
+          (.result?, .error?)
+        elif .type == "execution.state" then
+          (.result_text?, .error_text?)
+        elif .type == "result" then
+          (.result?, .text?)
+        elif .type == "assistant" and (.message.content? | type) == "array" then
+          (.message.content[]? | select(.type == "text") | .text?)
+        else
+          empty
+        end
+      | strings
+    ]
+    | join("\n")
+  '
+}
+
+assert_execution_upload_stream() {
+  local thread_key="$1"
+  local require_permalink="${2:-1}"
+
+  local execution_id
+  execution_id=$(wait_for_execution_id "$thread_key") || return 1
+
+  local events_file
+  events_file=$(mktemp)
+  capture_execution_events "$thread_key" "$execution_id" "$events_file" || {
+    echo "    failed to capture execution events for ${execution_id}"
+    rm -f "$events_file"
+    return 1
+  }
+
+  local auth_error
+  auth_error=$(sse_data_json "$events_file" | jq -s -r '
+    [
+      .[]
+      | .. | strings
+      | select(test("HTTP Error 401: Unauthorized|Unauthorized Check your access token\\."; "i"))
+    ][0] // empty
+  ')
+  if [[ -n "$auth_error" ]]; then
+    echo "    execution stream recorded an auth error during slack.upload_file: ${auth_error}"
+    rm -f "$events_file"
+    return 1
+  fi
+
+  local terminal_text
+  terminal_text=$(execution_terminal_text "$events_file")
+  if jq -en --arg text "$terminal_text" '$text | test("file:///")' >/dev/null; then
+    echo "    terminal assistant output fell back to file:/// output instead of a Slack upload"
+    rm -f "$events_file"
+    return 1
+  fi
+
+  if [[ "$require_permalink" == "1" ]]; then
+    if ! sse_data_json "$events_file" | jq -es --arg terminal_text "$terminal_text" '
+      any(.[]; [.. | strings | select(test("https://slack\\.com/"))] | length > 0)
+      or ($terminal_text | test("https://slack\\.com/"))
+    ' >/dev/null; then
+      echo "    execution stream never recorded a successful Slack upload permalink"
+      rm -f "$events_file"
+      return 1
+    fi
+  fi
+
+  rm -f "$events_file"
+}
+
 wait_for_uploaded_reply() {
   local channel="$1"
   local thread_ts="$2"
+  local filename_regex="${3:-.*}"
+  local mimetype_regex="${4:-.*}"
 
   for _ in $(seq 1 "$SMOKE_POLL_ATTEMPTS"); do
     local replies_json
@@ -384,13 +476,23 @@ wait_for_uploaded_reply() {
 
     while IFS=$'\t' read -r reply_ts reply_permalink; do
       [[ -z "$reply_ts" ]] && continue
+      [[ "$reply_permalink" != https://slack.com/archives/* ]] && continue
       local files_json
       files_json=$(slack_tool_json get_message_files "$(jq -nc \
         --arg channel "$channel" \
         --arg message_ts "$reply_ts" \
         '{channel_id:$channel,message_ts:$message_ts}')") || return 1
 
-      if jq -e 'length > 0 and all(.[]; (.url_private // "") | startswith("https://"))' <<<"$files_json" >/dev/null; then
+      if jq -e \
+        --arg filename_regex "$filename_regex" \
+        --arg mimetype_regex "$mimetype_regex" '
+          length > 0
+          and all(.[]; (.url_private // "") | startswith("https://"))
+          and any(.[];
+            ((.name // "") | test($filename_regex))
+            and ((.mimetype // "") | test($mimetype_regex))
+          )
+        ' <<<"$files_json" >/dev/null; then
         printf '%s\n' "$reply_permalink"
         return 0
       fi
@@ -399,7 +501,7 @@ wait_for_uploaded_reply() {
     sleep "$SMOKE_POLL_SLEEP_SECONDS"
   done
 
-  echo "    timed out waiting for a Slack reply with an uploaded file in ${channel}:${thread_ts}"
+  echo "    timed out waiting for a Slack reply with an uploaded file matching ${filename_regex} ${mimetype_regex} in ${channel}:${thread_ts}"
   return 1
 }
 
@@ -475,37 +577,35 @@ smoke_chart_case() {
 
   wait_for_thread_reply "$channel" "$thread_ts" >/dev/null || return 1
 
-  local execution_id
-  execution_id=$(wait_for_execution_id "$thread_key") || return 1
-
-  local events_file
-  events_file=$(mktemp)
-  capture_execution_events "$thread_key" "$execution_id" "$events_file" || {
-    echo "    failed to capture execution events for ${execution_id}"
-    rm -f "$events_file"
-    return 1
-  }
-
-  if grep -Fq 'HTTP Error 401: Unauthorized' "$events_file"; then
-    echo "    execution stream recorded a 401 Unauthorized during slack.upload_file"
-    rm -f "$events_file"
-    return 1
-  fi
-
-  if grep -Fq 'file:///' "$events_file"; then
-    echo "    execution stream fell back to file:/// output instead of a Slack upload"
-    rm -f "$events_file"
-    return 1
-  fi
-
-  if ! grep -Eq '"permalink":"https://slack.com/' "$events_file"; then
-    echo "    execution stream never recorded a successful Slack upload permalink"
-    rm -f "$events_file"
-    return 1
-  fi
-  rm -f "$events_file"
+  assert_execution_upload_stream "$thread_key" 1 || return 1
 
   wait_for_uploaded_reply "$channel" "$thread_ts" >/dev/null
+}
+
+smoke_generated_media_case() {
+  local seed_json
+  seed_json=$(create_seed_thread "generated-media") || return 1
+
+  local channel
+  local thread_ts
+  channel=$(jq -r '.channel' <<<"$seed_json")
+  thread_ts=$(jq -r '.ts' <<<"$seed_json")
+  local thread_key="${channel}:${thread_ts}"
+
+  local media_body
+  media_body=$(build_event_body \
+    "app_mention" \
+    "Create a 1-second silent MP4 named generated-media-smoke.mp4 in the sandbox using ffmpeg, then upload it back into this thread with the slack-upload helper. Use this command if helpful: ffmpeg -y -f lavfi -i color=c=black:s=320x240:d=1 -f lavfi -i anullsrc=r=44100:cl=stereo -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac generated-media-smoke.mp4. Reply only after the upload succeeds and include the Slack permalink." \
+    "$channel" \
+    "$thread_ts" \
+    "$(slack_ts)")
+  send_signed_event "$media_body" 200 || return 1
+
+  wait_for_thread_reply "$channel" "$thread_ts" >/dev/null || return 1
+
+  assert_execution_upload_stream "$thread_key" 0 || return 1
+
+  wait_for_uploaded_reply "$channel" "$thread_ts" '^generated-media-smoke\.mp4$' '^video/mp4$' >/dev/null
 }
 
 echo ""
@@ -647,7 +747,19 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. Invalid JSON body
+# 9. Event callback — app_mention that must upload sandbox-generated MP4 media
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ "$SMOKE_GENERATED_MEDIA_UPLOAD" == "1" ]]; then
+  run_check \
+    "generated media request → sandbox-local MP4 upload permalink + uploaded Slack file" \
+    smoke_generated_media_case
+else
+  echo "  - generated media request → sandbox-local MP4 upload permalink + uploaded Slack file (skipped; set SMOKE_GENERATED_MEDIA_UPLOAD=1)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. Invalid JSON body
 # ─────────────────────────────────────────────────────────────────────────────
 
 echo ""
