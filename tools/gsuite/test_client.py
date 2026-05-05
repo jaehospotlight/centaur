@@ -283,6 +283,7 @@ def test_docs_bullets_builds_google_docs_list_requests(monkeypatch):
     fake_service = _FakeDocsService(
         [
             {
+                "revisionId": "rev-1",
                 "body": {
                     "content": [
                         _paragraph(1, "Intro\n"),
@@ -315,21 +316,30 @@ def test_docs_bullets_builds_google_docs_list_requests(monkeypatch):
             "documentId": "doc-123",
             "body": {
                 "requests": [
-                    {"deleteContentRange": {"range": {"startIndex": 21, "endIndex": 23}}},
+                    {
+                        "deleteContentRange": {
+                            "range": {"startIndex": 21, "endIndex": 23}
+                        }
+                    },
                     {
                         "createParagraphBullets": {
                             "range": {"startIndex": 20, "endIndex": 33},
                             "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
                         }
                     },
-                    {"deleteContentRange": {"range": {"startIndex": 7, "endIndex": 9}}},
+                    {
+                        "deleteContentRange": {
+                            "range": {"startIndex": 7, "endIndex": 9}
+                        }
+                    },
                     {
                         "createParagraphBullets": {
                             "range": {"startIndex": 7, "endIndex": 18},
                             "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
                         }
                     },
-                ]
+                ],
+                "writeControl": {"requiredRevisionId": "rev-1"},
             },
         }
     ]
@@ -413,6 +423,7 @@ def test_docs_bullets_scopes_requests_to_tab(monkeypatch):
     fake_service = _FakeDocsService(
         [
             {
+                "revisionId": "rev-tab",
                 "tabs": [
                     _tab("tab-a", [_paragraph(1, "- Other tab\n")]),
                     _tab("tab-b", [_paragraph(1, "- Target\n")]),
@@ -445,7 +456,8 @@ def test_docs_bullets_scopes_requests_to_tab(monkeypatch):
                             "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
                         }
                     },
-                ]
+                ],
+                "writeControl": {"requiredRevisionId": "rev-tab"},
             },
         }
     ]
@@ -461,3 +473,23 @@ def test_docs_bullets_scopes_requests_to_tab(monkeypatch):
             "nesting_level": 0,
         }
     ]
+
+
+def test_docs_bullets_requires_revision_for_writes(monkeypatch):
+    fake_service = _FakeDocsService(
+        [
+            {
+                "body": {
+                    "content": [
+                        _paragraph(1, "- First item\n"),
+                    ]
+                }
+            }
+        ]
+    )
+    monkeypatch.setattr(client, "get_docs_service", lambda: fake_service)
+
+    with pytest.raises(RuntimeError, match="revisionId"):
+        client.docs_bullets("doc-123")
+
+    assert fake_service.documents_api.batch_update_calls == []

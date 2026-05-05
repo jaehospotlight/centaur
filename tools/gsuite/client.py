@@ -1585,23 +1585,28 @@ def docs_insert_page_break(document_id: str, index: int = 1) -> dict:
     return {"document_id": result.get("documentId", "")}
 
 
-def docs_batch_update(document_id: str, requests: list) -> dict:
+def docs_batch_update(
+    document_id: str,
+    requests: list,
+    required_revision_id: str | None = None,
+) -> dict:
     """Execute batch update on a Google Doc.
 
     Args:
         document_id: The document ID
         requests: List of request objects
+        required_revision_id: Optional document revision that must still be current
 
     Returns:
         Dict with document ID and replies
     """
     service = get_docs_service()
 
-    result = (
-        service.documents()
-        .batchUpdate(documentId=document_id, body={"requests": requests})
-        .execute()
-    )
+    body = {"requests": requests}
+    if required_revision_id:
+        body["writeControl"] = {"requiredRevisionId": required_revision_id}
+
+    result = service.documents().batchUpdate(documentId=document_id, body=body).execute()
 
     return {
         "document_id": result.get("documentId", ""),
@@ -1685,7 +1690,11 @@ def docs_bullets(
             }
         )
 
-    docs_batch_update(document_id, requests)
+    required_revision_id = document.get("revisionId")
+    if not required_revision_id:
+        raise RuntimeError("Google Docs response did not include revisionId for guarded update")
+
+    docs_batch_update(document_id, requests, required_revision_id=required_revision_id)
 
     verified_document = docs_get(document_id)
     paragraphs_by_key = {
@@ -2928,7 +2937,12 @@ class GSuiteClient:
         """
         return docs_insert_page_break(document_id, index=index)
 
-    def docs_batch_update(self, document_id: str, requests: list) -> dict:
+    def docs_batch_update(
+        self,
+        document_id: str,
+        requests: list,
+        required_revision_id: str | None = None,
+    ) -> dict:
         """Execute batch update on a Google Doc.
 
         Args:
@@ -2938,7 +2952,11 @@ class GSuiteClient:
         Returns:
             Dict with document ID and replies
         """
-        return docs_batch_update(document_id, requests)
+        return docs_batch_update(
+            document_id,
+            requests,
+            required_revision_id=required_revision_id,
+        )
 
     def docs_bullets(
         self,
