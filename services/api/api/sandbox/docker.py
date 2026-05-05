@@ -107,6 +107,11 @@ def _amp_mode() -> str:
     return (os.getenv("AMP_MODE") or "deep").strip() or "deep"
 
 
+def _amp_thread_visibility() -> str | None:
+    value = (os.getenv("AMP_THREAD_VISIBILITY") or "").strip()
+    return value or None
+
+
 def _build_harness_cmd(engine: str, model: str | None = None) -> list[str]:
     """Build the container CMD for a given harness engine."""
     if engine == "amp":
@@ -142,6 +147,9 @@ def _container_env(
         f"CENTAUR_THREAD_KEY={thread_key}",
         f"AMP_MODE={_amp_mode()}",
     ]
+    visibility = _amp_thread_visibility()
+    if visibility:
+        env.append(f"AMP_THREAD_VISIBILITY={visibility}")
     if resume_thread_id:
         env.append(f"AMP_CONTINUE_THREAD_ID={resume_thread_id}")
 

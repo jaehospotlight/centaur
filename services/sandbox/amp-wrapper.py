@@ -40,7 +40,7 @@ def _amp_subprocess_env() -> dict[str, str]:
 
 def _amp_base_cmd() -> list[str]:
     mode = (os.environ.get("AMP_MODE") or "deep").strip() or "deep"
-    return [
+    cmd = [
         "amp",
         "--no-ide",
         "--no-notifications",
@@ -52,6 +52,10 @@ def _amp_base_cmd() -> list[str]:
         "--mode",
         mode,
     ]
+    visibility = (os.environ.get("AMP_THREAD_VISIBILITY") or "").strip()
+    if visibility:
+        cmd.extend(["--visibility", visibility])
+    return cmd
 
 
 AMP_BASE = _amp_base_cmd()
