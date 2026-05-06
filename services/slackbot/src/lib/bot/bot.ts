@@ -25,7 +25,7 @@ import { ProgressTracker } from "./progress-tracker";
 import { convertDashboardBlocks, type ChartRenderer, type DashboardFileUpload } from "./dashboard-to-slack";
 import { createChartRenderer } from "./chart-renderer";
 
-const KEEPALIVE_MS = 120_000; // 2 min — Slack expires streaming state after ~5 min
+const KEEPALIVE_MS = 30_000; // 30s — Slack expires streaming state after ~5 min; aggressive keepalive prevents placeholder death on long-running turns
 const STREAM_EXPIRED_POLL_INTERVAL_MS = 3_000;
 const STREAM_EXPIRED_POLL_MAX_MS = 5 * 60_000;
 const SLACK_STREAM_MARKDOWN_CHUNK_CHARS = 12_000;
@@ -383,6 +383,7 @@ function shouldFallbackSlackStreamError(error: unknown): boolean {
 
   const errMsg = classified.message;
   return errMsg.includes("message_not_in_streaming_state")
+    || errMsg.includes("message_not_found")
     || errMsg.includes("msg_too_long")
     || errMsg.includes("streaming_mode_mismatch")
     || errMsg.includes("cannot_provide_both_markdown_text_and_chunks");
