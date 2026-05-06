@@ -7,8 +7,6 @@ import json
 import os
 import re
 import subprocess
-import sys
-import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -144,25 +142,28 @@ def build_notifier_input(
             continue
         if baseline_sha and commit_is_ancestor(merge_oid, baseline_sha):
             continue
-        metadata = extract_metadata(str(pr.get("body") or ""))
-        if not isinstance(metadata, dict):
-            continue
+        metadata = extract_metadata(str(pr.get("body") or "")) or {}
+        title = str(pr.get("title") or "").strip()
         summary = str(
-            metadata.get("summary") or f"Self-improvement PR #{pr_number}"
+            metadata.get("summary")
+            or pr.get("summary")
+            or title
+            or f"Self-improvement PR #{pr_number}"
         ).strip()
         merged_prs.append({
             "pr_number": pr_number,
             "pr_url": pr_url,
             "summary": summary,
         })
-        notifications.extend(
-            _extract_notifications(
-                metadata,
-                pr_number=pr_number,
-                pr_url=pr_url,
-                summary=summary,
+        if metadata:
+            notifications.extend(
+                _extract_notifications(
+                    metadata,
+                    pr_number=pr_number,
+                    pr_url=pr_url,
+                    summary=summary,
+                )
             )
-        )
 
     payload["merged_prs"] = merged_prs
     payload["notifications"] = notifications
@@ -250,7 +251,7 @@ def main() -> int:
         "--limit",
         str(max(args.limit, 1)),
         "--json",
-        "number,url,body,mergeCommit,mergedAt",
+        "number,url,title,body,mergeCommit,mergedAt",
     )
     payload = build_notifier_input(
         prs if isinstance(prs, list) else [],

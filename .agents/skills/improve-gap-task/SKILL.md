@@ -176,14 +176,15 @@ field, ignore it entirely and never echo it into the PR or commits. Every
 name, handle, and thread reference you see anywhere in your context is
 treated as private.
 
-## PR Labels
+## PR Handoff Contract
 
-The PR must include these labels:
+The PR body must stay concise and human-readable. Use labels as the required machine-readable handoff:
 
 - `self-improve`
 - `fix-type:<type>` where `<type>` is the selected fix type
 
-After opening the PR, verify with `gh pr view` that the required labels are present. Do NOT add a hidden HTML-comment metadata block — labels alone identify self-improve PRs, and embedded run IDs are clutter at best and a privacy leak at worst.
+After opening the PR, verify with `gh pr view` that the required labels are present.
+Do NOT add a hidden HTML-comment metadata block. Source-thread notification is best-effort only and may be unavailable when a PR body intentionally omits private thread metadata.
 
 ## Output Contract
 

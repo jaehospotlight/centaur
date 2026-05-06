@@ -6,25 +6,18 @@ Before proposing a fix, check this log to avoid re-attempting fixes that already
 
 ## PR Handoff Convention
 
-Use PR labels plus a hidden PR-body metadata block as the only cross-system handoff.
+Use PR labels as the required cross-system handoff.
 
 Required labels:
 
 - `self-improve`
 - `fix-type:<type>`
 
-Required metadata block shape:
-
-```markdown
-<!-- self_improve_metadata_v1:start -->
-{"parent_run_id":"...","child_run_id":"...","fix_type":"workflow_fix","source_threads":[{"thread_key":"C123:1700.100","channel":"C123","thread_ts":"1700.100"}],"summary":"Short user-facing summary"}
-<!-- self_improve_metadata_v1:end -->
-```
-
 Rules:
 
-- Preserve the JSON exactly.
-- Do not add a second tracking system.
+- Keep the PR body concise and reviewer-facing.
+- Do not add hidden HTML-comment metadata blocks by default.
+- Source-thread notifications are best-effort only. If future automation has privacy-safe source-thread metadata from another channel, it may pass it to the notifier input directly, but PR bodies should not carry private thread IDs.
 - Keep the PR narrowly focused on the selected fix.
 
 ## Intervention Log
