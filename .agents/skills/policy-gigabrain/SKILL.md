@@ -1,6 +1,6 @@
 ---
 name: policy-gigabrain
-description: "Policy team intelligence system for Hill briefings, policy prep notes, staffer tracking, bill analysis, vote prediction, and legislative trend detection. Use when asked about congressional meetings, policy/Hill/member/staffer prep notes, legislation, regulatory actions, rulemakings, whip counts, policy team workflows, or any question about OCC, SEC, CFTC, FDIC, FinCEN, Treasury guidance, stablecoins, GENIUS Act, market structure bills, or crypto regulation. Triggers on: policy question, regulatory impact, bill analysis, legislation impact on portfolio, policy prep notes, Hill prep notes, member prep notes, staffer prep notes, policy Google Doc prep. Do not use for company, LP, portfolio, IR, or general meeting prep; defer to gtm, tldr, LP-meeting-prep, or ir-companyprep."
+description: "Policy team intelligence system for Hill briefings, policy prep notes, staffer tracking, staffer roster batches, bill analysis, vote prediction, and legislative trend detection. Use when asked about congressional meetings, policy/Hill/member/staffer prep notes, staffer rosters, legislation, regulatory actions, rulemakings, whip counts, policy team workflows, or any question about OCC, SEC, CFTC, FDIC, FinCEN, Treasury guidance, stablecoins, GENIUS Act, market structure bills, or crypto regulation. Triggers on: policy question, regulatory impact, bill analysis, legislation impact on portfolio, policy prep notes, Hill prep notes, member prep notes, staffer prep notes, staffer roster, chief of staff roster, legislative director roster, policy Google Doc prep. Do not use for company, LP, portfolio, IR, or general meeting prep; defer those requests to gtm, tldr, LP-meeting-prep, or ir-companyprep."
 ---
 
 # Policy Gigabrain
@@ -37,7 +37,7 @@ This is the **Policy Explainer Index** ([link](https://docs.google.com/document/
 | Function | Description |
 |----------|-------------|
 | **Meeting Briefers** | Auto-generate one-pagers for Hill meetings |
-| **Staffer Tracking** | Track congressional/regulatory staff careers and relationships |
+| **Staffer Tracking** | Track congressional/regulatory staff careers, relationships, and exact-match roster batches |
 | **Bill Tracking** | Monitor legislation with momentum scores and status |
 | **Vote Prediction** | Maintain whip sheets with stance, confidence, rationale |
 | **Trend Detection** | Surface emerging patterns across jurisdictions |
@@ -229,6 +229,51 @@ Stance on Defense Tech
 ### 2. Staffer Tracking
 
 Track congressional and regulatory staffers relevant to crypto policy.
+
+#### Staffer Roster Batch
+
+Use this workflow when the user wants a roster across multiple offices, especially for current Chiefs of Staff, Legislative Directors, and finance-coverage staffers.
+
+**Default Matching Rules:**
+- Use exact current-title matches for `Chief of Staff` and `Legislative Director` unless the user explicitly asks for a broader role set.
+- Use exact LegiStorm issue-tag matches for `Finance and financial sector` when the user asks for finance or financial-services staffers.
+- If the user names additional roles or issue tags, follow that list literally.
+- Do **not** silently broaden to adjacent titles such as `Deputy Chief of Staff`, `Senior Advisor`, or `Economic Policy Advisor`, and do **not** expand finance coverage to adjacent tags unless the user explicitly asks. Put those names in `Unverified matches` instead of the verified roster.
+- If LegiStorm does not expose a current title, email, or issue tag, leave the field as `—` rather than inferring it from older or adjacent evidence.
+
+**Required Provenance Per Entry:**
+- Every verified row must include a `Provenance` field naming the source that verified the entry, such as `LegiStorm`, `committee roster`, or `public bio`.
+- If the role and issue coverage came from different sources, list both so the handoff stays auditable.
+- If you cannot name the verifying source for a row, move it to `Unverified matches` instead of the main roster.
+
+**Workflow:**
+1. Run `call discover legistorm` and `call discover gsuite` before any lookup or sheet write so you use the live method names.
+2. Normalize the office list and requested role set. For generic roster asks, default to exact `Chief of Staff`, exact `Legislative Director`, and exact `Finance and financial sector` matches.
+3. Query each office separately and keep the verified roster limited to exact matches.
+4. Return the verified roster first as a compact table with these columns: `Office`, `Staffer`, `Role`, `Issue Tag`, `Email`, `Provenance`, `Notes`.
+5. Put broader coverage guesses, stale hits, partial matches, or rows with missing provenance in a separate `Unverified matches` section with the reason each row did not qualify.
+6. If the request is a continuation with more offices, preserve the same exact-match rules and extend only the office list unless the user explicitly changes the filters.
+
+**Delivery And Continuation Rules:**
+- If a Google Sheet link or spreadsheet ID is already in-thread, append or update the roster there and return the sheet link plus a short in-thread summary.
+- If no spreadsheet target is present, return the roster in Slack and explicitly say that the result is staying in Slack because no sheet target was provided.
+- Do not imply sheet delivery happened unless you actually wrote to the sheet.
+
+**Routing Examples: should use Staffer Roster Batch**
+- "Pull the current Chiefs of Staff, Legislative Directors, and finance staffers for these offices."
+- "Build a verified roster across these House offices with exact Chief of Staff and Legislative Director matches plus finance coverage."
+- "Continue the staffer roster and add these new Senate offices using the same exact filters."
+- "Export the verified Legislative Directors and finance-tagged staffers into this spreadsheet: [sheet link]."
+- "Give me a cleaned LegiStorm roster for Chiefs of Staff and Legislative Directors across this office list."
+
+**Routing Examples: paraphrases that should also use Staffer Roster Batch**
+- "For the offices below, who are the current chiefs, LDs, and exact finance-coverage aides?"
+- "Take the same office batch and extend the verified staff list with only title-exact CoS and LD hits plus finance-tag matches."
+
+**Routing Examples: should not use Staffer Roster Batch**
+- "Write prep notes for this Senator meeting."
+- "Who on Senate Banking should we know for the upcoming markup?"
+- "Summarize this staffer's background and likely priorities."
 
 **Key Roles to Track:**
 - Legislative Directors (LD)
