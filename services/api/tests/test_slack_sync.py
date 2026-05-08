@@ -243,6 +243,15 @@ def test_schedule_respects_env_overrides(monkeypatch):
     assert reloaded.SCHEDULE["interval_seconds"] == 900
 
 
+def test_repo_slack_client_paths_prefer_reorganized_tool_layout():
+    from workflows import slack_sync
+
+    paths = [path.as_posix() for path in slack_sync._repo_slack_client_paths()]
+
+    assert paths[0].endswith("tools/productivity/slack/client.py")
+    assert paths[1].endswith("tools/slack/client.py")
+
+
 @pytest.mark.asyncio
 async def test_slack_etl_disabled_noops_without_run_row(db_pool, monkeypatch):
     from workflows import slack_sync
@@ -325,6 +334,24 @@ async def test_syncs_all_public_channels_by_default(db_pool):
         {"channel_id": "C_OTHER", "channel_name": "other-channel"},
     ]
     assert json.loads(run["metadata"])["slack_access_mode"] == "user_token"
+
+
+@pytest.mark.asyncio
+async def test_replayed_workflow_reuses_sync_run_row(db_pool):
+    from workflows import slack_sync
+
+    first_client = FakeSlackClient(channels=[_public_channel()])
+    second_client = FakeSlackClient(channels=[_public_channel()])
+    ctx = FakeCtx(db_pool)
+
+    with patch.object(slack_sync, "_client", return_value=first_client):
+        first_result = await slack_sync.handler(slack_sync.Input(), ctx)
+    with patch.object(slack_sync, "_client", return_value=second_client):
+        second_result = await slack_sync.handler(slack_sync.Input(), ctx)
+
+    assert first_result["run_id"] == second_result["run_id"]
+    assert first_result["run_id"] == "slack_sync_wfr_test_slack_sync"
+    assert await db_pool.fetchval("SELECT COUNT(*) FROM slack_sync_runs") == 1
 
 
 @pytest.mark.asyncio

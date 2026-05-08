@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import os
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -319,11 +318,27 @@ async def _record_run_start(
     skipped: list[dict[str, str]],
     metadata: dict[str, Any],
 ) -> None:
-    """Insert the run row once at least one public channel will be synced."""
+    """Insert or reset the run row once at least one public channel will be synced."""
     await pool.execute(
         "INSERT INTO slack_sync_runs ("
         "run_id, workflow_run_id, mode, status, channels_requested, channels_skipped, metadata"
-        ") VALUES ($1, $2, $3, 'running', $4::jsonb, $5::jsonb, $6::jsonb)",
+        ") VALUES ($1, $2, $3, 'running', $4::jsonb, $5::jsonb, $6::jsonb) "
+        "ON CONFLICT (run_id) DO UPDATE SET "
+        "workflow_run_id = EXCLUDED.workflow_run_id, "
+        "mode = EXCLUDED.mode, "
+        "status = 'running', "
+        "channels_requested = EXCLUDED.channels_requested, "
+        "channels_synced = '[]'::jsonb, "
+        "channels_skipped = EXCLUDED.channels_skipped, "
+        "channels_failed = '[]'::jsonb, "
+        "messages_fetched = 0, "
+        "messages_upserted = 0, "
+        "threads_fetched = 0, "
+        "replies_fetched = 0, "
+        "replies_upserted = 0, "
+        "finished_at = NULL, "
+        "error_text = '', "
+        "metadata = EXCLUDED.metadata",
         run_id,
         workflow_run_id,
         mode,
@@ -431,20 +446,48 @@ async def _update_checkpoint_failure(
     )
 
 
-def _client() -> SlackSyncClient:
-    """Construct the Slack tool client from either import path or repo layout."""
+def _workflow_run_id_to_sync_run_id(workflow_run_id: str) -> str:
+    """Derive a stable sync run id from the durable workflow run id."""
+    safe_run_id = "".join(char if char.isalnum() else "_" for char in workflow_run_id)
+    return f"slack_sync_{safe_run_id}"
+
+
+def _repo_slack_client_paths() -> list[Path]:
+    """Return Slack tool client paths for installed and legacy repo layouts."""
+    repo_root = Path(__file__).resolve().parents[1]
+    return [
+        repo_root / "tools" / "productivity" / "slack" / "client.py",
+        repo_root / "tools" / "slack" / "client.py",
+    ]
+
+
+def _slack_client_class_from_path(client_path: Path) -> type:
+    """Load SlackClient from a repo checkout path when package import is unavailable."""
+    spec = importlib.util.spec_from_file_location("_slack_sync_tool_client", client_path)
+    if not spec or not spec.loader:
+        raise ImportError(f"Could not load Slack client module from {client_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SlackClient
+
+
+def _slack_client_class() -> type:
+    """Resolve the SlackClient class from package imports or repo checkout paths."""
     try:
         from slack.client import SlackClient
-    except ModuleNotFoundError:
-        client_path = Path(__file__).resolve().parents[1] / "tools" / "slack" / "client.py"
-        spec = importlib.util.spec_from_file_location("_slack_sync_tool_client", client_path)
-        if not spec or not spec.loader:
-            raise
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        SlackClient = module.SlackClient
 
-    return SlackClient()
+        return SlackClient
+    except ModuleNotFoundError:
+        for client_path in _repo_slack_client_paths():
+            if client_path.exists():
+                return _slack_client_class_from_path(client_path)
+        candidates = ", ".join(str(path) for path in _repo_slack_client_paths())
+        raise FileNotFoundError(f"Could not find Slack client module. Tried: {candidates}")
+
+
+def _client() -> SlackSyncClient:
+    """Construct the Slack tool client from either import path or repo layout."""
+    return _slack_client_class()()
 
 
 async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
@@ -484,7 +527,7 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     users = client._list_etl_users(limit=10_000)
     users_upserted = await _upsert_users(ctx._pool, users)
 
-    run_id = f"slack_sync_{uuid.uuid4().hex[:16]}"
+    run_id = _workflow_run_id_to_sync_run_id(ctx.run_id)
     await _record_run_start(
         ctx._pool,
         run_id=run_id,
