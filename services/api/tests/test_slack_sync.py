@@ -31,14 +31,12 @@ class FakeSlackClient:
         replies: dict[str, list[dict[str, Any]]] | None = None,
         reply_pages: dict[str, list[dict[str, Any]]] | None = None,
         sync_state: dict[str, Any] | None = None,
-        users_error: Exception | None = None,
     ) -> None:
         self.channels = channels or []
         self.users = users or []
         self.messages = messages or []
         self.replies = replies or {}
         self.reply_pages = reply_pages or {}
-        self.users_error = users_error
         self.sync_state = sync_state or {
             "cursor": None,
             "watermark": "3000000.000000",
@@ -73,8 +71,6 @@ class FakeSlackClient:
 
     def _list_etl_users(self, limit: int = 200) -> list[dict]:
         self.list_etl_users_calls += 1
-        if self.users_error:
-            raise self.users_error
         return self.users[:limit]
 
     def _sync_etl_channel_history(
@@ -354,43 +350,6 @@ async def test_syncs_all_public_channels_by_default(db_pool):
         {"channel_id": "C_OTHER", "channel_name": "other-channel"},
     ]
     assert json.loads(run["metadata"])["slack_access_mode"] == "user_token"
-
-
-@pytest.mark.asyncio
-async def test_user_sync_failure_does_not_block_message_sync(db_pool):
-    from workflows import slack_sync
-
-    fake = FakeSlackClient(
-        channels=[_public_channel()],
-        messages=[_root_message()],
-        users_error=RuntimeError("missing_scope: users:read"),
-    )
-    ctx = FakeCtx(db_pool)
-
-    with patch.object(slack_sync, "_client", return_value=fake):
-        result = await slack_sync.handler(slack_sync.Input(), ctx)
-
-    assert result["status"] == "completed"
-    assert result["users_sync_failed"] is True
-    assert result["channels_synced"] == 1
-    assert result["messages_upserted"] == 1
-    assert fake.list_etl_users_calls == 1
-    assert [call["channel"] for call in fake.history_calls] == ["C_PUBLIC"]
-    assert await db_pool.fetchval(
-        "SELECT COUNT(*) FROM slack_sync_messages WHERE channel_id = 'C_PUBLIC'",
-    ) == 1
-
-    run = await db_pool.fetchrow(
-        "SELECT status, metadata FROM slack_sync_runs WHERE run_id = $1",
-        result["run_id"],
-    )
-    assert run is not None
-    assert run["status"] == "completed"
-    metadata = json.loads(run["metadata"])
-    assert metadata["users_sync_failed"] is True
-    assert metadata["users_sync_error"] == "missing_scope: users:read"
-    assert metadata["users_upserted"] == 0
-    assert any(log[0] == "slack_sync_users_failed" for log in ctx.logs)
 
 
 @pytest.mark.asyncio

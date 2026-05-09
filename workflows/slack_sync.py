@@ -619,25 +619,10 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             "channels_skipped": excluded_channels,
         }
 
-    users_upserted = 0
-    users_sync_error = ""
-    try:
-        users = client._list_etl_users(limit=10_000)
-        record_etl_items_seen("slack", "user", "user", len(users))
-        users_upserted = await _upsert_users(ctx._pool, users)
-        record_etl_items_upserted("slack", "user", "user", users_upserted)
-    except Exception as exc:
-        users_sync_error = str(exc)
-        ctx.log(
-            "slack_sync_users_failed",
-            error=users_sync_error,
-        )
-        record_etl_items_failed(
-            "slack",
-            "user",
-            "user",
-            _failure_reason(users_sync_error),
-        )
+    users = client._list_etl_users(limit=10_000)
+    record_etl_items_seen("slack", "user", "user", len(users))
+    users_upserted = await _upsert_users(ctx._pool, users)
+    record_etl_items_upserted("slack", "user", "user", users_upserted)
 
     run_id = _workflow_run_id_to_sync_run_id(ctx.run_id)
     await _record_run_start(
@@ -651,8 +636,6 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
             **inp.metadata,
             "slack_access_mode": access_mode,
             "users_upserted": users_upserted,
-            "users_sync_failed": bool(users_sync_error),
-            "users_sync_error": users_sync_error,
             "excluded_channel_patterns": exclusion_patterns,
         },
     )
@@ -821,6 +804,5 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         "channels_synced": len(synced),
         "channels_skipped": len(skipped),
         "channels_failed": len(failed),
-        "users_sync_failed": bool(users_sync_error),
         **counts,
     }
