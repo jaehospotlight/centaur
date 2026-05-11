@@ -8,6 +8,22 @@ importers:
 
   .: {}
 
+  e2e:
+    dependencies:
+      '@centaur/api-client':
+        specifier: workspace:*
+        version: link:../packages/api-client
+    devDependencies:
+      '@types/node':
+        specifier: 22.19.13
+        version: 22.19.13
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.0
+        version: 4.1.0(@opentelemetry/api@1.9.0)(@types/node@22.19.13)(vite@8.0.0(@types/node@22.19.13)(jiti@2.6.1)(yaml@2.8.4))
+
   packages/api-client:
     dependencies:
       '@centaur/harness-events':
