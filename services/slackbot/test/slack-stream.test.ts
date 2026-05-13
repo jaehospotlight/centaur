@@ -46,6 +46,72 @@ function streamCallParams(method: string): Record<string, unknown>[] {
     .map(([, params]) => params as Record<string, unknown>);
 }
 
+describe("Slack event dispatch logging", () => {
+  it("marks retryable dispatch failures as duplicate delivery risks", async () => {
+    const app = new BoltSlackApp("xoxb-test", "signing-secret") as any;
+    const dispatch = vi.fn()
+      .mockRejectedValueOnce(new Error("timeout of 30000ms exceeded"))
+      .mockResolvedValueOnce(undefined);
+    app.receiver.dispatch = dispatch;
+
+    const writeSpy = vi.spyOn(process.stdout, "write")
+      .mockImplementation((() => true) as typeof process.stdout.write);
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout")
+      .mockImplementation(((callback: () => void) => {
+        callback();
+        return 0;
+      }) as unknown as typeof setTimeout);
+
+    let logs: Array<Record<string, unknown>> = [];
+    try {
+      await app.dispatchWithRetry({
+        type: "event_callback",
+        event_id: "Ev123",
+        team_id: "T123",
+        event: {
+          type: "app_mention",
+          channel: "C123",
+          channel_type: "channel",
+          user: "U123",
+          ts: "1700000000.000100",
+          thread_ts: "1700000000.000100",
+          text: "<@UBOT> hello",
+        },
+      }, {
+        requestId: "req-123",
+        retryNum: "",
+        retryReason: "",
+      });
+      logs = writeSpy.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    } finally {
+      writeSpy.mockRestore();
+      timeoutSpy.mockRestore();
+    }
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(logs).toContainEqual(expect.objectContaining({
+      event: "slack_bolt_dispatch_failed",
+      event_id: "Ev123",
+      event_type: "app_mention",
+      request_id: "req-123",
+      channel: "C123",
+      thread_key: "C123:1700000000.000100",
+      message_ts: "1700000000.000100",
+      user_id: "U123",
+      will_retry: true,
+      retry_delay_ms: 500,
+      duplicate_delivery_risk: true,
+    }));
+    expect(logs).toContainEqual(expect.objectContaining({
+      event: "slack_bolt_dispatch_recovered",
+      event_id: "Ev123",
+      request_id: "req-123",
+      thread_key: "C123:1700000000.000100",
+      attempt: 2,
+    }));
+  });
+});
+
 describe("Slack stream payloads", () => {
   beforeEach(() => {
     slackApiCall.mockReset();

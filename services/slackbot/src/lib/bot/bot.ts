@@ -963,7 +963,14 @@ export class SlackBot {
       }
 
       const finalText = (tracker.resultText || tracker.lastAssistantText).trim();
-      log.info("execute_complete", { thread_key: threadKey, duration_s: Math.round((Date.now() - t0) / 100) / 10, result_length: finalText.length, overflow_chunks: tracker.overflowChunks.length });
+      log.info("execute_complete", {
+        thread_key: threadKey,
+        execution_id: executionId,
+        agent_thread_id: tracker.agentThreadId || undefined,
+        duration_s: Math.round((Date.now() - t0) / 100) / 10,
+        result_length: finalText.length,
+        overflow_chunks: tracker.overflowChunks.length,
+      });
 
       // Ack the final delivery outbox BEFORE the cosmetic reply edit and title
       // update. This closes the race window where the final-delivery loop could
@@ -1002,6 +1009,7 @@ export class SlackBot {
       log.info("execute_completed", {
         thread_key: threadKey,
         execution_id: executionId,
+        agent_thread_id: tracker.agentThreadId || undefined,
         duration_ms: durationMs,
         delivered_to_slack: deliveredToSlack,
       });
@@ -1522,6 +1530,7 @@ export class SlackBot {
     const fpTerminalReason = typeof finalPayload.terminal_reason === "string" ? finalPayload.terminal_reason : "";
     const fpErrorText = typeof finalPayload.error_text === "string" ? finalPayload.error_text : "";
     const fpResultText = typeof finalPayload.result_text === "string" ? finalPayload.result_text : "";
+    const fpAgentThreadId = agentThreadIdFromRecord(finalPayload);
     if (shouldNotifyRuntimeErrorChannel({
       status: fpStatus,
       terminalReason: fpTerminalReason,
@@ -1548,7 +1557,11 @@ export class SlackBot {
       await this.postSlackMarkdown(threadKey, delivery, markdown, files);
       await this.ackFinalDelivery(executionId, threadKey);
       await this.setAssistantTitle(threadKey, delivery, markdown);
-      log.info("final_delivery_completed", { thread_key: threadKey, execution_id: executionId });
+      log.info("final_delivery_completed", {
+        thread_key: threadKey,
+        execution_id: executionId,
+        agent_thread_id: fpAgentThreadId,
+      });
     } catch (err) {
       let error = err instanceof Error ? err.message : String(err);
       if (isSlackInvalidBlocksError(error)) {
@@ -1565,6 +1578,7 @@ export class SlackBot {
             log.info("final_delivery_completed", {
               thread_key: threadKey,
               execution_id: executionId,
+              agent_thread_id: fpAgentThreadId,
               downgraded_tables: true,
             });
             return;
@@ -1577,6 +1591,7 @@ export class SlackBot {
       log.warn("final_delivery_post_failed", {
         execution_id: executionId,
         thread_key: threadKey,
+        agent_thread_id: fpAgentThreadId,
         error: classified.message,
         error_class: classified.errorClass,
         error_code: classified.code,

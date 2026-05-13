@@ -175,6 +175,24 @@ function threadIdFromEvent(event: SlackMessageEvent): string | null {
   return `slack:${event.channel}:${threadTs}`;
 }
 
+function slackEventDebugFields(payload: SlackEventEnvelope): Record<string, unknown> {
+  const event = (payload.event || {}) as SlackMessageEvent;
+  const threadId = threadIdFromEvent(event);
+  return {
+    event_id: payload.event_id,
+    event_type: event.type,
+    event_subtype: event.subtype,
+    team_id: payload.team_id || event.team_id || event.team,
+    channel: event.channel,
+    channel_type: event.channel_type,
+    thread_ts: event.thread_ts || event.ts,
+    message_ts: event.ts,
+    user_id: event.user,
+    bot_id: event.bot_id,
+    thread_key: threadId ? normalizeThreadKey(threadId) : undefined,
+  };
+}
+
 function splitSlackThreadId(threadId: string): { channel: string; threadTs: string } {
   const parts = threadId.split(":");
   if (parts[0] !== "slack" || !parts[1] || (parts.length !== 2 && parts.length !== 3)) {
@@ -677,8 +695,7 @@ export class BoltSlackApp {
     }
     if (payload.event_id && this.seenRecently(payload.event_id)) {
       log.info("slack_duplicate_event_skipped", {
-        event_id: payload.event_id,
-        event_type: (payload.event as SlackMessageEvent).type,
+        ...slackEventDebugFields(payload),
         request_id: requestId,
         retry_num: retryNum,
         retry_reason: retryReason,
@@ -706,7 +723,7 @@ export class BoltSlackApp {
     payload: SlackEventEnvelope,
     request: { requestId: string; retryNum: string; retryReason: string },
   ): Promise<void> {
-    const eventType = (payload.event as SlackMessageEvent).type;
+    const eventDebug = slackEventDebugFields(payload);
     for (let attempt = 0; attempt <= DISPATCH_RETRY_DELAYS_MS.length; attempt += 1) {
       try {
         await this.receiver.dispatch({
@@ -717,8 +734,7 @@ export class BoltSlackApp {
         });
         if (attempt > 0) {
           log.info("slack_bolt_dispatch_recovered", {
-            event_id: payload.event_id,
-            event_type: eventType,
+            ...eventDebug,
             request_id: request.requestId,
             attempt: attempt + 1,
           });
@@ -729,8 +745,7 @@ export class BoltSlackApp {
         const shouldRetry = classified.retryable && attempt < DISPATCH_RETRY_DELAYS_MS.length;
         const logFn = classified.retryable ? log.error : log.warn;
         logFn("slack_bolt_dispatch_failed", {
-          event_id: payload.event_id,
-          event_type: eventType,
+          ...eventDebug,
           request_id: request.requestId,
           retry_num: request.retryNum,
           retry_reason: request.retryReason,
@@ -741,6 +756,8 @@ export class BoltSlackApp {
           retryable: classified.retryable,
           attempt: attempt + 1,
           will_retry: shouldRetry,
+          retry_delay_ms: shouldRetry ? DISPATCH_RETRY_DELAYS_MS[attempt] : undefined,
+          duplicate_delivery_risk: shouldRetry,
         });
         if (!shouldRetry) return;
         await new Promise((resolve) => setTimeout(resolve, DISPATCH_RETRY_DELAYS_MS[attempt]));
