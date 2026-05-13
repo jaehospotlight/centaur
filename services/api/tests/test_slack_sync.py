@@ -277,11 +277,13 @@ def test_backfill_schedule_defaults_enabled(monkeypatch):
     monkeypatch.delenv("SLACK_ETL_ENABLED", raising=False)
     monkeypatch.delenv("SLACK_BACKFILL_ENABLED", raising=False)
     monkeypatch.delenv("SLACK_BACKFILL_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("SLACK_BACKFILL_CHANNEL_BATCH_LIMIT", raising=False)
 
     from workflows import slack_backfill
 
     reloaded = importlib.reload(slack_backfill)
 
+    assert reloaded.DEFAULT_CHANNEL_BATCH_LIMIT == 20
     assert reloaded.SCHEDULE == {
         "schedule_id": "slack_backfill",
         "interval_seconds": 3600,
@@ -294,6 +296,7 @@ def test_backfill_schedule_respects_env_overrides(monkeypatch):
     monkeypatch.setenv("SLACK_ETL_ENABLED", "true")
     monkeypatch.setenv("SLACK_BACKFILL_ENABLED", "false")
     monkeypatch.setenv("SLACK_BACKFILL_INTERVAL_SECONDS", "120")
+    monkeypatch.setenv("SLACK_BACKFILL_CHANNEL_BATCH_LIMIT", "12")
 
     from workflows import slack_backfill
 
@@ -301,6 +304,7 @@ def test_backfill_schedule_respects_env_overrides(monkeypatch):
 
     assert reloaded.SCHEDULE["enabled"] is False
     assert reloaded.SCHEDULE["interval_seconds"] == 120
+    assert reloaded.DEFAULT_CHANNEL_BATCH_LIMIT == 12
 
 
 def test_repo_slack_client_paths_prefer_reorganized_tool_layout():

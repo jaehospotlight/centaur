@@ -62,6 +62,7 @@ api:
   slackEtlEnabled: true
   slackSyncIntervalSeconds: 14400
   slackBackfillIntervalSeconds: 3600
+  slackBackfillChannelBatchLimit: 20
   slackSyncBackfillLookbackDays: 30
   slackSyncThreadLookbackDays: 3
   companyContextDocumentsIntervalSeconds: 14400

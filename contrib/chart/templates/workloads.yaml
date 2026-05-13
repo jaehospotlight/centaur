@@ -472,6 +472,10 @@ spec:
             - name: SLACK_BACKFILL_INTERVAL_SECONDS
               value: {{ .Values.api.slackBackfillIntervalSeconds | quote }}
 {{- end }}
+{{- if not (hasKey $apiExtraEnv "SLACK_BACKFILL_CHANNEL_BATCH_LIMIT") }}
+            - name: SLACK_BACKFILL_CHANNEL_BATCH_LIMIT
+              value: {{ .Values.api.slackBackfillChannelBatchLimit | quote }}
+{{- end }}
 {{- if not (hasKey $apiExtraEnv "SLACK_SYNC_BACKFILL_LOOKBACK_DAYS") }}
             - name: SLACK_SYNC_BACKFILL_LOOKBACK_DAYS
               value: {{ .Values.api.slackSyncBackfillLookbackDays | quote }}
