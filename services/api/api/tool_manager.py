@@ -150,7 +150,49 @@ _TOOL_BINARY_PREVIEW_BYTES = max(
 _ATTACHMENT_EXTRACT_MIN_BYTES = 64 * 1024  # 64 KB
 
 # Maximum wall-clock seconds a single tool call may run before being cancelled.
-_TOOL_CALL_TIMEOUT_S = int(os.getenv("TOOL_CALL_TIMEOUT_S", "120"))
+_TOOL_CALL_TIMEOUT_S = float(os.getenv("TOOL_CALL_TIMEOUT_S", "120"))
+
+
+def _parse_timeout_s(
+    value: Any,
+    *,
+    tool: str,
+    default: float | None,
+) -> float | None:
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip().lower() in {"none", "disabled", "off"}:
+        return None
+    try:
+        timeout_s = float(value)
+    except (TypeError, ValueError):
+        log.warning("tool_invalid_timeout", tool=tool, timeout_s=value)
+        return default
+    if timeout_s <= 0:
+        log.warning("tool_invalid_timeout", tool=tool, timeout_s=value)
+        return default
+    return timeout_s
+
+
+def _resolve_timeout_s(tool_conf: dict[str, Any], *, tool: str) -> float | None:
+    configured = _parse_timeout_s(
+        tool_conf.get("timeout_s"),
+        tool=tool,
+        default=_TOOL_CALL_TIMEOUT_S,
+    )
+    env_name = tool_conf.get("timeout_env")
+    if env_name is not None:
+        if isinstance(env_name, str) and env_name:
+            env_value = os.getenv(env_name)
+            if env_value:
+                return _parse_timeout_s(env_value, tool=tool, default=configured)
+        else:
+            log.warning("tool_invalid_timeout_env", tool=tool, timeout_env=env_name)
+    return configured
+
+
+def _timeout_label(timeout_s: float | None) -> str:
+    return "no timeout" if timeout_s is None else f"{timeout_s:g}s"
 
 
 async def _extract_tool_attachment(
@@ -407,6 +449,7 @@ class LoadedTool:
         hosts: list[str] | None = None,
         secrets: list[SecretDef] | None = None,
         optional_secrets: list[SecretDef] | None = None,
+        timeout_s: float | None = None,
     ):
         self.name = name
         self.description = description
@@ -415,6 +458,7 @@ class LoadedTool:
         self.hosts: list[str] = hosts or []
         self.secrets: list[SecretDef] = secrets or []
         self.optional_secrets: list[SecretDef] = optional_secrets or []
+        self.timeout_s = timeout_s
 
     @property
     def all_secrets(self) -> list[SecretDef]:
@@ -553,6 +597,7 @@ class ToolManager:
                     "hosts": hosts,
                     "secrets": secrets,
                     "optional_secrets": optional_secrets,
+                    "timeout_s": _resolve_timeout_s(tool_conf, tool=name),
                 }
 
                 if name in seen:
@@ -783,6 +828,7 @@ class ToolManager:
             hosts=manifest.get("hosts", []),
             secrets=manifest.get("secrets", []),
             optional_secrets=manifest.get("optional_secrets", []),
+            timeout_s=manifest.get("timeout_s"),
         )
         log.info(
             "tool_loaded",
@@ -983,7 +1029,7 @@ class ToolManager:
                     coro = method.fn(**args)
                 else:
                     coro = asyncio.to_thread(method.fn, **args)
-                result = await asyncio.wait_for(coro, timeout=_TOOL_CALL_TIMEOUT_S)
+                result = await asyncio.wait_for(coro, timeout=lt.timeout_s)
             duration_ms = round((time.monotonic() - t0) * 1000)
             log.info(
                 "tool_call_completed",
@@ -996,7 +1042,7 @@ class ToolManager:
         except (SystemExit, Exception) as e:
             duration_ms = round((time.monotonic() - t0) * 1000)
             if isinstance(e, asyncio.TimeoutError):
-                error_msg = f"Tool call timed out after {_TOOL_CALL_TIMEOUT_S}s"
+                error_msg = f"Tool call timed out after {_timeout_label(lt.timeout_s)}"
             elif isinstance(e, SystemExit):
                 error_msg = f"sys.exit({e.code})"
             else:
@@ -1144,7 +1190,7 @@ class ToolManager:
                     coro = method.fn(**args)
                 else:
                     coro = asyncio.to_thread(method.fn, **args)
-                result = await asyncio.wait_for(coro, timeout=_TOOL_CALL_TIMEOUT_S)
+                result = await asyncio.wait_for(coro, timeout=lt.timeout_s)
             duration_ms = round((time.monotonic() - t0) * 1000)
             log.info(
                 "tool_call_completed",
@@ -1170,7 +1216,7 @@ class ToolManager:
         except (SystemExit, Exception) as e:
             duration_ms = round((time.monotonic() - t0) * 1000)
             if isinstance(e, asyncio.TimeoutError):
-                error_msg = f"Tool call timed out after {_TOOL_CALL_TIMEOUT_S}s"
+                error_msg = f"Tool call timed out after {_timeout_label(lt.timeout_s)}"
             elif isinstance(e, SystemExit):
                 error_msg = f"sys.exit({e.code})"
             else:

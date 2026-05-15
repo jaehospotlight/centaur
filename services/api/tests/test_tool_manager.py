@@ -293,7 +293,14 @@ def _write_tool(
     description: str = "Fake test tool",
     secrets: list[str] | None = None,
     optional_secrets: list[str] | None = None,
+    timeout_s: int | str | None = None,
 ) -> Path:
+    if isinstance(timeout_s, str):
+        timeout_line = f'timeout_s = "{timeout_s}"'
+    elif timeout_s is not None:
+        timeout_line = f"timeout_s = {timeout_s}"
+    else:
+        timeout_line = None
     tool_dir = tools_dir / name
     tool_dir.mkdir(parents=True)
     tool_dir.joinpath("pyproject.toml").write_text(
@@ -309,6 +316,7 @@ def _write_tool(
                 'hosts = ["api.example.com"]',
                 f"secrets = {secrets or []!r}",
                 f"optional_secrets = {optional_secrets or []!r}",
+                *([timeout_line] if timeout_line is not None else []),
                 "",
             ]
         )
@@ -469,6 +477,48 @@ async def test_call_tool_invokes_sync_and_async_methods_with_secret_placeholders
         "required": "REQ_TOKEN",
         "optional": "OPT_TOKEN",
     }
+
+
+@pytest.mark.asyncio
+async def test_call_tool_uses_tool_specific_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: list[float | None] = []
+
+    async def fake_wait_for(coro, timeout=None):
+        captured.append(timeout)
+        return await coro
+
+    monkeypatch.setattr("api.tool_manager.asyncio.wait_for", fake_wait_for)
+    tools_dir = tmp_path / "tools"
+    _write_tool(tools_dir, "alpha", FAKE_TOOL_CLIENT, timeout_s=3600)
+    manager = ToolManager(tools_dir)
+    manager.discover()
+
+    await manager.call_tool("alpha", "sync_echo", {"text": "hello"})
+    assert captured == [3600.0]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_allows_disabling_outer_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: list[float | None] = []
+
+    async def fake_wait_for(coro, timeout=None):
+        captured.append(timeout)
+        return await coro
+
+    monkeypatch.setattr("api.tool_manager.asyncio.wait_for", fake_wait_for)
+    tools_dir = tmp_path / "tools"
+    _write_tool(tools_dir, "alpha", FAKE_TOOL_CLIENT, timeout_s="none")
+    manager = ToolManager(tools_dir)
+    manager.discover()
+
+    await manager.call_tool("alpha", "sync_echo", {"text": "hello"})
+    assert captured == [None]
 
 
 @pytest.mark.asyncio
