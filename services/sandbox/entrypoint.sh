@@ -23,14 +23,39 @@ if [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
     export GOOGLE_APPLICATION_CREDENTIALS
     mkdir -p "$(dirname "$GOOGLE_APPLICATION_CREDENTIALS")"
     if [ ! -f "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
-        cat > "$GOOGLE_APPLICATION_CREDENTIALS" <<EOF
-{
-  "type": "authorized_user",
-  "client_id": "centaur-sandbox",
-  "client_secret": "centaur-sandbox",
-  "refresh_token": "centaur-sandbox"
-}
-EOF
+        # Some SDKs parse ADC into service-account credentials locally before any
+        # outbound request reaches the proxy, so the stub must look real enough
+        # to pass key loading.
+        _mock_gcp_private_key="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
+        MOCK_GCP_PRIVATE_KEY="$_mock_gcp_private_key" python3 - "$GOOGLE_APPLICATION_CREDENTIALS" <<'PYEOF'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+client_email = "mock@creds.com"
+
+with open(path, "w") as f:
+    json.dump(
+        {
+            "type": "service_account",
+            "project_id": "centaur-sandbox",
+            "private_key_id": "0000000000000000000000000000000000000000",
+            "private_key": os.environ["MOCK_GCP_PRIVATE_KEY"].rstrip("\n") + "\n",
+            "client_email": client_email,
+            "client_id": "100000000000000000000",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{client_email.replace('@', '%40')}",
+            "universe_domain": "googleapis.com",
+        },
+        f,
+        indent=2,
+    )
+    f.write("\n")
+PYEOF
+        unset _mock_gcp_private_key
     fi
 fi
 
