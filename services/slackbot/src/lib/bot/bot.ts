@@ -2121,13 +2121,24 @@ export class SlackBot {
       try {
         const refetched = await this.slack.fetchMessage(threadId, ts);
         if (refetched?.attachments?.length) {
-          log.info("mention_files_refetched", { thread_key: normalizeThreadKey(threadId), count: refetched.attachments.length, attempt: attempt + 1 });
+          log.info("mention_files_refetched", {
+            thread_key: normalizeThreadKey(threadId),
+            message_ts: ts,
+            count: refetched.attachments.length,
+            attempt: attempt + 1,
+          });
           return [...refetched.attachments];
         }
       } catch (err) {
         log.warn("mention_files_refetch_failed", { thread_key: normalizeThreadKey(threadId), error: err instanceof Error ? err.message : String(err), attempt: attempt + 1 });
       }
     }
+    log.info("slack_attachment_refetch_exhausted", {
+      thread_key: normalizeThreadKey(threadId),
+      message_ts: ts,
+      initial_count: msg.attachments?.length ?? 0,
+      resolved_count: 0,
+    });
     return [];
   }
 
@@ -2144,6 +2155,10 @@ export class SlackBot {
         log.warn("attachment_fetch_failed", { name: att.name || "unknown", error: err instanceof Error ? err.message : String(err) });
       }
     }
+    log.info("slack_attachment_parts_built", {
+      attachment_count: attachments.length,
+      emitted_file_parts: parts.filter((part) => part.type === "image" || part.type === "document").length,
+    });
     return parts;
   }
 }

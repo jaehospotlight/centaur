@@ -876,6 +876,14 @@ export class BoltSlackApp {
     const threadId = threadIdFromEvent(event);
     if (!threadId) return;
     const duplicateMessage = event.ts ? this.seenMessageRecently(threadId, event) : false;
+    log.info("slack_event_route_decision", {
+      event_type: event.type,
+      event_subtype: event.subtype,
+      thread_id: threadId,
+      message_ts: event.ts,
+      files_count: event.files?.length ?? 0,
+      duplicate_message: duplicateMessage,
+    });
     if (duplicateMessage) return;
 
     if (this.isPotentialMention(event) && this.queue.has(threadId)) {
