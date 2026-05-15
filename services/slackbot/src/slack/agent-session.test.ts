@@ -82,4 +82,68 @@ describe('AgentSessionRenderer', () => {
       { type: 'markdown_text', text: '\n```js\nconsole.log("Hello, world!")\n```' }
     ])
   })
+
+  it('streams task updates with accumulated details and output', async () => {
+    const calls: Array<{ method: string; params: any }> = []
+    const client = {
+      assistant: {
+        threads: {
+          setStatus: async (params: any) => {
+            calls.push({ method: 'assistant.threads.setStatus', params })
+            return { ok: true }
+          }
+        }
+      },
+      chat: {
+        startStream: async (params: any) => {
+          calls.push({ method: 'chat.startStream', params })
+          return { ok: true, ts: '1778866940.295499' }
+        },
+        appendStream: async (params: any) => {
+          calls.push({ method: 'chat.appendStream', params })
+          return { ok: true }
+        },
+        stopStream: async (params: any) => {
+          calls.push({ method: 'chat.stopStream', params })
+          return { ok: true }
+        }
+      }
+    }
+
+    const renderer = new AgentSessionRenderer(client as any)
+    const { sessionId } = await renderer.open({
+      channel: 'C123',
+      parentTs: '1778866921.505479',
+      recipientTeamId: 'T123',
+      recipientUserId: 'U123',
+      title: 'Centaur execution'
+    })
+
+    await renderer.step(sessionId, {
+      id: 'cmd-1',
+      title: 'Run command: pnpm test',
+      status: 'in_progress',
+      details: '```bash\n$ pnpm test\n```'
+    })
+    await renderer.step(sessionId, {
+      id: 'cmd-1',
+      title: 'Run command: pnpm test',
+      status: 'complete',
+      output: '```text\nok\n```'
+    })
+
+    const taskUpdates = calls
+      .flatMap(call => call.params.chunks ?? [])
+      .filter(chunk => chunk.type === 'task_update')
+
+    expect(taskUpdates.at(-1)).toEqual({
+      type: 'task_update',
+      id: 'cmd-1',
+      title: 'Run command: pnpm test',
+      status: 'complete',
+      details: '```bash\n$ pnpm test\n```',
+      output: '```text\nok\n```',
+      sources: undefined
+    })
+  })
 })

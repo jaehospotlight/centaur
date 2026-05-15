@@ -16,6 +16,7 @@ type CodexSessionState = {
   messageText: string
   planText: string
   taskByUseId: Map<string, HarnessTask>
+  commandOutputById: Map<string, string>
   done: boolean
 }
 
@@ -46,27 +47,43 @@ export class CodexSessionRenderer {
 
     const command = commandExecution(event)
     if (command) {
-      const existing = state.taskByUseId.get(commandId(command))
-      const task = commandTask(command, event?.type, existing)
-      state.taskByUseId.set(task.id, mergeTask(existing, task))
-      await this.publishTask(agentSessionId, task)
+      const id = commandId(command)
+      const aggregatedOutput = commandAggregatedOutput(command)
+      if (aggregatedOutput) state.commandOutputById.set(id, aggregatedOutput)
+      const existing = state.taskByUseId.get(id)
+      const task = commandTask(command, event?.type, existing, state.commandOutputById.get(id))
+      const merged = mergeTask(existing, task)
+      state.taskByUseId.set(merged.id, merged)
+      await this.publishTask(agentSessionId, merged)
     }
 
     const fileChange = fileChangeEvent(event)
     if (fileChange) {
       const existing = state.taskByUseId.get(fileChangeId(fileChange))
       const task = fileChangeTask(fileChange, event?.type, existing)
-      state.taskByUseId.set(task.id, mergeTask(existing, task))
-      await this.publishTask(agentSessionId, task)
+      const merged = mergeTask(existing, task)
+      state.taskByUseId.set(merged.id, merged)
+      await this.publishTask(agentSessionId, merged)
     }
 
     const outputDelta = commandOutputDelta(event)
     if (outputDelta) {
-      // Command stdout/stderr is command result data, not the user-facing step plan.
-      // Keep the plan focused on commands the agent executes; assistant text belongs
-      // in the main stream body when Codex emits agentMessage deltas/completions.
-      const task = state.taskByUseId.get(outputDelta.id)
-      if (task) await this.publishTask(agentSessionId, task)
+      const current = state.commandOutputById.get(outputDelta.id) ?? ''
+      const output = current + outputDelta.delta
+      state.commandOutputById.set(outputDelta.id, output)
+      const task = state.taskByUseId.get(outputDelta.id) ?? {
+        id: outputDelta.id,
+        title: 'Run command',
+        status: 'in_progress',
+        details: [],
+        output: []
+      }
+      const updated = {
+        ...task,
+        output: commandOutputElements(output)
+      }
+      state.taskByUseId.set(outputDelta.id, updated)
+      await this.publishTask(agentSessionId, updated)
     }
 
     for (const tool of toolUses(event)) {
@@ -189,6 +206,7 @@ function getState(agentSessionId: string): CodexSessionState {
       messageText: '',
       planText: '',
       taskByUseId: new Map(),
+      commandOutputById: new Map(),
       done: false
     }
     states.set(agentSessionId, state)
@@ -346,21 +364,46 @@ function fileChangeId(item: any): string {
   return String(item.id ?? item.itemId ?? item.path ?? 'file-change')
 }
 
-function commandTask(item: any, eventType: string, existing?: HarnessTask): HarnessTask {
+function commandTask(
+  item: any,
+  eventType: string,
+  existing?: HarnessTask,
+  accumulatedOutput?: string
+): HarnessTask {
   const id = commandId(item)
   const command = String(item.command ?? 'Command')
   const status = commandStatus(item, eventType)
   const exitCode = item.exitCode ?? item.exit_code
   const isCompletionUpdate =
     eventType === 'item.completed' || status === 'complete' || status === 'error'
+  const output = commandOutputElements(accumulatedOutput ?? '', exitCode)
   return {
     id,
-    title: 'Run command',
+    title: command === 'Command' ? 'Run command' : `Run command: ${oneLine(command, 220)}`,
     status,
     details: isCompletionUpdate && existing ? [] : [pre(`$ ${command}`, 'bash')],
-    output:
-      exitCode !== null && exitCode !== undefined ? [section([text(`exit code ${exitCode}`)])] : []
+    output
   }
+}
+
+function commandAggregatedOutput(item: any): string {
+  for (const key of ['aggregated_output', 'aggregatedOutput', 'output', 'stdout', 'stderr']) {
+    const value = item?.[key]
+    if (typeof value === 'string' && value) return value
+  }
+  return ''
+}
+
+function commandOutputElements(
+  output: string,
+  exitCode?: number | string | null
+): StreamRichTextElement[] {
+  const elements: StreamRichTextElement[] = []
+  if (output) elements.push(pre(clip(output), languageFromContent(output)))
+  if (exitCode !== null && exitCode !== undefined) {
+    elements.push(section([text(`exit code ${exitCode}`)]))
+  }
+  return elements
 }
 
 function fileChangeTask(item: any, eventType: string, existing?: HarnessTask): HarnessTask {
@@ -432,7 +475,10 @@ function elementToMarkdown(element: StreamRichTextElement): string {
 }
 
 function titleFor(tool: any): string {
-  if (tool.name === 'Bash') return 'Run command'
+  if (tool.name === 'Bash') {
+    const command = stringInput(tool.input, 'cmd')
+    return command ? `Run command: ${oneLine(command, 220)}` : 'Run command'
+  }
   if (tool.name === 'create_file') return 'Create file'
   if (tool.name === 'edit_file') return 'Edit file'
   return `Use ${tool.name ?? 'tool'}`

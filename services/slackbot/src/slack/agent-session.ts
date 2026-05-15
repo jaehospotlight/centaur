@@ -110,15 +110,8 @@ export class AgentSessionRenderer {
     }
     const storedTask = { ...task }
     segment.tasks.set(storedTask.id, storedTask)
-    const taskUpdate = {
-      id: storedTask.id,
-      title: storedTask.title,
-      status: storedTask.status,
-      details: input.details ? storedTask.details : undefined,
-      output: input.output ? storedTask.output : undefined
-    }
     await this.flushText(state, segment, { force: true })
-    await this.flushTask(state, segment, taskUpdate)
+    await this.flushTask(state, segment, storedTask)
   }
 
   async done(sessionId: string, footer?: string): Promise<void> {
