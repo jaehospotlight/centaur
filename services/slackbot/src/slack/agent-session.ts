@@ -114,8 +114,8 @@ export class AgentSessionRenderer {
       id: storedTask.id,
       title: storedTask.title,
       status: storedTask.status,
-      details: input.details ? storedTask.details : undefined,
-      output: input.output ? storedTask.output : undefined
+      details: input.details !== undefined ? storedTask.details : undefined,
+      output: input.output !== undefined ? storedTask.output : undefined
     }
     await this.flushText(state, segment, { force: true })
     await this.flushTask(state, segment, taskUpdate)
