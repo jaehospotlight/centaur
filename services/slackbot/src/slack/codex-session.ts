@@ -403,11 +403,31 @@ function commandOutputElements(
   exitCode?: number | string | null
 ): StreamRichTextElement[] {
   const elements: StreamRichTextElement[] = []
-  if (output) elements.push(pre(clip(output), languageFromContent(output)))
+  if (output) {
+    const formatted = formatCommandOutput(output)
+    elements.push(pre(formatted.body, formatted.language))
+  }
   if (exitCode !== null && exitCode !== undefined) {
     elements.push(section([text(`exit code ${exitCode}`)]))
   }
   return elements
+}
+
+function formatCommandOutput(output: string): { body: string; language: string } {
+  const trimmed = output.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return {
+        body: clipJsonPreview(JSON.stringify(JSON.parse(trimmed), null, 2)),
+        language: 'json'
+      }
+    } catch {}
+  }
+  return { body: clip(output), language: languageFromContent(output) }
+}
+
+function clipJsonPreview(value: string, max = 420): string {
+  return value.length > max ? `${value.slice(0, max).trimEnd()}\n// truncated` : value
 }
 
 function fileChangeTask(item: any, eventType: string, existing?: HarnessTask): HarnessTask {
