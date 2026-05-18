@@ -987,6 +987,103 @@ async def test_spawn_without_explicit_prompt_reuses_active_assignment_and_refres
 
 
 @pytest.mark.asyncio
+async def test_worker_closes_slackbot_session_when_live_delivery_fails(db_pool):
+    from api.runtime_control import _process_execution
+
+    thread_key = f"slack:C-test:{uuid.uuid4().hex}"
+    execution_id = f"exe-{uuid.uuid4().hex[:12]}"
+    runtime_id = f"rt-slack-{uuid.uuid4().hex[:8]}"
+    slackbot_session_id = f"sess-{uuid.uuid4().hex[:8]}"
+
+    await db_pool.execute(
+        "INSERT INTO agent_runtime_assignments ("
+        "thread_key, assignment_generation, runtime_id, harness, engine, "
+        "persona_id, prompt_ref, effective_agents_md_sha256, state"
+        ") VALUES ($1, 1, $2, 'codex', 'codex', NULL, 'harness:codex', 'sha', 'active')",
+        thread_key,
+        runtime_id,
+    )
+    await db_pool.execute(
+        "INSERT INTO agent_execution_requests ("
+        "execution_id, thread_key, assignment_generation, execute_id, request_hash, status, "
+        "delivery, metadata, hard_deadline_at"
+        ") VALUES ($1, $2, 1, 'exec-slack-live', 'hash-slack-live', 'running', '{}'::jsonb, $3::jsonb, NOW() + INTERVAL '10 minutes')",
+        execution_id,
+        thread_key,
+        json.dumps(
+            {
+                "slackbot_live_delivery": True,
+                "slackbot_agent_session_id": slackbot_session_id,
+            }
+        ),
+    )
+    await db_pool.execute(
+        "INSERT INTO agent_final_delivery_outbox (execution_id, thread_key, delivery, state) "
+        "VALUES ($1, $2, '{}'::jsonb, 'awaiting_terminal')",
+        execution_id,
+        thread_key,
+    )
+
+    row = {
+        "execution_id": execution_id,
+        "thread_key": thread_key,
+        "assignment_generation": 1,
+        "status": "running",
+        "delivery": {},
+        "metadata": {
+            "slackbot_live_delivery": True,
+            "slackbot_agent_session_id": slackbot_session_id,
+        },
+        "hard_deadline_at": dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=10),
+        "created_at": dt.datetime.now(dt.timezone.utc),
+        "claimed_at": dt.datetime.now(dt.timezone.utc),
+    }
+    session = SandboxSession(
+        sandbox_id=runtime_id,
+        thread_key=thread_key,
+        harness="codex",
+        engine="codex",
+    )
+
+    async def _stream_with_live_delivery_failure(*_args, **_kwargs):
+        yield {"data": json.dumps({"type": "item.started", "item": {"id": "step-1"}})}
+        yield {"data": json.dumps({"type": "turn.done", "result": "done"})}
+
+    session_done_mock = AsyncMock()
+    backend = SimpleNamespace(attach=AsyncMock())
+    with (
+        patch("api.runtime_control.get_or_spawn", new=AsyncMock(return_value=session)),
+        patch(
+            "api.runtime_control.inject_stdin",
+            new=AsyncMock(
+                return_value={"ok": True, "injected": True, "durable_turn_id": "turn-1"}
+            ),
+        ),
+        patch("api.runtime_control.get_backend", return_value=backend),
+        patch(
+            "api.runtime_control._get_runtime",
+            return_value=SimpleNamespace(turn_counter=1),
+        ),
+        patch("api.runtime_control._stream_stdout", _stream_with_live_delivery_failure),
+        patch("api.runtime_control.slackbot_client.harness_event", new=AsyncMock(return_value=None)),
+        patch("api.runtime_control.slackbot_client.session_done", session_done_mock),
+    ):
+        await _process_execution(db_pool, row)
+
+    session_done_mock.assert_awaited_once_with(slackbot_session_id, None)
+    execution = await db_pool.fetchrow(
+        "SELECT status, result_text, metadata FROM agent_execution_requests WHERE execution_id = $1",
+        execution_id,
+    )
+    assert execution is not None
+    assert execution["status"] == "completed"
+    assert execution["result_text"] == "done"
+    metadata = json.loads(execution["metadata"])
+    assert metadata["slackbot_live_delivery_failed"] == "harness_event_failed"
+    assert "slackbot_live_delivery" not in metadata
+
+
+@pytest.mark.asyncio
 async def test_worker_marks_turn_done_error_as_failed_and_updates_runtime(db_pool):
     from api.runtime_control import _process_execution
 

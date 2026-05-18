@@ -2530,6 +2530,11 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
                             execution_id,
                             "harness_event_failed",
                         )
+                        await slackbot_client.session_done(
+                            slackbot_session_id,
+                            harness_thread_id or None,
+                        )
+                        slackbot_done = True
                         slackbot_session_id = ""
                         break
                     if isinstance(harness_result, dict):
