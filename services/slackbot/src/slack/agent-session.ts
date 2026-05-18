@@ -126,16 +126,18 @@ export class AgentSessionRenderer {
     state.done = true
     state.footer = footer
 
-    for (const segment of state.segments) {
-      balancePendingMarkdown(segment)
-      await this.flushText(state, segment, { force: true })
-      const finalTaskUpdates = finalizeOpenTasks(segment)
-      for (const task of finalTaskUpdates) await this.flushTask(state, segment, task)
-      await this.closeTextStream(state, segment)
+    try {
+      for (const segment of state.segments) {
+        balancePendingMarkdown(segment)
+        await this.flushText(state, segment, { force: true })
+        const finalTaskUpdates = finalizeOpenTasks(segment)
+        for (const task of finalTaskUpdates) await this.flushTask(state, segment, task)
+        await this.closeTextStream(state, segment)
+      }
+    } finally {
+      await this.setStatus(sessionId, '')
+      sessions.delete(sessionId)
     }
-
-    await this.setStatus(sessionId, '')
-    sessions.delete(sessionId)
   }
 
   private async setStatus(sessionId: string, status: string): Promise<void> {
@@ -290,8 +292,8 @@ export class AgentSessionRenderer {
     chunks: AnyChunk[]
   ): Promise<void> {
     if (state.statusCleared || !hasVisibleStreamChunks(chunks)) return
-    state.statusCleared = true
     await this.setStatus(state.id, '')
+    state.statusCleared = true
   }
 
   private planPrefix(state: AgentSessionState, segment: Segment): AnyChunk[] {
