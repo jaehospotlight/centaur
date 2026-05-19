@@ -98,6 +98,66 @@ so any thread can use any configured credential. Per-user and per-channel
 scoping is on the roadmap; until then, scope tool and harness access
 accordingly. See [Security](/security) for the full threat model.
 
+### Optional local OAuth/subscription auth
+
+Codex and Claude Code can use local CLI auth state instead of the API-key
+path. This is meant for deployments that need Codex subscriptions or Claude
+Code subscription/card auth. It is not automatic and is not handled by
+[iron-proxy](https://docs.iron.sh): the sandbox reconstructs the provider's
+local auth files so the CLI starts as logged in.
+
+For local development, run:
+
+```bash
+bun run auth:bootstrap
+source .env.local
+just bootstrap-secrets
+```
+
+If local auth is missing, `auth:bootstrap` prints the exact login command. To
+stream the device/browser setup flow from the bootstrap command itself, run:
+
+```bash
+bun run auth:bootstrap -- --login
+```
+
+For production, deliver these keys through the same infra Secret transport you
+use for other chart secrets:
+
+| Secret | Used for |
+|--------|----------|
+| `CODEX_AUTH_JSON` | Codex local auth file reconstruction. |
+| `CLAUDE_AUTH_JSON` | Claude account metadata, when available. |
+| `CLAUDE_CREDENTIALS_JSON` | Claude portable credentials from `claude setup-token`. |
+
+Then enable only the providers you intend to use:
+
+```yaml
+sandbox:
+  extraEnv:
+    CODEX_USE_LOCAL_AUTH: "true"
+    CLAUDE_USE_LOCAL_AUTH: "true"
+```
+
+The Kubernetes sandbox backend mounts auth payloads from Secret references, not
+literal PodSpec values, and scopes them by engine: Codex pods receive only
+Codex auth, Claude pods receive only Claude auth, and Amp receives none. If a
+local auth payload is missing, the entrypoint preserves the normal API-key
+fallback path.
+
+Durable provider resume is separately opt-in:
+
+```yaml
+sandbox:
+  extraEnv:
+    HARNESS_DURABLE_RESUME: "true"
+```
+
+When enabled, Centaur uses provider-specific resume ids:
+`AMP_CONTINUE_THREAD_ID`, `CODEX_CONTINUE_THREAD_ID`, and
+`CLAUDE_CONTINUE_SESSION_ID`. When disabled, the legacy resume behavior is left
+unchanged.
+
 ## 4. Configure Slack
 
 Create the Slackbot app at [api.slack.com/apps](https://api.slack.com/apps).

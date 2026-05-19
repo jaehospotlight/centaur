@@ -104,6 +104,12 @@ placeholder names; the real values live on a per-sandbox
 and request locations, and substituted on the wire when an outbound
 request matches.
 
+Opt-in Codex/Claude local OAuth auth is an exception to that default model.
+Those CLIs require local login files for subscription auth, so Centaur mounts
+provider auth payloads from Kubernetes Secret references and reconstructs the
+files only inside the matching engine's sandbox. Amp and unrelated engines do
+not receive those payloads.
+
 See [Security](/security) for the full threat model and what it does
 and does not protect against.
 

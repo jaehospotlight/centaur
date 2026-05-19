@@ -17,6 +17,9 @@ set to onepassword-connect in the Helm values):
   OP_CONNECT_CREDENTIALS_FILE  path to 1password-credentials.json; if set,
                                creates Secret centaur-onepassword-connect-credentials
   OP_CONNECT_TOKEN             Connect API token; added to centaur-infra-env
+  CODEX_AUTH_JSON              Codex local auth payload; added to centaur-infra-env
+  CLAUDE_AUTH_JSON             Claude local auth payload; added to centaur-infra-env
+  CLAUDE_CREDENTIALS_JSON      Claude credentials payload; added to centaur-infra-env
 EOF
 }
 
@@ -80,6 +83,15 @@ require_env SLACK_BOT_TOKEN
 require_env SLACK_SIGNING_SECRET
 require_env SLACKBOT_API_KEY
 
+optional_secret_env_names=(
+  LMNR_PROJECT_API_KEY
+  LMNR_BASE_URL
+  OP_CONNECT_TOKEN
+  CODEX_AUTH_JSON
+  CLAUDE_AUTH_JSON
+  CLAUDE_CREDENTIALS_JSON
+)
+
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 delete_if_forced centaur-infra-env
@@ -89,19 +101,15 @@ delete_if_forced centaur-onepassword-connect-credentials
 
 if secret_exists centaur-infra-env; then
   patch_data=()
-  if [[ -n "${LMNR_PROJECT_API_KEY:-}" ]]; then
-    patch_data+=("\"LMNR_PROJECT_API_KEY\":\"$(printf '%s' "$LMNR_PROJECT_API_KEY" | base64 | tr -d '\n')\"")
-  fi
-  if [[ -n "${LMNR_BASE_URL:-}" ]]; then
-    patch_data+=("\"LMNR_BASE_URL\":\"$(printf '%s' "$LMNR_BASE_URL" | base64 | tr -d '\n')\"")
-  fi
-  if [[ -n "${OP_CONNECT_TOKEN:-}" ]]; then
-    patch_data+=("\"OP_CONNECT_TOKEN\":\"$(printf '%s' "$OP_CONNECT_TOKEN" | base64 | tr -d '\n')\"")
-  fi
+  for name in "${optional_secret_env_names[@]}"; do
+    if [[ -n "${!name:-}" ]]; then
+      patch_data+=("\"$name\":\"$(printf '%s' "${!name}" | base64 | tr -d '\n')\"")
+    fi
+  done
   if [[ "${#patch_data[@]}" -gt 0 ]]; then
     patch_json="{\"data\":{$(IFS=,; echo "${patch_data[*]}")}}"
     kubectl -n "$NAMESPACE" patch secret centaur-infra-env --type merge -p "$patch_json" >/dev/null
-    echo "Updated optional Laminar keys in Secret centaur-infra-env in namespace $NAMESPACE"
+    echo "Updated optional keys in Secret centaur-infra-env in namespace $NAMESPACE"
   fi
   echo "Secret centaur-infra-env already exists in namespace $NAMESPACE; leaving unchanged"
 else
@@ -119,15 +127,11 @@ else
     --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD"
     --from-literal=DATABASE_URL="$DATABASE_URL"
   )
-  if [[ -n "${LMNR_PROJECT_API_KEY:-}" ]]; then
-    secret_args+=(--from-literal=LMNR_PROJECT_API_KEY="$LMNR_PROJECT_API_KEY")
-  fi
-  if [[ -n "${LMNR_BASE_URL:-}" ]]; then
-    secret_args+=(--from-literal=LMNR_BASE_URL="$LMNR_BASE_URL")
-  fi
-  if [[ -n "${OP_CONNECT_TOKEN:-}" ]]; then
-    secret_args+=(--from-literal=OP_CONNECT_TOKEN="$OP_CONNECT_TOKEN")
-  fi
+  for name in "${optional_secret_env_names[@]}"; do
+    if [[ -n "${!name:-}" ]]; then
+      secret_args+=(--from-literal="$name=${!name}")
+    fi
+  done
   kubectl "${secret_args[@]}" >/dev/null
   echo "Created Secret centaur-infra-env in namespace $NAMESPACE"
 fi

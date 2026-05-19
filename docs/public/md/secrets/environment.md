@@ -44,6 +44,32 @@ kubectl create secret generic centaur-infra-env \
 For local development, `just bootstrap-secrets` creates the local Kubernetes
 Secret from your shell environment.
 
+## Harness local auth payloads
+
+Most harness credentials should stay in [iron-proxy](https://docs.iron.sh)'s
+secret source as API keys. Codex and Claude Code local OAuth/subscription auth
+is different: their CLIs require local auth files. When enabled, Centaur mounts
+opaque auth payloads from the infra Secret into the matching sandbox and the
+entrypoint reconstructs those files.
+
+Use `bun run auth:bootstrap` to import local payloads into `.env.local`, then
+`source .env.local` before `just bootstrap-secrets`. Use
+`bun run auth:bootstrap -- --login` when you want the bootstrap command to run
+and stream the provider login flow.
+
+Optional payload keys:
+
+| Secret | Notes |
+|--------|-------|
+| `CODEX_AUTH_JSON` | Copied from `~/.codex/auth.json`. |
+| `CLAUDE_AUTH_JSON` | Claude account metadata from `~/.claude.json`, when available. |
+| `CLAUDE_CREDENTIALS_JSON` | Portable Claude credentials from `~/.claude/.credentials.json`; create with `claude setup-token`. |
+
+Enable use with sandbox flags such as `CODEX_USE_LOCAL_AUTH=true` and
+`CLAUDE_USE_LOCAL_AUTH=true`. These payloads are intentionally available inside
+the selected provider's sandbox, unlike [iron-proxy](https://docs.iron.sh)
+API-key substitution.
+
 ## How tool secrets resolve
 
 For:

@@ -109,6 +109,77 @@ def test_configure_trace_context_ignores_invalid_trace_id(monkeypatch) -> None:
     assert "TRACEPARENT" not in wrapper.os.environ
 
 
+def test_resume_uses_legacy_amp_var_when_durable_resume_disabled(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+    monkeypatch.delenv("HARNESS_DURABLE_RESUME", raising=False)
+    monkeypatch.delenv("CODEX_CONTINUE_THREAD_ID", raising=False)
+    monkeypatch.setenv("AMP_CONTINUE_THREAD_ID", "legacy-thread")
+    monkeypatch.setattr(wrapper.os, "getcwd", lambda: "/workspace")
+    calls = []
+
+    def fake_request(method, params=None, timeout=30.0):
+        calls.append((method, params, timeout))
+        return {"thread": {"id": params["threadId"]}}
+
+    monkeypatch.setattr(wrapper, "request", fake_request)
+    wrapper.THREAD_ID = None
+
+    assert wrapper.start_or_resume_thread() == "legacy-thread"
+    assert calls == [
+        (
+            "thread/resume",
+            {"threadId": "legacy-thread", "cwd": "/workspace"},
+            60,
+        )
+    ]
+
+
+def test_durable_resume_ignores_legacy_amp_var(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+    monkeypatch.setenv("HARNESS_DURABLE_RESUME", "true")
+    monkeypatch.delenv("CODEX_CONTINUE_THREAD_ID", raising=False)
+    monkeypatch.setenv("AMP_CONTINUE_THREAD_ID", "legacy-thread")
+    monkeypatch.setattr(wrapper.os, "getcwd", lambda: "/workspace")
+    calls = []
+
+    def fake_request(method, params=None, timeout=30.0):
+        calls.append((method, params, timeout))
+        return {"thread": {"id": "fresh-thread"}}
+
+    monkeypatch.setattr(wrapper, "request", fake_request)
+    wrapper.THREAD_ID = None
+
+    assert wrapper.start_or_resume_thread() == "fresh-thread"
+    assert calls == [("thread/start", {"cwd": "/workspace"}, 60)]
+
+
+def test_durable_resume_stale_rollout_falls_back_to_fresh_thread(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+    monkeypatch.setenv("HARNESS_DURABLE_RESUME", "true")
+    monkeypatch.setenv("CODEX_CONTINUE_THREAD_ID", "stale-thread")
+    monkeypatch.setattr(wrapper.os, "getcwd", lambda: "/workspace")
+    calls = []
+
+    def fake_request(method, params=None, timeout=30.0):
+        calls.append((method, params, timeout))
+        if method == "thread/resume":
+            raise RuntimeError("No rollout found for thread")
+        return {"thread": {"id": "fresh-thread"}}
+
+    monkeypatch.setattr(wrapper, "request", fake_request)
+    wrapper.THREAD_ID = None
+
+    assert wrapper.start_or_resume_thread() == "fresh-thread"
+    assert calls == [
+        (
+            "thread/resume",
+            {"threadId": "stale-thread", "cwd": "/workspace"},
+            60,
+        ),
+        ("thread/start", {"cwd": "/workspace"}, 60),
+    ]
+
+
 def test_request_attaches_traceparent(monkeypatch) -> None:
     wrapper = _load_wrapper()
     sent: list[dict] = []

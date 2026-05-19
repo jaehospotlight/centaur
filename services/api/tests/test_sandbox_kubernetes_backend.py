@@ -154,6 +154,18 @@ def _default_per_sandbox_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KUBERNETES_FIREWALL_CA_KEY_SECRET_NAME", "firewall-ca-key")
     monkeypatch.setenv("KUBERNETES_SECRET_ENV_NAME", "centaur-infra-env")
     monkeypatch.delenv("KUBERNETES_BOOTSTRAP_SECRET_NAME", raising=False)
+    for key in (
+        "HARNESS_DURABLE_RESUME",
+        "CODEX_USE_LOCAL_AUTH",
+        "CODEX_AUTH_JSON",
+        "CODEX_AUTH_JSON_FILE",
+        "CLAUDE_USE_LOCAL_AUTH",
+        "CLAUDE_AUTH_JSON",
+        "CLAUDE_AUTH_JSON_FILE",
+        "CLAUDE_CREDENTIALS_JSON",
+        "CLAUDE_CREDENTIALS_JSON_FILE",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 def test_pod_resources_uses_default_limits_when_unset(
@@ -189,12 +201,15 @@ def test_container_env_includes_firewall_host_for_secret_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AGENT_API_URL", "http://api.internal:8000")
+    monkeypatch.delenv("HARNESS_DURABLE_RESUME", raising=False)
 
     env = sandbox_container_env(
         "thread-key",
         "sandbox-id",
         "firewall.internal",
+        engine="codex",
         trace_id="00000000-0000-0000-0000-000000000123",
+        resume_thread_id="T-legacy",
     )
     env_map = dict(item.split("=", 1) for item in env)
 
@@ -205,6 +220,176 @@ def test_container_env_includes_firewall_host_for_secret_bootstrap(
     assert env_map["CENTAUR_TRACE_ID"] == "00000000-0000-0000-0000-000000000123"
     assert env_map["NO_PROXY"] == "localhost,127.0.0.1,firewall.internal,api.internal"
     assert env_map["no_proxy"] == env_map["NO_PROXY"]
+    assert env_map["AMP_CONTINUE_THREAD_ID"] == "T-legacy"
+    assert "CODEX_CONTINUE_THREAD_ID" not in env_map
+
+
+def test_container_env_uses_provider_resume_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_DURABLE_RESUME", "true")
+
+    env = sandbox_container_env(
+        "thread-key",
+        "sandbox-id",
+        "firewall.internal",
+        engine="codex",
+        resume_thread_id="codex-thread",
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+
+    assert env_map["HARNESS_DURABLE_RESUME"] == "true"
+    assert env_map["CODEX_CONTINUE_THREAD_ID"] == "codex-thread"
+    assert "AMP_CONTINUE_THREAD_ID" not in env_map
+
+
+def test_container_env_honors_durable_resume_from_extra_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "KUBERNETES_SANDBOX_EXTRA_ENV",
+        json.dumps([{"name": "HARNESS_DURABLE_RESUME", "value": "true"}]),
+    )
+
+    env = sandbox_container_env(
+        "thread-key",
+        "sandbox-id",
+        "firewall.internal",
+        engine="codex",
+        resume_thread_id="codex-thread",
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+
+    assert env_map["HARNESS_DURABLE_RESUME"] == "true"
+    assert env_map["CODEX_CONTINUE_THREAD_ID"] == "codex-thread"
+    assert "AMP_CONTINUE_THREAD_ID" not in env_map
+
+
+def test_container_env_passes_local_auth_only_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEX_USE_LOCAL_AUTH", raising=False)
+    monkeypatch.delenv("CLAUDE_USE_LOCAL_AUTH", raising=False)
+
+    env = sandbox_container_env(
+        "thread-key", "sandbox-id", "firewall.internal", engine="codex"
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+    assert "CODEX_AUTH_JSON" not in env_map
+    assert "CLAUDE_AUTH_JSON" not in env_map
+    assert "CLAUDE_CREDENTIALS_JSON" not in env_map
+
+    monkeypatch.setenv("CODEX_USE_LOCAL_AUTH", "true")
+    monkeypatch.setenv("CLAUDE_USE_LOCAL_AUTH", "true")
+    env = sandbox_container_env(
+        "thread-key", "sandbox-id", "firewall.internal", engine="codex"
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+
+    assert env_map["CODEX_USE_LOCAL_AUTH"] == "true"
+    assert env_map["CODEX_AUTH_JSON_FILE"] == "/harness-auth/codex-auth.json"
+    assert "CLAUDE_USE_LOCAL_AUTH" not in env_map
+    assert "CLAUDE_AUTH_JSON_FILE" not in env_map
+    assert "CLAUDE_CREDENTIALS_JSON_FILE" not in env_map
+    assert "CODEX_AUTH_JSON" not in env_map
+    assert "CLAUDE_AUTH_JSON" not in env_map
+    assert "CLAUDE_CREDENTIALS_JSON" not in env_map
+
+    env = sandbox_container_env(
+        "thread-key", "sandbox-id", "firewall.internal", engine="claude-code"
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+
+    assert "CODEX_USE_LOCAL_AUTH" not in env_map
+    assert "CODEX_AUTH_JSON_FILE" not in env_map
+    assert env_map["CLAUDE_USE_LOCAL_AUTH"] == "true"
+    assert env_map["CLAUDE_AUTH_JSON_FILE"] == "/harness-auth/claude-auth.json"
+    assert (
+        env_map["CLAUDE_CREDENTIALS_JSON_FILE"]
+        == "/harness-auth/claude-credentials.json"
+    )
+
+    env = sandbox_container_env(
+        "thread-key", "sandbox-id", "firewall.internal", engine="amp"
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+
+    assert "CODEX_USE_LOCAL_AUTH" not in env_map
+    assert "CODEX_AUTH_JSON_FILE" not in env_map
+    assert "CLAUDE_USE_LOCAL_AUTH" not in env_map
+    assert "CLAUDE_AUTH_JSON_FILE" not in env_map
+    assert "CLAUDE_CREDENTIALS_JSON_FILE" not in env_map
+
+
+def test_container_env_filters_local_auth_from_extra_env_for_other_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "KUBERNETES_SANDBOX_EXTRA_ENV",
+        json.dumps(
+            [
+                {"name": "CODEX_USE_LOCAL_AUTH", "value": "true"},
+                {"name": "CODEX_AUTH_JSON", "value": "codex-secret"},
+                {"name": "CODEX_AUTH_PAYLOAD", "value": "codex-payload"},
+                {"name": "CLAUDE_USE_LOCAL_AUTH", "value": "true"},
+                {"name": "CLAUDE_AUTH_JSON", "value": "claude-secret"},
+                {"name": "CLAUDE_AUTH_PAYLOAD", "value": "claude-payload"},
+            ]
+        ),
+    )
+
+    env = sandbox_container_env(
+        "thread-key", "sandbox-id", "firewall.internal", engine="amp"
+    )
+    env_map = dict(item.split("=", 1) for item in env)
+
+    assert "CODEX_USE_LOCAL_AUTH" not in env_map
+    assert "CODEX_AUTH_JSON" not in env_map
+    assert "CODEX_AUTH_PAYLOAD" not in env_map
+    assert "CLAUDE_USE_LOCAL_AUTH" not in env_map
+    assert "CLAUDE_AUTH_JSON" not in env_map
+    assert "CLAUDE_AUTH_PAYLOAD" not in env_map
+
+
+def test_harness_auth_secret_sources_are_engine_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from api.sandbox.kubernetes import _harness_auth_secret_sources
+
+    monkeypatch.setenv("CODEX_USE_LOCAL_AUTH", "true")
+    monkeypatch.setenv("CLAUDE_USE_LOCAL_AUTH", "true")
+
+    assert _harness_auth_secret_sources("codex") == [
+        {
+            "secret": {
+                "name": "centaur-infra-env",
+                "optional": True,
+                "items": [{"key": "CODEX_AUTH_JSON", "path": "codex-auth.json"}],
+            }
+        }
+    ]
+    assert _harness_auth_secret_sources("claude-code") == [
+        {
+            "secret": {
+                "name": "centaur-infra-env",
+                "optional": True,
+                "items": [{"key": "CLAUDE_AUTH_JSON", "path": "claude-auth.json"}],
+            }
+        },
+        {
+            "secret": {
+                "name": "centaur-infra-env",
+                "optional": True,
+                "items": [
+                    {
+                        "key": "CLAUDE_CREDENTIALS_JSON",
+                        "path": "claude-credentials.json",
+                    }
+                ],
+            }
+        },
+    ]
+    assert _harness_auth_secret_sources("amp") == []
 
 
 def test_container_env_passes_laminar_otel_config(
@@ -446,6 +631,8 @@ async def test_create_builds_pod_and_prompt_secret(
     monkeypatch.setenv("CENTAUR_OVERLAY_IMAGE", "ghcr.io/tempoxyz/centaur-tempo:latest")
     monkeypatch.setenv("CENTAUR_OVERLAY_IMAGE_PULL_POLICY", "Always")
     monkeypatch.setenv("CENTAUR_OVERLAY_IMAGE_SOURCE_PATH", "/overlay")
+    monkeypatch.setenv("CODEX_USE_LOCAL_AUTH", "true")
+    monkeypatch.setenv("CLAUDE_USE_LOCAL_AUTH", "true")
     monkeypatch.setattr(
         "api.sandbox.kubernetes._prompt_bundle",
         lambda persona: f"prompt:{persona}",
@@ -526,6 +713,12 @@ async def test_create_builds_pod_and_prompt_secret(
     } in pod_body["spec"]["volumes"]
     assert any(
         volume["name"] == "overlay-root" for volume in pod_body["spec"]["volumes"]
+    )
+    assert not any(
+        volume["name"] == "harness-auth" for volume in pod_body["spec"]["volumes"]
+    )
+    assert not any(
+        mount["name"] == "harness-auth" for mount in container["volumeMounts"]
     )
     assert pod_body["spec"]["initContainers"] == [
         {

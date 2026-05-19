@@ -38,6 +38,7 @@ from api.sandbox.config import (
     container_env,
     image,
     runtime_for_session,
+    sandbox_env_flag,
 )
 from api.sandbox.prompt_assembly import assemble_prompt
 from api.tool_manager import PgDsnSecret, SecretDef
@@ -50,9 +51,32 @@ _CONTAINER_NAME = "sandbox"
 _AGENT_UID = 1001
 _SANDBOX_OVERLAY_ROOT = "/home/agent/overlay"
 _SANDBOX_OVERLAY_DIR = f"{_SANDBOX_OVERLAY_ROOT}/org"
+_SANDBOX_HARNESS_AUTH_DIR = "/harness-auth"
 _PROXY_LABEL = "centaur.ai/iron-proxy"
 _API_PROXY_POD_NAME = "centaur-api-proxy"
 _API_PROXY_SANDBOX_ID = "api"
+
+
+def _harness_auth_secret_sources(engine: str) -> list[dict[str, Any]]:
+    def source(key: str, path: str) -> dict[str, Any]:
+        return {
+            "secret": {
+                "name": _secret_env_name(),
+                "optional": True,
+                "items": [{"key": _secret_env_key(key), "path": path}],
+            }
+        }
+
+    if engine == "codex" and sandbox_env_flag("CODEX_USE_LOCAL_AUTH"):
+        return [
+            source("CODEX_AUTH_JSON", "codex-auth.json"),
+        ]
+    if engine == "claude-code" and sandbox_env_flag("CLAUDE_USE_LOCAL_AUTH"):
+        return [
+            source("CLAUDE_AUTH_JSON", "claude-auth.json"),
+            source("CLAUDE_CREDENTIALS_JSON", "claude-credentials.json"),
+        ]
+    return []
 
 
 def _get_rt(session: SandboxSession):
@@ -1047,6 +1071,7 @@ class KubernetesExecutorBackend(SandboxBackend):
             thread_key,
             pod_name,
             firewall_host,
+            engine=engine,
             trace_id=trace_id,
             resume_thread_id=resume_thread_id,
             pg_dsns=sandbox_pg_dsns,
@@ -1056,7 +1081,11 @@ class KubernetesExecutorBackend(SandboxBackend):
             env.append(f"CENTAUR_OVERLAY_DIR={_SANDBOX_OVERLAY_DIR}")
         if engine == "claude-code" and model:
             env.append(f"CLAUDE_MODEL={model}")
-        if engine == "claude-code" and resume_thread_id:
+        if (
+            engine == "claude-code"
+            and resume_thread_id
+            and not any(item == "HARNESS_DURABLE_RESUME=true" for item in env)
+        ):
             env.append(f"CLAUDE_CONTINUE_SESSION_ID={resume_thread_id}")
         if persona:
             env.append(f"AGENT_PERSONA={persona}")
@@ -1096,6 +1125,22 @@ class KubernetesExecutorBackend(SandboxBackend):
             },
         ]
         init_containers: list[dict[str, Any]] = []
+
+        harness_auth_sources = _harness_auth_secret_sources(engine)
+        if harness_auth_sources:
+            volume_mounts.append(
+                {
+                    "name": "harness-auth",
+                    "mountPath": _SANDBOX_HARNESS_AUTH_DIR,
+                    "readOnly": True,
+                }
+            )
+            volumes.append(
+                {
+                    "name": "harness-auth",
+                    "projected": {"sources": harness_auth_sources},
+                }
+            )
 
         if overlay_image:
             volume_mounts.append(

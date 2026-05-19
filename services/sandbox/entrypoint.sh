@@ -69,6 +69,16 @@ toml_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+truthy_env() {
+    local value="${1:-}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    case "${value,,}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 HARNESS_CONFIG_DIR="${CENTAUR_HARNESS_CONFIG_DIR:-$HOME_DIR/harness}"
 if [ -f "$HARNESS_CONFIG_DIR/codex/config.toml" ]; then
     cp "$HARNESS_CONFIG_DIR/codex/config.toml" "$HOME_DIR/.codex/config.toml"
@@ -197,11 +207,67 @@ if [ -x "$HARNESS_ADAPTER" ]; then
     "$HARNESS_ADAPTER" "${1:-}" "$TARGET_PROMPT"
 fi
 
-# Codex reads its auth file when the app server starts. Complete this before
-# signaling readiness, otherwise warm pods can be claimed with no auth loaded.
-CODEX_KEY="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
-if [ -n "$CODEX_KEY" ]; then
-    echo "$CODEX_KEY" | codex login --with-api-key 2>/dev/null || true
+if truthy_env "${CODEX_USE_LOCAL_AUTH:-}"; then
+    CODEX_AUTH_PAYLOAD=""
+    if [ -n "${CODEX_AUTH_JSON_FILE:-}" ] && [ -r "$CODEX_AUTH_JSON_FILE" ]; then
+        CODEX_AUTH_PAYLOAD="$(cat "$CODEX_AUTH_JSON_FILE")"
+    elif [ -n "${CODEX_AUTH_JSON:-}" ]; then
+        CODEX_AUTH_PAYLOAD="$CODEX_AUTH_JSON"
+    fi
+    if [ -n "$CODEX_AUTH_PAYLOAD" ]; then
+        mkdir -p "$HOME_DIR/.codex"
+        printf '%s' "$CODEX_AUTH_PAYLOAD" > "$HOME_DIR/.codex/auth.json"
+        chmod 600 "$HOME_DIR/.codex/auth.json"
+        unset CODEX_API_KEY OPENAI_API_KEY CODEX_AUTH_JSON CODEX_AUTH_PAYLOAD
+    else
+        echo "CODEX_USE_LOCAL_AUTH=true but CODEX_AUTH_JSON is empty; falling back to API-key auth. Run codex login --device-auth on the host, then bun run auth:bootstrap." >&2
+        CODEX_KEY="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
+        if [ -n "$CODEX_KEY" ]; then
+            echo "$CODEX_KEY" | codex login --with-api-key 2>/dev/null || true
+        fi
+    fi
+else
+    # Codex reads its auth file when the app server starts. Complete this before
+    # signaling readiness, otherwise warm pods can be claimed with no auth loaded.
+    CODEX_KEY="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
+    if [ -n "$CODEX_KEY" ]; then
+        echo "$CODEX_KEY" | codex login --with-api-key 2>/dev/null || true
+    fi
+fi
+
+if truthy_env "${CLAUDE_USE_LOCAL_AUTH:-}"; then
+    CLAUDE_LOCAL_AUTH_LOADED=0
+    CLAUDE_AUTH_PAYLOAD=""
+    CLAUDE_CREDENTIALS_PAYLOAD=""
+    if [ -n "${CLAUDE_AUTH_JSON_FILE:-}" ] && [ -r "$CLAUDE_AUTH_JSON_FILE" ]; then
+        CLAUDE_AUTH_PAYLOAD="$(cat "$CLAUDE_AUTH_JSON_FILE")"
+    elif [ -n "${CLAUDE_AUTH_JSON:-}" ]; then
+        CLAUDE_AUTH_PAYLOAD="$CLAUDE_AUTH_JSON"
+    fi
+    if [ -n "${CLAUDE_CREDENTIALS_JSON_FILE:-}" ] && [ -r "$CLAUDE_CREDENTIALS_JSON_FILE" ]; then
+        CLAUDE_CREDENTIALS_PAYLOAD="$(cat "$CLAUDE_CREDENTIALS_JSON_FILE")"
+    elif [ -n "${CLAUDE_CREDENTIALS_JSON:-}" ]; then
+        CLAUDE_CREDENTIALS_PAYLOAD="$CLAUDE_CREDENTIALS_JSON"
+    fi
+    if [ -n "$CLAUDE_AUTH_PAYLOAD" ]; then
+        printf '%s' "$CLAUDE_AUTH_PAYLOAD" > "$HOME_DIR/.claude.json"
+        chmod 600 "$HOME_DIR/.claude.json"
+        CLAUDE_LOCAL_AUTH_LOADED=1
+    elif [ -n "$CLAUDE_CREDENTIALS_PAYLOAD" ]; then
+        :
+    else
+        echo "CLAUDE_USE_LOCAL_AUTH=true but Claude local auth payloads are empty; falling back to API-key auth. Run claude setup-token on the host, then bun run auth:bootstrap." >&2
+    fi
+    if [ -n "$CLAUDE_CREDENTIALS_PAYLOAD" ]; then
+        mkdir -p "$HOME_DIR/.claude"
+        printf '%s' "$CLAUDE_CREDENTIALS_PAYLOAD" > "$HOME_DIR/.claude/.credentials.json"
+        chmod 600 "$HOME_DIR/.claude/.credentials.json"
+        CLAUDE_LOCAL_AUTH_LOADED=1
+    fi
+    if [ "$CLAUDE_LOCAL_AUTH_LOADED" = "1" ]; then
+        unset ANTHROPIC_API_KEY CLAUDE_API_KEY CLAUDE_AUTH_JSON CLAUDE_CREDENTIALS_JSON
+        unset CLAUDE_AUTH_PAYLOAD CLAUDE_CREDENTIALS_PAYLOAD
+    fi
 fi
 
 # Signal readiness

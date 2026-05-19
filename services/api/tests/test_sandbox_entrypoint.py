@@ -138,6 +138,141 @@ def test_sandbox_entrypoint_installs_codex_harness_config(tmp_path: Path) -> Non
     assert result.stdout == (harness_dir / "codex" / "config.toml").read_text()
 
 
+def test_sandbox_entrypoint_reconstructs_local_auth_payloads(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    harness_dir = _write_codex_harness_config(home)
+    codex_auth = '{"tokens":{"id_token":"codex-secret"}}'
+    claude_auth = '{"oauthAccount":{"accessToken":"claude-secret"}}'
+    claude_credentials = '{"refreshToken":"claude-refresh-secret"}'
+    auth_dir = tmp_path / "harness-auth"
+    auth_dir.mkdir()
+    (auth_dir / "codex-auth.json").write_text(codex_auth)
+    (auth_dir / "claude-auth.json").write_text(claude_auth)
+    (auth_dir / "claude-credentials.json").write_text(claude_credentials)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(ENTRYPOINT_SH),
+            "sh",
+            "-lc",
+            (
+                'cat "$HOME/.codex/auth.json"; printf "\\n"; '
+                'cat "$HOME/.claude.json"; printf "\\n"; '
+                'cat "$HOME/.claude/.credentials.json"; printf "\\n"; '
+                'printf "%s/%s/%s\\n" "${OPENAI_API_KEY-unset}" '
+                '"${CODEX_API_KEY-unset}" "${ANTHROPIC_API_KEY-unset}"'
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": str(home),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "CENTAUR_HARNESS_CONFIG_DIR": str(harness_dir),
+            "CODEX_USE_LOCAL_AUTH": "yes",
+            "CODEX_AUTH_JSON_FILE": str(auth_dir / "codex-auth.json"),
+            "CLAUDE_USE_LOCAL_AUTH": "on",
+            "CLAUDE_AUTH_JSON_FILE": str(auth_dir / "claude-auth.json"),
+            "CLAUDE_CREDENTIALS_JSON_FILE": str(
+                auth_dir / "claude-credentials.json"
+            ),
+            "OPENAI_API_KEY": "OPENAI_API_KEY",
+            "CODEX_API_KEY": "CODEX_API_KEY",
+            "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    codex_line, claude_line, credentials_line, env_line = result.stdout.splitlines()
+    assert json.loads(codex_line) == {"tokens": {"id_token": "codex-secret"}}
+    assert json.loads(claude_line) == {
+        "oauthAccount": {"accessToken": "claude-secret"}
+    }
+    assert json.loads(credentials_line) == {"refreshToken": "claude-refresh-secret"}
+    assert env_line == "unset/unset/unset"
+
+
+def test_sandbox_entrypoint_unsets_direct_local_auth_payload_env(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    harness_dir = _write_codex_harness_config(home)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(ENTRYPOINT_SH),
+            "sh",
+            "-lc",
+            (
+                'printf "%s/%s/%s/%s\\n" '
+                '"${CODEX_AUTH_JSON-unset}" '
+                '"${CLAUDE_AUTH_JSON-unset}" '
+                '"${CLAUDE_CREDENTIALS_JSON-unset}" '
+                '"${OPENAI_API_KEY-unset}"'
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": str(home),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "CENTAUR_HARNESS_CONFIG_DIR": str(harness_dir),
+            "CODEX_USE_LOCAL_AUTH": "true",
+            "CODEX_AUTH_JSON": '{"tokens":{"id_token":"codex-secret"}}',
+            "CLAUDE_USE_LOCAL_AUTH": "true",
+            "CLAUDE_AUTH_JSON": '{"oauthAccount":{"accessToken":"claude-secret"}}',
+            "CLAUDE_CREDENTIALS_JSON": '{"refreshToken":"claude-refresh-secret"}',
+            "OPENAI_API_KEY": "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.strip() == "unset/unset/unset/unset"
+
+
+def test_sandbox_entrypoint_preserves_api_keys_when_local_auth_missing(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    harness_dir = _write_codex_harness_config(home)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    codex = bin_dir / "codex"
+    codex.write_text("#!/usr/bin/env sh\ncat >/dev/null\n")
+    codex.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(ENTRYPOINT_SH),
+            "sh",
+            "-lc",
+            'printf "%s/%s/%s\\n" "$OPENAI_API_KEY" "$CODEX_API_KEY" "$ANTHROPIC_API_KEY"',
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+            "CENTAUR_HARNESS_CONFIG_DIR": str(harness_dir),
+            "CODEX_USE_LOCAL_AUTH": "true",
+            "CLAUDE_USE_LOCAL_AUTH": "true",
+            "OPENAI_API_KEY": "OPENAI_API_KEY",
+            "CODEX_API_KEY": "CODEX_API_KEY",
+            "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.stdout.strip() == "OPENAI_API_KEY/CODEX_API_KEY/ANTHROPIC_API_KEY"
+
+
 def test_sandbox_entrypoint_appends_codex_laminar_otel_config(tmp_path: Path) -> None:
     home = tmp_path / "home"
     harness_dir = _write_codex_harness_config(home)

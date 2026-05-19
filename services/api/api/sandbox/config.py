@@ -42,6 +42,22 @@ _CLAUDE_HARDENING_ENV = (
     ("DISABLE_UPDATES", "1"),
 )
 
+_CODEX_LOCAL_AUTH_ENV_KEYS = {
+    "CODEX_USE_LOCAL_AUTH",
+    "CODEX_AUTH_JSON",
+    "CODEX_AUTH_JSON_FILE",
+    "CODEX_AUTH_PAYLOAD",
+}
+_CLAUDE_LOCAL_AUTH_ENV_KEYS = {
+    "CLAUDE_USE_LOCAL_AUTH",
+    "CLAUDE_AUTH_JSON",
+    "CLAUDE_AUTH_JSON_FILE",
+    "CLAUDE_CREDENTIALS_JSON",
+    "CLAUDE_CREDENTIALS_JSON_FILE",
+    "CLAUDE_AUTH_PAYLOAD",
+    "CLAUDE_CREDENTIALS_PAYLOAD",
+}
+
 
 def _set_env(env: list[str], name: str, value: str) -> None:
     prefix = f"{name}="
@@ -51,6 +67,22 @@ def _set_env(env: list[str], name: str, value: str) -> None:
             env[index] = entry
             return
     env.append(entry)
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def sandbox_env_flag(
+    name: str, extra_env: list[tuple[str, str]] | None = None
+) -> bool:
+    """Resolve sandbox flags after applying KUBERNETES_SANDBOX_EXTRA_ENV overrides."""
+    if extra_env is None:
+        extra_env = _sandbox_extra_env()
+    for key, value in reversed(extra_env):
+        if key == name:
+            return _truthy(value)
+    return _truthy(os.getenv(name))
 
 
 def _sandbox_extra_env() -> list[tuple[str, str]]:
@@ -74,6 +106,14 @@ def _sandbox_extra_env() -> list[tuple[str, str]]:
         value = item.get("value")
         extra.append((name, "" if value is None else str(value)))
     return extra
+
+
+def _local_auth_env_allowed(name: str, engine: str | None) -> bool:
+    if name in _CODEX_LOCAL_AUTH_ENV_KEYS:
+        return engine == "codex"
+    if name in _CLAUDE_LOCAL_AUTH_ENV_KEYS:
+        return engine == "claude-code"
+    return True
 
 
 def amp_mode() -> str:
@@ -101,6 +141,7 @@ def container_env(
     container_name: str,
     firewall_host: str,
     *,
+    engine: str | None = None,
     trace_id: str | None = None,
     resume_thread_id: str | None = None,
     pg_dsns: dict[str, str] | None = None,
@@ -114,6 +155,7 @@ def container_env(
     """
     api_key = mint_sandbox_token(thread_key, container_name)
     api_url = os.getenv("AGENT_API_URL", "http://api:8000")
+    extra_env = _sandbox_extra_env()
 
     env = [
         f"CENTAUR_API_URL={api_url}",
@@ -125,8 +167,19 @@ def container_env(
     visibility = amp_thread_visibility()
     if visibility:
         env.append(f"AMP_THREAD_VISIBILITY={visibility}")
+    durable_resume_enabled = sandbox_env_flag("HARNESS_DURABLE_RESUME", extra_env)
     if resume_thread_id:
-        env.append(f"AMP_CONTINUE_THREAD_ID={resume_thread_id}")
+        if durable_resume_enabled:
+            if engine == "codex":
+                env.append(f"CODEX_CONTINUE_THREAD_ID={resume_thread_id}")
+            elif engine == "claude-code":
+                env.append(f"CLAUDE_CONTINUE_SESSION_ID={resume_thread_id}")
+            elif engine == "amp":
+                env.append(f"AMP_CONTINUE_THREAD_ID={resume_thread_id}")
+        else:
+            env.append(f"AMP_CONTINUE_THREAD_ID={resume_thread_id}")
+    if durable_resume_enabled:
+        env.append("HARNESS_DURABLE_RESUME=true")
 
     no_proxy_hosts = ["localhost", "127.0.0.1", firewall_host]
     api_host = urlsplit(api_url).hostname
@@ -142,6 +195,17 @@ def container_env(
         value = (os.getenv(key) or "").strip()
         if value:
             env.append(f"{key}={value}")
+    if engine == "codex" and sandbox_env_flag("CODEX_USE_LOCAL_AUTH", extra_env):
+        env.append("CODEX_USE_LOCAL_AUTH=true")
+        env.append("CODEX_AUTH_JSON_FILE=/harness-auth/codex-auth.json")
+    if engine == "claude-code" and sandbox_env_flag(
+        "CLAUDE_USE_LOCAL_AUTH", extra_env
+    ):
+        env.append("CLAUDE_USE_LOCAL_AUTH=true")
+        env.append("CLAUDE_AUTH_JSON_FILE=/harness-auth/claude-auth.json")
+        env.append(
+            "CLAUDE_CREDENTIALS_JSON_FILE=/harness-auth/claude-credentials.json"
+        )
     for key, value in _CLAUDE_HARDENING_ENV:
         env.append(f"{key}={value}")
     env.extend(
@@ -164,7 +228,9 @@ def container_env(
         for name, dsn in pg_dsns.items():
             env.append(f"{name}={dsn}")
 
-    for name, value in _sandbox_extra_env():
+    for name, value in extra_env:
+        if not _local_auth_env_allowed(name, engine):
+            continue
         _set_env(env, name, value)
 
     return env

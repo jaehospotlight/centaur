@@ -164,6 +164,10 @@ def wait_for_turn_done() -> None:
             PENDING_INPUTS.append(item)
 
 
+def _env_flag(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def handle_input(turn_input: dict[str, Any]) -> None:
     if turn_input.get("type") == "interrupt":
         interrupt_active_turn()
@@ -184,6 +188,8 @@ def handle_input(turn_input: dict[str, Any]) -> None:
 
 
 def _resume_session_id() -> str:
+    if _env_flag("HARNESS_DURABLE_RESUME"):
+        return (os.environ.get("CLAUDE_CONTINUE_SESSION_ID") or "").strip()
     return (
         os.environ.get("CLAUDE_CONTINUE_SESSION_ID")
         or os.environ.get("AMP_CONTINUE_THREAD_ID")

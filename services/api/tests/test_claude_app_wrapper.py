@@ -72,12 +72,24 @@ def test_build_claude_cmd_model_and_resume(monkeypatch) -> None:
 
 def test_resume_falls_back_to_amp_var(monkeypatch) -> None:
     wrapper = _load_wrapper()
+    monkeypatch.delenv("HARNESS_DURABLE_RESUME", raising=False)
     monkeypatch.delenv("CLAUDE_CONTINUE_SESSION_ID", raising=False)
     monkeypatch.setenv("AMP_CONTINUE_THREAD_ID", "legacy-amp-thread")
 
     cmd = wrapper._build_claude_cmd()
     assert "--resume" in cmd
     assert cmd[cmd.index("--resume") + 1] == "legacy-amp-thread"
+
+
+def test_durable_resume_ignores_amp_var(monkeypatch) -> None:
+    wrapper = _load_wrapper()
+    monkeypatch.setenv("HARNESS_DURABLE_RESUME", "true")
+    monkeypatch.delenv("CLAUDE_CONTINUE_SESSION_ID", raising=False)
+    monkeypatch.setenv("AMP_CONTINUE_THREAD_ID", "legacy-amp-thread")
+
+    cmd = wrapper._build_claude_cmd()
+
+    assert "--resume" not in cmd
 
 
 def test_rewrite_goal_translates_slash_command() -> None:
