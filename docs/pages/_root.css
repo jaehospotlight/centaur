@@ -177,60 +177,13 @@
   display: none;
 }
 
-@media (min-width: 1081px) {
-  .vocs_DocsLayout[data-layout="landing"] .vocs_DocsLayout_gutterTop {
-    padding-left: 0;
-    padding-right: 0;
-  }
-
-  .vocs_DocsLayout[data-layout="landing"] .vocs_DesktopTopNav_withLogo {
-    padding-left: 80px;
-    padding-right: 48px;
-  }
-
-  .vocs_DocsLayout[data-layout="landing"] .vocs_DesktopTopNav_logoWrapper {
-    justify-content: flex-start;
-    left: 24px;
-    width: auto;
-  }
-
-  .vocs_DocsLayout[data-layout="landing"] .vocs_DesktopTopNav_logo {
-    padding-left: 0;
-    padding-right: 0;
-    width: auto;
-  }
-
-  /*
-   * Landing topNav: swap the full lockup for the standalone centaur mark.
-   * Vocs's logoUrl is shared across every layout, so we hide the rendered
-   * `<img>` and paint the mark on the anchor's background instead. Docs
-   * routes keep the lockup img untouched.
-   */
-  .vocs_DocsLayout[data-layout="landing"] .vocs_DesktopTopNav_logo > a {
-    background-image: url('/brand/mark-white.svg');
-    background-position: left center;
-    background-repeat: no-repeat;
-    background-size: contain;
-    width: 32px;
-  }
-
-  .vocs_DocsLayout[data-layout="landing"] .vocs_DesktopTopNav_logo .vocs_NavLogo_logoImage {
-    display: none;
-  }
-}
-
-@media (max-width: 1080px) {
-  .vocs_DocsLayout[data-layout="landing"] .vocs_MobileTopNav_logo > a {
-    background-image: url('/brand/mark-white.svg');
-    background-position: left center;
-    background-repeat: no-repeat;
-    background-size: contain;
-    width: 28px;
-  }
-
-  .vocs_DocsLayout[data-layout="landing"] .vocs_MobileTopNav_logo .vocs_NavLogo_logoImage {
-    display: none;
-  }
+/*
+ * Landing owns its own links in the hero. Hide Vocs's desktop and mobile
+ * top navigation there so docs routes keep the normal navigation chrome.
+ */
+.vocs_DocsLayout[data-layout="landing"] .vocs_DocsLayout_gutterTop,
+[data-layout="landing"] > div[class*="vocs:fixed"][class*="vocs:h-topNav"] {
+  display: none;
 }
 
 /*
@@ -420,7 +373,7 @@ body,
 
 .vocs_DocsLayout[data-layout="landing"] .vocs_DocsLayout_content,
 [data-layout="landing"] [data-v-main] {
-  min-height: calc(100dvh - var(--vocs-topNav_height));
+  min-height: 100dvh;
 }
 
 .vocs_DocsLayout[data-layout="landing"] [data-v-main],
@@ -456,7 +409,7 @@ body,
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
-  min-height: calc(100dvh - var(--vocs-topNav_height));
+  min-height: 100dvh;
   overflow: hidden;
   padding: clamp(72px, 9dvh, 120px) 24px clamp(56px, 8dvh, 104px);
   position: relative;
@@ -662,11 +615,9 @@ a.home-lockup-link {
 }
 
 .home-overview-heading {
-  border-top: 1px solid rgba(255, 255, 255, 0.14);
   display: grid;
   gap: 24px;
   grid-template-columns: minmax(220px, 0.38fr) minmax(0, 1fr);
-  padding-top: 34px;
 }
 
 .home-overview h2 {
@@ -687,9 +638,8 @@ a.home-lockup-link {
 }
 
 .home-overview-list {
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
   display: grid;
-  gap: 0;
+  gap: 24px 40px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   list-style: none;
   margin: 38px 0 0;
@@ -697,15 +647,14 @@ a.home-lockup-link {
 }
 
 .home-overview-list li {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   display: grid;
   gap: 8px;
-  padding: 22px 28px 24px 40px;
+  padding: 0 28px 0 40px;
   position: relative;
 }
 
 .home-overview-list li:nth-child(odd) {
-  border-right: 1px solid rgba(255, 255, 255, 0.12);
+  border-right: 0;
 }
 
 .home-overview-list li::before {
@@ -1331,7 +1280,7 @@ a.home-lockup-link {
     flex-direction: column;
     gap: clamp(28px, 4dvh, 44px);
     max-width: 980px;
-    min-height: calc(100dvh - var(--vocs-topNav_height) - clamp(64px, 8dvh, 112px));
+    min-height: auto;
     text-align: center;
   }
 
@@ -1396,7 +1345,7 @@ a.home-lockup-link {
 
 @media (max-width: 760px) {
   .centaur-home {
-    min-height: calc(100dvh - 64px);
+    min-height: 100dvh;
     padding: 54px 20px 40px;
   }
 
@@ -1437,7 +1386,6 @@ a.home-lockup-link {
   .home-overview-heading {
     gap: 16px;
     grid-template-columns: 1fr;
-    padding-top: 28px;
     text-align: center;
   }
 
