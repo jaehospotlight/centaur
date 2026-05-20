@@ -323,9 +323,20 @@ def start_or_resume_thread() -> str:
         or ""
     ).strip()
     if resume:
-        result = request(
-            "thread/resume", {"threadId": resume, "cwd": os.getcwd()}, timeout=60
-        )
+        try:
+            result = request(
+                "thread/resume", {"threadId": resume, "cwd": os.getcwd()}, timeout=60
+            )
+        except RuntimeError as exc:
+            if "no rollout found" not in str(exc).lower():
+                raise
+            emit(
+                {
+                    "type": "warning",
+                    "message": "stale Codex thread resume failed; starting a fresh thread",
+                }
+            )
+            result = request("thread/start", {"cwd": os.getcwd()}, timeout=60)
     else:
         result = request("thread/start", {"cwd": os.getcwd()}, timeout=60)
     thread = result.get("thread") or {}

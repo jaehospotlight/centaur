@@ -143,6 +143,11 @@ else
     mkdir -p "$WORKSPACE_DIR"
 fi
 
+if [ -n "${WORKSPACE_ENV_LOCAL_B64:-}" ]; then
+    printf '%s' "$WORKSPACE_ENV_LOCAL_B64" | base64 -d > "$WORKSPACE_DIR/.env.local"
+    chmod 600 "$WORKSPACE_DIR/.env.local"
+fi
+
 # ── Ensure uploads directory exists ──────────────────────────────────────────
 mkdir -p "$HOME_DIR/uploads"
 
@@ -159,10 +164,33 @@ if [ -d "$HOME_DIR/github" ]; then
     CENTAUR_SKILLS="$(find "$HOME_DIR/github" -path '*/centaur/.agents/skills' -type d -print -quit 2>/dev/null || true)"
 fi
 WS_SKILLS="$WORKSPACE_DIR/.agents/skills"
+copy_skills_into_workspace() {
+    local skills_src="$1"
+    local entry
+    local name
+    local target
+
+    mkdir -p "$WS_SKILLS"
+    for entry in "$skills_src"/* "$skills_src"/.[!.]* "$skills_src"/..?*; do
+        if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+            continue
+        fi
+        name="$(basename "$entry")"
+        target="$WS_SKILLS/$name"
+        if [ -L "$target" ]; then
+            rm -f "$target"
+        elif [ -d "$entry" ] && [ -e "$target" ] && [ ! -d "$target" ]; then
+            rm -f "$target"
+        elif [ ! -d "$entry" ] && [ -d "$target" ]; then
+            rm -rf "$target"
+        fi
+    done
+    cp -r "$skills_src"/. "$WS_SKILLS"/
+}
+
 for SKILLS_SRC in "$BAKED_IN_CENTAUR_SKILLS" "$MOUNTED_CENTAUR_SKILLS" "$CENTAUR_SKILLS" "$MOUNTED_ORG_SKILLS" "$OVERLAY_TREE_SKILLS"; do
     if [ -d "$SKILLS_SRC" ]; then
-        mkdir -p "$WS_SKILLS"
-        cp -r "$SKILLS_SRC"/. "$WS_SKILLS"/
+        copy_skills_into_workspace "$SKILLS_SRC"
     fi
 done
 
@@ -199,7 +227,14 @@ fi
 
 # Codex reads its auth file when the app server starts. Complete this before
 # signaling readiness, otherwise warm pods can be claimed with no auth loaded.
+if [ -n "${CODEX_AUTH_JSON:-}" ]; then
+    printf '%s' "$CODEX_AUTH_JSON" > "$HOME_DIR/.codex/auth.json"
+    chmod 600 "$HOME_DIR/.codex/auth.json"
+fi
 CODEX_KEY="${CODEX_API_KEY:-${OPENAI_API_KEY:-}}"
+if [ "$CODEX_KEY" = "CODEX_API_KEY" ] || [ "$CODEX_KEY" = "OPENAI_API_KEY" ]; then
+    CODEX_KEY=""
+fi
 if [ -n "$CODEX_KEY" ]; then
     echo "$CODEX_KEY" | codex login --with-api-key 2>/dev/null || true
 fi

@@ -203,10 +203,30 @@ if [ -d /home/agent/github ]; then
     CENTAUR_SKILLS="$(find /home/agent/github -path '*/centaur/.agents/skills' -type d -print -quit 2>/dev/null || true)"
 fi
 WS_SKILLS="/home/agent/workspace/.agents/skills"
+copy_skills_into_workspace() {
+    skills_src="$1"
+
+    mkdir -p "$WS_SKILLS"
+    for entry in "$skills_src"/* "$skills_src"/.[!.]* "$skills_src"/..?*; do
+        if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+            continue
+        fi
+        name="$(basename "$entry")"
+        target="$WS_SKILLS/$name"
+        if [ -L "$target" ]; then
+            rm -f "$target"
+        elif [ -d "$entry" ] && [ -e "$target" ] && [ ! -d "$target" ]; then
+            rm -f "$target"
+        elif [ ! -d "$entry" ] && [ -d "$target" ]; then
+            rm -rf "$target"
+        fi
+    done
+    cp -r "$skills_src"/. "$WS_SKILLS"/
+}
+
 for SKILLS_SRC in "$MOUNTED_CENTAUR_SKILLS" "$CENTAUR_SKILLS" "$MOUNTED_ORG_SKILLS"; do
     if [ -d "$SKILLS_SRC" ]; then
-        mkdir -p "$WS_SKILLS"
-        cp -r "$SKILLS_SRC"/. "$WS_SKILLS"/
+        copy_skills_into_workspace "$SKILLS_SRC"
     fi
 done
 """,

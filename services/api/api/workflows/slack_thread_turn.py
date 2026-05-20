@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import os
 import re
 from typing import Any
 
@@ -113,6 +114,13 @@ def _known_personas() -> set[str]:
         # tool manager available. Harness selectors still work; persona
         # selectors will be validated once the app is fully loaded.
         return set()
+
+
+def _default_persona(personas: set[str]) -> str | None:
+    persona = (os.getenv("SLACK_THREAD_DEFAULT_PERSONA") or "").strip().lower()
+    if persona and persona in personas:
+        return persona
+    return None
 
 
 def _strip_ranges(text: str, ranges: list[tuple[int, int]]) -> str:
@@ -479,6 +487,14 @@ async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
         explicit_persona=inp.persona,
     )
     selection_changed = bool(selection.harness or selection.persona)
+    if not selection.harness and not selection.persona:
+        default_persona = _default_persona(_known_personas())
+        if default_persona:
+            selection = PromptSelection(
+                harness=selection.harness,
+                persona=default_persona,
+                parts=selection.parts,
+            )
     if selection_changed:
         await _release_for_prompt_switch(
             ctx,
