@@ -1353,6 +1353,14 @@ _BUILTIN_WORKFLOWS_PACKAGE = "api.workflows"
 _EXTERNAL_WORKFLOWS_NAMESPACE = "centaur.workflows"
 
 
+def _enabled_workflow_names() -> set[str] | None:
+    raw = os.getenv("CENTAUR_ENABLED_WORKFLOWS", "").strip()
+    if not raw:
+        return None
+    names = {item.strip() for item in raw.split(",") if item.strip()}
+    return names or None
+
+
 def get_workflow_dirs() -> list[Path]:
     """Return external workflow directories from WORKFLOW_DIRS env var."""
     raw = os.getenv("WORKFLOW_DIRS", "")
@@ -1429,6 +1437,15 @@ def _load_workflow_file(
         wf_name = getattr(mod, "WORKFLOW_NAME", None)
         if not isinstance(wf_name, str):
             log.warning("workflow_handler_skip", file=str(py_file), reason="missing WORKFLOW_NAME")
+            return
+        enabled_workflows = _enabled_workflow_names()
+        if enabled_workflows is not None and wf_name not in enabled_workflows:
+            log.info(
+                "workflow_handler_skip",
+                file=str(py_file),
+                workflow_name=wf_name,
+                reason="workflow_not_enabled",
+            )
             return
         wf_handler = getattr(mod, "handler", None)
 
