@@ -282,7 +282,7 @@ def test_configure_otel_wires_laminar_from_base_url(monkeypatch) -> None:
     wrapper = _load_wrapper()
     _scrub_otel_env(monkeypatch)
     monkeypatch.setenv("LMNR_BASE_URL", "http://laminar:8000")
-    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "lmnr-secret")
+    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "LMNR_PROJECT_API_KEY")
     monkeypatch.setenv("CENTAUR_TRACE_ID", "trace-abc")
     monkeypatch.setenv("CENTAUR_THREAD_KEY", "slack:C123:1700000000.000100")
     monkeypatch.setenv("DEPLOY_ENV", "staging")
@@ -294,7 +294,7 @@ def test_configure_otel_wires_laminar_from_base_url(monkeypatch) -> None:
     assert os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] == "http://laminar:8000/v1/traces"
     assert os.environ["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] == "http/protobuf"
     headers = os.environ["OTEL_EXPORTER_OTLP_HEADERS"]
-    assert "Authorization=Bearer lmnr-secret" in headers
+    assert "Authorization=Bearer LMNR_PROJECT_API_KEY" in headers
     assert "x-trace-id=trace-abc" in headers
     assert "x-centaur-thread-key=slack:C123:1700000000.000100" in headers
     attrs = os.environ["OTEL_RESOURCE_ATTRIBUTES"]

@@ -224,7 +224,7 @@ def test_container_env_passes_laminar_otel_config(
         env_map["LMNR_BASE_URL"]
         == "http://stg-laminar-app-server.stg-laminar.svc.cluster.local:8000"
     )
-    assert env_map["LMNR_PROJECT_API_KEY"] == "lmnr-key"
+    assert env_map["LMNR_PROJECT_API_KEY"] == "LMNR_PROJECT_API_KEY"
     assert env_map["CODEX_OTEL_ENVIRONMENT"] == "staging"
 
 

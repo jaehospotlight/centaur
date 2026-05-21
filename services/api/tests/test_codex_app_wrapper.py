@@ -44,7 +44,7 @@ trust_level = "trusted"
     monkeypatch.setenv("CENTAUR_TRACE_ID", "00000000-0000-0000-0000-000000000001")
     monkeypatch.setenv("CENTAUR_THREAD_KEY", "warm-placeholder")
     monkeypatch.setenv("LMNR_BASE_URL", "http://laminar:8000")
-    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "lmnr-key")
+    monkeypatch.setenv("LMNR_PROJECT_API_KEY", "LMNR_PROJECT_API_KEY")
     monkeypatch.setenv("CODEX_OTEL_ENVIRONMENT", "staging")
 
     wrapper.configure_laminar_otel_for_startup(
@@ -66,7 +66,7 @@ trust_level = "trusted"
     assert parsed["otel"]["trace_exporter"]["otlp-http"]["headers"] == {
         "x-trace-id": "00000000-0000-0000-0000-000000000123",
         "x-centaur-thread-key": "slack:C123:1700000000.000100",
-        "authorization": "Bearer lmnr-key",
+        "authorization": "Bearer LMNR_PROJECT_API_KEY",
     }
     assert "v1/logs" not in contents
 

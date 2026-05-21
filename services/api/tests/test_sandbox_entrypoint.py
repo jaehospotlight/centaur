@@ -161,7 +161,7 @@ def test_sandbox_entrypoint_appends_codex_laminar_otel_config(tmp_path: Path) ->
             "CENTAUR_TRACE_ID": "00000000-0000-0000-0000-000000000123",
             "CODEX_OTEL_ENVIRONMENT": "staging",
             "LMNR_BASE_URL": "http://stg-laminar-app-server.stg-laminar.svc.cluster.local:8000",
-            "LMNR_PROJECT_API_KEY": "lmnr-key",
+            "LMNR_PROJECT_API_KEY": "LMNR_PROJECT_API_KEY",
         },
     )
 
@@ -181,5 +181,5 @@ def test_sandbox_entrypoint_appends_codex_laminar_otel_config(tmp_path: Path) ->
     )
     assert '"x-trace-id" = "00000000-0000-0000-0000-000000000123"' in result.stdout
     assert '"x-centaur-thread-key" = "slack:C123:1700000000.000100"' in result.stdout
-    assert '"authorization" = "Bearer lmnr-key"' in result.stdout
+    assert '"authorization" = "Bearer LMNR_PROJECT_API_KEY"' in result.stdout
     assert 'environment = "staging"' in result.stdout

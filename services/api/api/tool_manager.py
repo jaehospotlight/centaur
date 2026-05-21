@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlsplit
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -35,6 +36,17 @@ from api import slackbot_client
 from centaur_sdk import ToolContext, reset_tool_context, set_tool_context
 
 log = structlog.get_logger()
+
+
+def _laminar_hosts() -> tuple[str, ...]:
+    base_url = (
+        os.getenv("CODEX_OTEL_LAMINAR_ENDPOINT")
+        or os.getenv("CODEX_OTEL_LAMINAR_BASE_URL")
+        or os.getenv("LMNR_BASE_URL")
+        or "https://api.lmnr.ai"
+    ).strip()
+    host = urlsplit(base_url).hostname
+    return (host,) if host else ("api.lmnr.ai",)
 
 
 # Headers the legacy raw-string shim lets iron-proxy scan for ``secrets``-transform
@@ -1636,13 +1648,25 @@ class ToolManager:
         ),
     ]
 
+    @staticmethod
+    def _infra_secrets() -> list[HttpSecret]:
+        return [
+            *ToolManager._INFRA_SECRETS,
+            HttpSecret(
+                name="LMNR_PROJECT_API_KEY",
+                secret_ref="LMNR_PROJECT_API_KEY",
+                hosts=_laminar_hosts(),
+                match_headers=("Authorization",),
+            ),
+        ]
+
     def collect_secrets(self) -> list[SecretDef]:
         """Return all secrets (infra + tool).
 
         Every ``HttpSecret``, ``GcpAuthSecret`` and ``OAuthTokenSecret`` carries
         its own ``hosts``; ``PgDsnSecret`` is a TCP listener with no host.
         """
-        out: list[SecretDef] = list(self._INFRA_SECRETS)
+        out: list[SecretDef] = list(self._infra_secrets())
         for lt in self.tools.values():
             out.extend(lt.all_secrets)
         return out

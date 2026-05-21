@@ -13,6 +13,7 @@ from fastapi import FastAPI
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.tool_manager import (  # noqa: E402
+    HttpSecret,
     _LIFECYCLE_METHODS,
     _describe_method_docstring,
     _friendly_type_name,
@@ -22,6 +23,25 @@ from api.tool_manager import (  # noqa: E402
     ToolManager,
     ToolMethod,
 )
+
+
+def test_collect_secrets_includes_laminar_placeholder_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LMNR_BASE_URL", "http://laminar.internal:8000")
+    manager = ToolManager(tmp_path / "tools")
+
+    laminar = [
+        secret
+        for secret in manager.collect_secrets()
+        if isinstance(secret, HttpSecret) and secret.name == "LMNR_PROJECT_API_KEY"
+    ]
+
+    assert len(laminar) == 1
+    assert laminar[0].secret_ref == "LMNR_PROJECT_API_KEY"
+    assert laminar[0].replacer == "LMNR_PROJECT_API_KEY"
+    assert laminar[0].hosts == ("laminar.internal",)
+    assert laminar[0].match_headers == ("Authorization",)
 
 
 class TestDescribeMethodDocstring:
