@@ -224,6 +224,31 @@ copy_skills_into_workspace() {
     cp -r "$skills_src"/. "$WS_SKILLS"/
 }
 
+import_workspace_claude_skills() {
+    claude_skills="/home/agent/workspace/.claude/skills"
+
+    if [ ! -d "$claude_skills" ] || [ "$claude_skills" -ef "$WS_SKILLS" ]; then
+        return
+    fi
+
+    mkdir -p "$WS_SKILLS"
+    for entry in "$claude_skills"/* "$claude_skills"/.[!.]* "$claude_skills"/..?*; do
+        if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+            continue
+        fi
+        name="$(basename "$entry")"
+        target="$WS_SKILLS/$name"
+        if [ -L "$target" ]; then
+            rm -f "$target"
+        elif [ -e "$target" ]; then
+            rm -rf "$target"
+        fi
+        cp -r "$entry" "$target"
+    done
+}
+
+import_workspace_claude_skills
+
 for SKILLS_SRC in "$MOUNTED_CENTAUR_SKILLS" "$CENTAUR_SKILLS" "$MOUNTED_ORG_SKILLS"; do
     if [ -d "$SKILLS_SRC" ]; then
         copy_skills_into_workspace "$SKILLS_SRC"

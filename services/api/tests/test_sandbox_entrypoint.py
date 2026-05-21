@@ -288,3 +288,62 @@ def test_sandbox_entrypoint_sets_github_origin_for_cached_repo(tmp_path: Path) -
     remote_url, branch = result.stdout.strip().split("\n")
     assert remote_url == "https://github.com/leanxyz/livermore.git"
     assert branch.startswith("agent-")
+
+
+def test_sandbox_entrypoint_imports_claude_skills_before_linking(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    harness_dir = _write_codex_harness_config(home)
+    repo = home / "github" / "leanxyz" / "livermore"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+
+    claude_skill = repo / ".claude" / "skills" / "verify-pr-review"
+    agents_skills = repo / ".agents" / "skills"
+    claude_skill.mkdir(parents=True)
+    agents_skills.mkdir(parents=True)
+    (claude_skill / "SKILL.md").write_text("---\nname: verify-pr-review\n---\n")
+    (agents_skills / "verify-pr-review").symlink_to(
+        "../../.claude/skills/verify-pr-review"
+    )
+    subprocess.run(["git", "add", ".claude", ".agents"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(ENTRYPOINT_SH),
+            "sh",
+            "-lc",
+            "test -f .agents/skills/verify-pr-review/SKILL.md && "
+            "test -f .claude/skills/verify-pr-review/SKILL.md && "
+            "! test -L .agents/skills/verify-pr-review",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "HOME": str(home),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "CENTAUR_HARNESS_CONFIG_DIR": str(harness_dir),
+            "AGENT_REPO": "leanxyz/livermore",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
