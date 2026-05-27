@@ -83,7 +83,7 @@ describe('sanitizeFinalMessagePayload', () => {
       }
     }))
     const blocks = sanitizeFinalMessagePayload([
-      planBlock('Centaur execution', tasks, 'plan-1') as AnyBlock,
+      planBlock('Centaur execution', tasks) as AnyBlock,
       { type: 'markdown', text: 'Final answer ' + 'w'.repeat(8_000) }
     ])
     expect(estimatePayloadBytes(blocks)).toBeLessThanOrEqual(

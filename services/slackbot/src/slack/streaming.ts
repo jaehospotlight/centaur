@@ -1,5 +1,6 @@
-import type { AnyChunk, RichTextBlock } from '@slack/types'
+import type { AnyChunk, PlanBlock, RichTextBlock } from '@slack/types'
 import { slackReplyLimits } from '../constants'
+import type { SlackStreamChunk } from './block-kit'
 
 export type StreamTaskStatus = 'pending' | 'in_progress' | 'complete' | 'error'
 
@@ -40,7 +41,7 @@ export type StreamTask = {
   sources?: Array<{ type: 'url'; text: string; url: string }>
 }
 
-export type StreamChunk = AnyChunk
+export type StreamChunk = SlackStreamChunk
 
 export const SLACK_STREAM_MARKDOWN_TEXT_LIMIT = slackReplyLimits.stream.markdownChunkChars
 export const SLACK_STREAM_TASK_UPDATE_FIELD_LIMIT = slackReplyLimits.stream.taskDetailsChars
@@ -70,10 +71,9 @@ export function taskUpdateChunk(task: StreamTask): StreamChunk {
   }
 }
 
-export function planBlock(title: string, tasks: StreamTask[], planId?: string): object {
+export function planBlock(title: string, tasks: StreamTask[]): PlanBlock {
   return {
     type: 'plan',
-    ...(planId ? { plan_id: planId } : {}),
     title,
     tasks: tasks.map(task => ({
       task_id: task.id,
@@ -87,7 +87,7 @@ export function planBlock(title: string, tasks: StreamTask[], planId?: string): 
         : {}),
       ...(task.sources ? { sources: task.sources } : {})
     }))
-  }
+  } satisfies PlanBlock
 }
 
 export function plainRichText(value: string, blockId?: string): StreamRichText {

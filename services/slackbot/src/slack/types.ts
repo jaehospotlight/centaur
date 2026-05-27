@@ -1,4 +1,5 @@
-import type { AnyBlock, AnyChunk, MarkdownBlock, RichTextBlock } from '@slack/types'
+import type { MarkdownBlock, RichTextBlock } from '@slack/types'
+import type { SlackBlock, SlackStreamChunk } from './block-kit'
 
 export type NormalizedTextPart = {
   type: 'text'
@@ -74,6 +75,6 @@ export type SlackMessageFile = {
 
 export type SlackRenderableBlock = MarkdownBlock | RichTextBlock
 
-export type SlackBlocks = SlackRenderableBlock[] | AnyBlock[]
+export type SlackBlocks = SlackRenderableBlock[] | SlackBlock[]
 
-export type SlackStreamChunk = AnyChunk
+export type { SlackStreamChunk }

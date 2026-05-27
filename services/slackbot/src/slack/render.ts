@@ -1,5 +1,6 @@
-import type { AnyBlock, AnyChunk, MarkdownBlock, RichTextBlock } from '@slack/types'
+import type { AnyChunk, MarkdownBlock, RichTextBlock } from '@slack/types'
 import { slackReplyLimits } from '../constants'
+import type { SlackBlock } from './block-kit'
 
 const MAX_BLOCKS = slackReplyLimits.message.maxBlocks
 const MAX_MARKDOWN_CHARS = slackReplyLimits.stream.markdownChunkChars
@@ -59,7 +60,7 @@ export function renderStatusBlock(metadata: StatusMetadata): RichTextBlock | nul
   }
 }
 
-export function enforceBlockLimits(blocks: AnyBlock[]): AnyBlock[] {
+export function enforceBlockLimits(blocks: SlackBlock[]): SlackBlock[] {
   return blocks.slice(0, MAX_BLOCKS)
 }
 

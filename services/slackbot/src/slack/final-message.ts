@@ -1,15 +1,13 @@
-import type { AnyBlock, MarkdownBlock } from '@slack/types'
+import type { MarkdownBlock } from '@slack/types'
 import { slackReplyLimits } from '../constants'
+import type { SlackBlock } from './block-kit'
 import { enforceBlockLimits } from './render'
 
 const MARKDOWN_CUMULATIVE_CHARS = slackReplyLimits.stream.markdownChunkChars
 const PAYLOAD_BYTE_BUDGET = slackReplyLimits.mixedBodyAndPlan.maxPayloadBytes
 const MAX_FALLBACK_CHARS = slackReplyLimits.text.maxFallbackChars
 
-export function buildFinalFallbackText(opts: {
-  title: string
-  answerMarkdown: string
-}): string {
+export function buildFinalFallbackText(opts: { title: string; answerMarkdown: string }): string {
   const parts = [opts.title.trim(), opts.answerMarkdown.trim()].filter(Boolean)
   const text = parts.join('\n')
   if (!text) return opts.title.trim() || 'Centaur update'
@@ -18,18 +16,18 @@ export function buildFinalFallbackText(opts: {
 }
 
 /** Enforce Slack limits on the composed chat.update payload (plan + markdown + footer). */
-export function sanitizeFinalMessagePayload(blocks: AnyBlock[]): AnyBlock[] {
+export function sanitizeFinalMessagePayload(blocks: SlackBlock[]): SlackBlock[] {
   let sanitized = enforceBlockLimits(blocks)
   sanitized = capMarkdownBlocksCumulative(sanitized, MARKDOWN_CUMULATIVE_CHARS)
   sanitized = shrinkToPayloadByteBudget(sanitized, PAYLOAD_BYTE_BUDGET)
   return sanitized
 }
 
-function capMarkdownBlocksCumulative(blocks: AnyBlock[], maxChars: number): AnyBlock[] {
+function capMarkdownBlocksCumulative(blocks: SlackBlock[], maxChars: number): SlackBlock[] {
   let total = markdownCharsUsed(blocks)
   if (total <= maxChars) return blocks
 
-  const out = blocks.map(block => ({ ...block })) as AnyBlock[]
+  const out = blocks.map(block => ({ ...block })) as SlackBlock[]
   for (let index = out.length - 1; index >= 0 && total > maxChars; index -= 1) {
     const block = out[index]
     if (block?.type !== 'markdown') continue
@@ -43,7 +41,7 @@ function capMarkdownBlocksCumulative(blocks: AnyBlock[], maxChars: number): AnyB
   return out
 }
 
-function shrinkToPayloadByteBudget(blocks: AnyBlock[], maxBytes: number): AnyBlock[] {
+function shrinkToPayloadByteBudget(blocks: SlackBlock[], maxBytes: number): SlackBlock[] {
   let sanitized = blocks
   if (estimatePayloadBytes(sanitized) <= maxBytes) return sanitized
 
@@ -51,10 +49,10 @@ function shrinkToPayloadByteBudget(blocks: AnyBlock[], maxBytes: number): AnyBlo
   const bytes = estimatePayloadBytes(sanitized)
   if (bytes <= maxBytes) return sanitized
 
-  return blocks.filter(block => block.type === 'markdown') as AnyBlock[]
+  return blocks.filter(block => block.type === 'markdown') as SlackBlock[]
 }
 
-function stripPlanTaskBodies(blocks: AnyBlock[]): AnyBlock[] {
+function stripPlanTaskBodies(blocks: SlackBlock[]): SlackBlock[] {
   return blocks.map(block => {
     if (block.type !== 'plan' || !('tasks' in block) || !Array.isArray(block.tasks)) {
       return block
@@ -70,7 +68,7 @@ function stripPlanTaskBodies(blocks: AnyBlock[]): AnyBlock[] {
   })
 }
 
-function trimPlanTasks(blocks: AnyBlock[], maxTasks: number): AnyBlock[] {
+function trimPlanTasks(blocks: SlackBlock[], maxTasks: number): SlackBlock[] {
   return blocks.map(block => {
     if (block.type !== 'plan' || !('tasks' in block) || !Array.isArray(block.tasks)) {
       return block
@@ -79,16 +77,16 @@ function trimPlanTasks(blocks: AnyBlock[], maxTasks: number): AnyBlock[] {
       ...block,
       tasks: block.tasks.slice(0, maxTasks)
     }
-  }) as AnyBlock[]
+  }) as SlackBlock[]
 }
 
-function markdownCharsUsed(blocks: AnyBlock[]): number {
+function markdownCharsUsed(blocks: SlackBlock[]): number {
   return blocks.reduce((total, block) => {
     if (block.type !== 'markdown') return total
     return total + (block as MarkdownBlock).text.length
   }, 0)
 }
 
-export function estimatePayloadBytes(blocks: AnyBlock[]): number {
+export function estimatePayloadBytes(blocks: SlackBlock[]): number {
   return Buffer.byteLength(JSON.stringify(blocks), 'utf8')
 }

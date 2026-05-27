@@ -1,4 +1,3 @@
-import type { AnyBlock, AnyChunk } from '@slack/types'
 import type {
   ChatAppendStreamResponse,
   ChatPostMessageResponse,
@@ -9,6 +8,12 @@ import type {
   WebAPICallResult
 } from '@slack/web-api'
 import { WebClient } from '@slack/web-api'
+import {
+  slackStreamChunksForApi,
+  type SlackBlock,
+  type SlackStreamChunk,
+  type SlackTaskDisplayMode
+} from './block-kit'
 import {
   enforceBlockLimits,
   fallbackText,
@@ -75,18 +80,19 @@ export class SlackEdgeClient {
     channel: string
     threadTs: string
     markdown?: string
-    chunks?: AnyChunk[]
+    chunks?: SlackStreamChunk[]
     recipientTeamId?: string
     recipientUserId?: string
-    taskDisplayMode?: 'plan' | 'timeline' | 'dense'
+    taskDisplayMode?: SlackTaskDisplayMode
   }): Promise<ChatStartStreamResponse> {
+    const chunks = opts.chunks ?? markdownToStreamChunks(opts.markdown ?? ' ')
     const response = await this.client.chat.startStream({
       channel: opts.channel,
       thread_ts: opts.threadTs,
       recipient_team_id: opts.recipientTeamId,
       recipient_user_id: opts.recipientUserId,
       task_display_mode: opts.taskDisplayMode,
-      chunks: opts.chunks ?? markdownToStreamChunks(opts.markdown ?? ' ')
+      chunks: slackStreamChunksForApi(chunks)
     })
     return assertSlackOk('chat.startStream', response)
   }
@@ -95,12 +101,13 @@ export class SlackEdgeClient {
     channel: string
     ts: string
     markdown?: string
-    chunks?: AnyChunk[]
+    chunks?: SlackStreamChunk[]
   }): Promise<ChatAppendStreamResponse> {
+    const chunks = opts.chunks ?? markdownToStreamChunks(opts.markdown ?? ' ')
     const response = await this.client.chat.appendStream({
       channel: opts.channel,
       ts: opts.ts,
-      chunks: opts.chunks ?? markdownToStreamChunks(opts.markdown ?? ' ')
+      chunks: slackStreamChunksForApi(chunks)
     })
     return assertSlackOk('chat.appendStream', response)
   }
@@ -109,13 +116,15 @@ export class SlackEdgeClient {
     channel: string
     ts: string
     markdown?: string
-    chunks?: AnyChunk[]
-    blocks?: AnyBlock[]
+    chunks?: SlackStreamChunk[]
+    blocks?: SlackBlock[]
   }): Promise<ChatStopStreamResponse> {
+    const chunks =
+      opts.chunks ?? (opts.markdown ? markdownToStreamChunks(opts.markdown) : undefined)
     const response = await this.client.chat.stopStream({
       channel: opts.channel,
       ts: opts.ts,
-      chunks: opts.chunks ?? (opts.markdown ? markdownToStreamChunks(opts.markdown) : undefined),
+      chunks: chunks ? slackStreamChunksForApi(chunks) : undefined,
       blocks: opts.blocks ? enforceBlockLimits(opts.blocks) : undefined
     })
     return assertSlackOk('chat.stopStream', response)
@@ -156,7 +165,7 @@ export class SlackEdgeClient {
     bytes: Uint8Array
     title?: string
     altText?: string
-    blocks?: AnyBlock[]
+    blocks?: SlackBlock[]
   }): Promise<FilesCompleteUploadExternalResponse> {
     const upload = await this.client.files.getUploadURLExternal({
       filename: opts.filename,
@@ -189,8 +198,8 @@ export class SlackEdgeClient {
     return assertSlackOk('files.completeUploadExternal', complete)
   }
 
-  private renderBlocks(markdown: string, metadata?: StatusMetadata): AnyBlock[] {
-    const blocks: AnyBlock[] = [...renderMarkdownBlocks(markdown)]
+  private renderBlocks(markdown: string, metadata?: StatusMetadata): SlackBlock[] {
+    const blocks: SlackBlock[] = [...renderMarkdownBlocks(markdown)]
     const status = metadata ? renderStatusBlock(metadata) : null
     if (status) blocks.push(status)
     return enforceBlockLimits(blocks)

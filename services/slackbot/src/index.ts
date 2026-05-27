@@ -27,7 +27,15 @@ import { markdownToStreamChunks } from './slack/render'
 import { verifySlackSignature } from './slack/signature'
 import { shouldAckWithReaction } from './slack/trivial-ack'
 import type { NormalizedSlackEvent, SlackEnvelope } from './slack/types'
-import type { AnyBlock, AnyChunk } from '@slack/types'
+import {
+  BlockKitValidationError,
+  parseOptionalSlackBlocks,
+  parseOptionalSlackStreamChunks,
+  slackStreamChunksForApi,
+  type SlackBlock,
+  type SlackStreamChunk,
+  type SlackTaskDisplayMode
+} from './slack/block-kit'
 import type { WebClient } from '@slack/web-api'
 
 const config = loadConfig()
@@ -181,14 +189,20 @@ app.post('/api/slack/messages', apiKeyMiddleware, async c => {
     channel: string
     thread_ts?: string
     text: string
-    blocks?: AnyBlock[]
+    blocks?: unknown
   }>()
+  let blocks: SlackBlock[] | undefined
+  try {
+    blocks = parseOptionalSlackBlocks(body.blocks)
+  } catch (error) {
+    return blockKitErrorResponse(c, error)
+  }
   const { client } = await resolver.resolve({})
   const response = await client.chat.postMessage({
     channel: body.channel,
     thread_ts: body.thread_ts,
     text: body.text,
-    blocks: body.blocks
+    blocks
   })
   if (!response.ok) return c.json(response, 502)
   return c.json({ ok: true, channel: response.channel, ts: response.ts })
@@ -199,15 +213,21 @@ app.patch('/api/slack/messages', apiKeyMiddleware, async c => {
     channel: string
     ts: string
     text: string
-    blocks?: AnyBlock[]
+    blocks?: unknown
   }>()
+  let blocks: SlackBlock[] | undefined
+  try {
+    blocks = parseOptionalSlackBlocks(body.blocks)
+  } catch (error) {
+    return blockKitErrorResponse(c, error)
+  }
   const { client } = await resolver.resolve({})
   try {
     const response = await client.chat.update({
       channel: body.channel,
       ts: body.ts,
       text: body.text,
-      blocks: body.blocks
+      blocks
     })
     if (!response.ok) return c.json(response, 502)
     return c.json({ ok: true, channel: response.channel, ts: response.ts })
@@ -256,17 +276,24 @@ app.post('/api/slack/streams/start', apiKeyMiddleware, async c => {
     channel: string
     thread_ts: string
     markdown?: string
-    chunks?: AnyChunk[]
+    chunks?: unknown
     recipient_team_id?: string
     recipient_user_id?: string
-    task_display_mode?: 'plan' | 'timeline'
+    task_display_mode?: SlackTaskDisplayMode
   }>()
+  let chunks: SlackStreamChunk[]
+  try {
+    chunks =
+      parseOptionalSlackStreamChunks(body.chunks) ?? markdownToStreamChunks(body.markdown ?? ' ')
+  } catch (error) {
+    return blockKitErrorResponse(c, error)
+  }
   const { client } = await resolver.resolve({})
   try {
     const response = await client.chat.startStream({
       channel: body.channel,
       thread_ts: body.thread_ts,
-      chunks: body.chunks ?? markdownToStreamChunks(body.markdown ?? ' '),
+      chunks: slackStreamChunksForApi(chunks),
       recipient_team_id: body.recipient_team_id,
       recipient_user_id: body.recipient_user_id,
       task_display_mode: body.task_display_mode
@@ -283,14 +310,21 @@ app.post('/api/slack/streams/append', apiKeyMiddleware, async c => {
     channel: string
     ts: string
     markdown?: string
-    chunks?: AnyChunk[]
+    chunks?: unknown
   }>()
+  let chunks: SlackStreamChunk[]
+  try {
+    chunks =
+      parseOptionalSlackStreamChunks(body.chunks) ?? markdownToStreamChunks(body.markdown ?? ' ')
+  } catch (error) {
+    return blockKitErrorResponse(c, error)
+  }
   const { client } = await resolver.resolve({})
   try {
     const response = await client.chat.appendStream({
       channel: body.channel,
       ts: body.ts,
-      chunks: body.chunks ?? markdownToStreamChunks(body.markdown ?? ' ')
+      chunks: slackStreamChunksForApi(chunks)
     })
     if (!response.ok) return c.json(response, 502)
     return c.json({ ok: true, channel: response.channel, ts: response.ts })
@@ -304,16 +338,26 @@ app.post('/api/slack/streams/stop', apiKeyMiddleware, async c => {
     channel: string
     ts: string
     markdown?: string
-    chunks?: AnyChunk[]
-    blocks?: AnyBlock[]
+    chunks?: unknown
+    blocks?: unknown
   }>()
+  let chunks: SlackStreamChunk[] | undefined
+  let blocks: SlackBlock[] | undefined
+  try {
+    chunks =
+      parseOptionalSlackStreamChunks(body.chunks) ??
+      (body.markdown ? markdownToStreamChunks(body.markdown) : undefined)
+    blocks = parseOptionalSlackBlocks(body.blocks)
+  } catch (error) {
+    return blockKitErrorResponse(c, error)
+  }
   const { client } = await resolver.resolve({})
   try {
     const response = await client.chat.stopStream({
       channel: body.channel,
       ts: body.ts,
-      chunks: body.chunks ?? (body.markdown ? markdownToStreamChunks(body.markdown) : undefined),
-      blocks: body.blocks
+      chunks: chunks ? slackStreamChunksForApi(chunks) : undefined,
+      blocks
     })
     if (!response.ok) return c.json(response, 502)
     return c.json({ ok: true, channel: response.channel, ts: response.ts })
@@ -658,6 +702,13 @@ function slackApiErrorResponse(c: Context, error: unknown) {
     },
     502
   )
+}
+
+function blockKitErrorResponse(c: Context, error: unknown) {
+  if (error instanceof BlockKitValidationError) {
+    return c.json({ ok: false, error: error.code, message: error.message }, 400)
+  }
+  throw error
 }
 
 type SlackCommandPayload = {

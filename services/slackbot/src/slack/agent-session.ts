@@ -1,8 +1,14 @@
-import type { AnyBlock, AnyChunk } from '@slack/types'
+import type { AnyChunk } from '@slack/types'
 import type { WebClient } from '@slack/web-api'
 import { ulid } from '@std/ulid'
 import { slackReplyLimits } from '../constants'
 import { logWarn } from '../logging'
+import {
+  blocksChunk,
+  slackStreamChunksForApi,
+  type SlackBlock,
+  type SlackStreamChunk
+} from './block-kit'
 import {
   markdownChunk,
   planBlock,
@@ -15,10 +21,7 @@ import {
   type StreamTaskStatus
 } from './streaming'
 import { buildFinalFallbackText, sanitizeFinalMessagePayload } from './final-message'
-import {
-  markdownToStreamChunks,
-  renderMarkdownBlocks
-} from './render'
+import { markdownToStreamChunks, renderMarkdownBlocks } from './render'
 import { clipLines } from './streaming'
 
 type Segment = {
@@ -39,9 +42,6 @@ type Segment = {
   streamError?: Error
   closed: boolean
 }
-
-type BlocksChunk = { type: 'blocks'; blocks: AnyBlock[] }
-type SlackStreamChunk = AnyChunk | BlocksChunk
 
 type AgentSessionState = {
   id: string
@@ -100,17 +100,12 @@ function headerMarkdown(header: string): string {
   return `_${header.trim()}_`
 }
 
-function headerBlock(header: string): AnyBlock {
-  return { type: 'markdown', text: headerMarkdown(header) }
-}
-
 const sessions = new Map<string, AgentSessionState>()
 const sessionQueues = new Map<string, Promise<void>>()
 const THINKING_STATUS = 'Thinking...'
 const TEXT_FLUSH_INTERVAL_MS = 250
 const TEXT_FLUSH_CHARS = 1000
 const FIRST_TEXT_FLUSH_CHARS = 1
-const EXECUTION_PLAN_ID = 'codex-execution-timeline'
 const LIVE_PLAN_MAX_TASKS = slackReplyLimits.stream.taskCount
 const FINAL_PLAN_MAX_TASKS = slackReplyLimits.finalPlan.maxTasks
 const FINAL_PLAN_TITLE_CHARS = slackReplyLimits.finalPlan.taskTitleChars
@@ -150,7 +145,11 @@ export class AgentSessionRenderer {
     return await this.queueText(state, segment, markdown)
   }
 
-  async textDelta(sessionId: string, markdownDelta: string, opts: TextOptions = {}): Promise<number> {
+  async textDelta(
+    sessionId: string,
+    markdownDelta: string,
+    opts: TextOptions = {}
+  ): Promise<number> {
     if (!markdownDelta) return 0
     const state = requireSession(sessionId)
     const segment = currentSegment(state)
@@ -175,7 +174,7 @@ export class AgentSessionRenderer {
 
   async blocks(
     sessionId: string,
-    blocks: AnyBlock[],
+    blocks: SlackBlock[],
     opts: { planPrefix?: boolean } = {}
   ): Promise<void> {
     if (!blocks.length) return
@@ -183,7 +182,7 @@ export class AgentSessionRenderer {
     const segment = currentSegment(state)
     await this.streamChunks(state, segment, [
       ...(opts.planPrefix === false ? [] : this.planPrefix(state, segment)),
-      { type: 'blocks', blocks }
+      blocksChunk(blocks)
     ])
   }
 
@@ -305,10 +304,10 @@ export class AgentSessionRenderer {
     // fenced details/output, and the header has already been streamed as the first chunk.
     const blocks = sanitizeFinalMessagePayload([
       ...(tasks.length && !segment.planStarted
-        ? [planBlock(planTitle(state.title, originalTasks), tasks, EXECUTION_PLAN_ID)]
+        ? [planBlock(planTitle(state.title, originalTasks), tasks)]
         : []),
       ...(!streamedTextLive && answerMarkdown ? renderMarkdownBlocks(answerMarkdown) : [])
-    ] as AnyBlock[])
+    ] as SlackBlock[])
     const fallbackText = buildFinalFallbackText({
       title: state.title,
       answerMarkdown
@@ -341,7 +340,7 @@ export class AgentSessionRenderer {
     const response = await this.client.chat.appendStream({
       channel: state.channel,
       ts: segment.streamTs,
-      chunks: effectiveChunks as AnyChunk[]
+      chunks: slackStreamChunksForApi(effectiveChunks)
     })
     if (!response.ok) throw new Error(response.error ?? 'chat.appendStream failed')
     await this.clearStatusAfterVisibleOutput(state, effectiveChunks)
@@ -479,7 +478,7 @@ export class AgentSessionRenderer {
         recipient_team_id: state.recipientTeamId,
         recipient_user_id: state.recipientUserId,
         task_display_mode: 'plan',
-        chunks: chunks as AnyChunk[]
+        chunks: slackStreamChunksForApi(chunks)
       })
       if (!response.ok || !response.ts) throw new Error(response.error ?? 'chat.startStream failed')
       segment.streamTs = response.ts
