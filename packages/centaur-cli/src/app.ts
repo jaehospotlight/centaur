@@ -1027,7 +1027,18 @@ const deploy = Cli.create('deploy', {
 export const app = Cli.create('centaur', {
   description: 'Centaur onboarding, deployment, and agent operations CLI',
   version: VERSION,
-  mcp: {},
+  sync: {
+    depth: 2,
+    suggestions: [
+      'install Centaur CLI, inspect centaur --llms, then run the next CTA command',
+      'drive Centaur onboarding with init, integrations slack-manifest, secrets collect, doctor, and deploy',
+      'run a one-shot Centaur agent turn with centaur run --format jsonl',
+    ],
+  },
+  mcp: {
+    agents: ['codex', 'claude-code'],
+    command: 'centaur --mcp',
+  },
 })
   .command('run', {
     description: 'Run one Centaur agent turn and pipe API events.',

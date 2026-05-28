@@ -7,13 +7,29 @@ It scaffolds an overlay, records resumable onboarding state, generates
 integration templates, validates local prerequisites, and prints exact repair
 steps for Slack, model, GitHub, secrets, and deployment setup.
 
+Install it once:
+
 ```bash
-pnpm --silent --filter @centaur/cli centaur init --org acme --assistant-name centaur --domain centaur.acme.com --harness codex --auth-mode api_key
-pnpm --silent --filter @centaur/cli centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --harness codex --auth-mode api_key
-pnpm --silent --filter @centaur/cli centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org
-pnpm --silent --filter @centaur/cli centaur doctor --deep --harness codex --auth-mode api_key --secret-backend local-env --install-mode local
-pnpm --silent --filter @centaur/cli centaur deploy k3s
-pnpm --silent --filter @centaur/cli centaur run "Reply with exactly PONG and nothing else." --thread cli:test --harness codex
+curl -fsSL https://centaur.run/install.sh | bash
+centaur --llms
+```
+
+For agent-driven setup, tell the agent to run the install command above, then
+inspect `centaur --llms` and keep executing the returned CTA commands.
+
+From a local Centaur checkout, run:
+
+```bash
+packages/centaur-cli/install.sh
+```
+
+```bash
+centaur init --org acme --assistant-name centaur --domain centaur.acme.com --harness codex --auth-mode api_key
+centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --harness codex --auth-mode api_key
+centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org
+centaur doctor --deep --harness codex --auth-mode api_key --secret-backend local-env --install-mode local
+centaur deploy k3s
+centaur run "Reply with exactly PONG and nothing else." --thread cli:test --harness codex
 ```
 
 `centaur init` returns CTAs for the next one-off commands, so an agent can keep

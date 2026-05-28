@@ -112,6 +112,16 @@ git clone <repo-url>
 cd centaur
 ```
 
+Install the Centaur CLI:
+
+```bash
+curl -fsSL https://centaur.run/install.sh | bash
+centaur --llms
+```
+
+From a local checkout, `packages/centaur-cli/install.sh` installs the same
+`centaur` command.
+
 Install the local command runner:
 
 ```bash
