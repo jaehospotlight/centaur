@@ -33,8 +33,6 @@ from zoneinfo import ZoneInfo
 import structlog
 
 from api.agent import _insert_system_message
-from api import slackbot_client
-from api.harness_config import default_harness
 from api.otel import (
     add_span_event,
     mark_error,
@@ -49,7 +47,6 @@ from api.runtime_control import (
     canonical_json,
     decode_jsonb,
     enqueue_execution,
-    get_active_assignment,
     get_execution,
     request_hash,
     spawn_assignment,
@@ -161,12 +158,8 @@ class RetryPolicy:
 WORKFLOW_RECONCILE_INTERVAL_S = max(
     float(os.getenv("WORKFLOW_RECONCILE_INTERVAL_S", "0.5")), 0.25
 )
-WORKFLOW_WORKER_CONCURRENCY = max(
-    int(os.getenv("WORKFLOW_WORKER_CONCURRENCY", "2")), 1
-)
-WORKFLOW_WORKER_LEASE_S = max(
-    float(os.getenv("WORKFLOW_WORKER_LEASE_S", "30.0")), 1.0
-)
+WORKFLOW_WORKER_CONCURRENCY = max(int(os.getenv("WORKFLOW_WORKER_CONCURRENCY", "2")), 1)
+WORKFLOW_WORKER_LEASE_S = max(float(os.getenv("WORKFLOW_WORKER_LEASE_S", "30.0")), 1.0)
 WORKFLOW_SCHEDULE_TICK_INTERVAL_S = max(
     float(os.getenv("WORKFLOW_SCHEDULE_TICK_INTERVAL_S", "5.0")), 0.5
 )
@@ -176,9 +169,7 @@ WORKFLOW_SCHEDULE_CATCHUP_LIMIT = max(
 WORKFLOW_SCHEDULE_MISFIRE_GRACE_S = max(
     float(os.getenv("WORKFLOW_SCHEDULE_MISFIRE_GRACE_S", "90.0")), 0.0
 )
-WORKFLOW_INSTANCE_ID = (
-    f"{os.getenv('HOSTNAME') or 'api'}:wf:{uuid.uuid4().hex[:8]}"
-)
+WORKFLOW_INSTANCE_ID = f"{os.getenv('HOSTNAME') or 'api'}:wf:{uuid.uuid4().hex[:8]}"
 # Minimum delay before a waiting/sleeping workflow run can be re-claimed.
 # Prevents hot-loop starvation when available_at is in the past (e.g. elapsed
 # deadline on a still-running child workflow).
@@ -385,24 +376,37 @@ class WorkflowContext:
             },
         ) as span:
             for attempt in range(max_attempts):
-                set_span_attributes(span, {"centaur.workflow.step_attempt": attempt + 1})
+                set_span_attributes(
+                    span, {"centaur.workflow.step_attempt": attempt + 1}
+                )
                 try:
                     if timeout is not None:
                         result = await asyncio.wait_for(
-                            self._call_step_fn(fn), timeout.total_seconds(),
+                            self._call_step_fn(fn),
+                            timeout.total_seconds(),
                         )
                     else:
                         result = await self._call_step_fn(fn)
 
                     eid = execution_id
                     cid = child_run_id
-                    if eid is None and step_kind == "agent_turn" and isinstance(result, dict):
+                    if (
+                        eid is None
+                        and step_kind == "agent_turn"
+                        and isinstance(result, dict)
+                    ):
                         eid = result.get("execution_id")
-                    if cid is None and step_kind == "child_workflow_start" and isinstance(result, dict):
+                    if (
+                        cid is None
+                        and step_kind == "child_workflow_start"
+                        and isinstance(result, dict)
+                    ):
                         cid = result.get("run_id")
 
                     await self._persist_checkpoint(
-                        checkpoint_name, result, step_kind=step_kind,
+                        checkpoint_name,
+                        result,
+                        step_kind=step_kind,
                         execution_id=eid,
                         child_run_id=cid,
                     )
@@ -448,7 +452,9 @@ class WorkflowContext:
 
         wake_at = dt.datetime.now(dt.timezone.utc) + duration
         await self._persist_checkpoint(
-            checkpoint_name, wake_at.isoformat(), step_kind="sleep",
+            checkpoint_name,
+            wake_at.isoformat(),
+            step_kind="sleep",
         )
         raise SuspendWorkflow(available_at=wake_at)
 
@@ -466,7 +472,9 @@ class WorkflowContext:
 
         wake_at = when if when.tzinfo else when.replace(tzinfo=dt.timezone.utc)
         await self._persist_checkpoint(
-            checkpoint_name, wake_at.isoformat(), step_kind="sleep",
+            checkpoint_name,
+            wake_at.isoformat(),
+            step_kind="sleep",
         )
         if dt.datetime.now(dt.timezone.utc) < wake_at:
             raise SuspendWorkflow(available_at=wake_at)
@@ -520,7 +528,9 @@ class WorkflowContext:
                 if existing:
                     payload = decode_jsonb(existing["payload"], {})
                     await self._persist_checkpoint(
-                        checkpoint_name, payload, step_kind="event",
+                        checkpoint_name,
+                        payload,
+                        step_kind="event",
                     )
                     return payload
                 deadline_str = cached.get("deadline")
@@ -551,7 +561,9 @@ class WorkflowContext:
         if existing:
             payload = decode_jsonb(existing["payload"], {})
             await self._persist_checkpoint(
-                checkpoint_name, payload, step_kind="event",
+                checkpoint_name,
+                payload,
+                step_kind="event",
             )
             return payload
 
@@ -568,7 +580,9 @@ class WorkflowContext:
             deadline = None
 
         await self._persist_checkpoint(
-            checkpoint_name, wait_marker, step_kind="event_wait",
+            checkpoint_name,
+            wait_marker,
+            step_kind="event_wait",
         )
         raise SuspendWorkflow(
             status="waiting",
@@ -841,6 +855,7 @@ class WorkflowContext:
                 args["thread_ts"] = thread_ts
             raw = await tm.call_tool("slack", "send_message", args)
             import json as _json
+
             try:
                 result = _json.loads(raw) if isinstance(raw, str) else raw
             except (ValueError, TypeError):
@@ -878,6 +893,7 @@ class WorkflowContext:
 
         async def _call() -> Any:
             import json as _json
+
             tm = get_tool_manager()
             raw = await tm.call_tool(tool, method, args or {})
             try:
@@ -886,7 +902,9 @@ class WorkflowContext:
                 return {"raw": raw}
 
         return await self.step(
-            f"tool_{tool}_{method}", _call, step_kind="tool_call",
+            f"tool_{tool}_{method}",
+            _call,
+            step_kind="tool_call",
         )
 
     async def agent_turn(
@@ -924,6 +942,7 @@ class _ToolMethodProxy:
     def __getattr__(self, method: str) -> Callable[..., Awaitable[Any]]:
         async def _call(**kwargs: Any) -> Any:
             return await self._ctx.call_tool(self._tool, method, kwargs or None)
+
         return _call
 
 
@@ -943,130 +962,6 @@ class _ToolProxy:
 
 
 _EXECUTION_HARNESSES = frozenset({"amp", "claude-code", "codex", "pi-mono"})
-
-
-async def _compute_agent_session_title(
-    pool,
-    thread_key: str,
-    selector: dict[str, str | None],
-) -> str:
-    """Build the streamed timeline header from the resolved persona and harness.
-
-    Renders as ``Centaur · {persona} · {engine}`` so users always see which
-    persona is active and which underlying runtime is executing. Persona
-    assignments use ``harness`` as the requested selector/profile and ``engine``
-    as the actual runtime, so prefer ``engine`` for display whenever present.
-    """
-    persona = selector.get("persona_id")
-    harness = selector.get("harness")
-    if not persona or not harness:
-        active = await get_active_assignment(pool, thread_key)
-        if isinstance(active, dict):
-            persona = persona or _nonempty(active.get("persona_id"))
-            harness = harness or _assignment_display_engine(active)
-    if persona and (not harness or harness == persona):
-        harness = _persona_default_engine(persona) or (None if harness == persona else harness)
-    if not persona and not harness:
-        harness = default_harness()
-    parts = ["Centaur"]
-    if persona:
-        parts.append(str(persona))
-    if harness:
-        parts.append(str(harness))
-    return " · ".join(parts)
-
-
-async def _compute_agent_session_header(
-    pool,
-    thread_key: str,
-    selector: dict[str, str | None],
-) -> str:
-    """Build the per-message italic header (``"persona · engine-model"``).
-
-    Mirrors ``_compute_agent_session_title`` for the resolution path but emits
-    the persona/engine pair the slackbot renders italic at the top of every
-    assistant message. Persona defaults to the literal ``"base"`` when no
-    persona is active. The engine segment is upgraded to a concrete model
-    identifier (e.g. ``claude-opus-4-8``, ``codex-gpt-5``) when known.
-    """
-    from api.runtime_control import _agent_session_header  # local to avoid cycle
-
-    persona = selector.get("persona_id")
-    harness = selector.get("harness")
-    engine: str | None = None
-    if not persona or not harness:
-        active = await get_active_assignment(pool, thread_key)
-        if isinstance(active, dict):
-            persona = persona or _nonempty(active.get("persona_id"))
-            harness = harness or _nonempty(active.get("harness"))
-            engine = _nonempty(active.get("engine"))
-    if persona and not engine:
-        engine = _persona_default_engine(persona)
-    return _agent_session_header(
-        persona_id=persona,
-        engine=engine,
-        harness=harness,
-    )
-
-
-def _history_has_assistant_message(history_messages: Any) -> bool:
-    if not isinstance(history_messages, list):
-        return False
-    return any(
-        isinstance(item, dict)
-        and str(item.get("role") or "").strip().lower() == "assistant"
-        for item in history_messages
-    )
-
-
-async def _thread_has_prior_slack_agent_reply(pool, thread_key: str) -> bool:
-    if await pool.fetchval(
-        "SELECT EXISTS (SELECT 1 FROM agent_execution_requests "
-        "WHERE thread_key = $1 AND COALESCE(delivery->>'platform', '') = 'slack' "
-        "AND COALESCE(metadata->>'slackbot_agent_session_id', '') <> '')",
-        thread_key,
-    ):
-        return True
-    return bool(
-        await pool.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM agent_message_requests "
-            "WHERE thread_key = $1 AND event_json->>'type' = 'assistant')",
-            thread_key,
-        )
-    )
-
-
-async def _should_show_agent_session_header(
-    pool,
-    *,
-    thread_key: str,
-    history_messages: Any,
-) -> bool:
-    if _history_has_assistant_message(history_messages):
-        return False
-    return not await _thread_has_prior_slack_agent_reply(pool, thread_key)
-
-
-def _assignment_display_engine(active: dict[str, Any]) -> str | None:
-    engine = _nonempty(active.get("engine"))
-    if engine:
-        return engine
-    return _nonempty(active.get("harness"))
-
-
-def _persona_default_engine(persona_id: str) -> str | None:
-    try:
-        from api.app import get_tool_manager
-
-        persona = get_tool_manager().get_persona(persona_id)
-    except Exception:
-        return None
-    return _nonempty(getattr(persona, "engine", None)) if persona else None
-
-
-def _nonempty(value: Any) -> str | None:
-    text = str(value or "").strip()
-    return text or None
 
 
 def _new_worker_id() -> str:
@@ -1215,72 +1110,20 @@ async def do_agent_turn(
         else:
             effective_delivery = dict(run_in.get("delivery") or {})
         effective_history = history_messages or run_in.get("history_messages") or []
-        selector = {"persona_id": persona, "harness": harness}
-        slackbot_session_id: str | None = None
-
-        try:
-            spawn = await spawn_assignment(
-                ctx._pool,
-                thread_key=effective_thread_key,
-                spawn_id=f"{step_id}:spawn",
-                harness=harness,
-                engine=None,
-                persona_id=persona,
-                agents_md_override=agents_md_override,
-            )
-        except Exception as exc:
-            try:
-                failure_session_id = await slackbot_client.open_agent_session(
-                    delivery=effective_delivery,
-                    metadata=effective_metadata,
-                    thread_key=effective_thread_key,
-                    title="Centaur",
-                    header=None,
-                )
-                if failure_session_id:
-                    await slackbot_client.session_text(
-                        failure_session_id,
-                        f"Failed to start the runtime: {exc}",
-                    )
-                    await slackbot_client.session_done(failure_session_id)
-            except Exception:
-                log.warning(
-                    "workflow_spawn_failure_session_failed",
-                    workflow_run_id=ctx.run_id,
-                    thread_key=effective_thread_key,
-                    exc_info=True,
-                )
-            raise
+        spawn = await spawn_assignment(
+            ctx._pool,
+            thread_key=effective_thread_key,
+            spawn_id=f"{step_id}:spawn",
+            harness=harness,
+            engine=None,
+            persona_id=persona,
+            agents_md_override=agents_md_override,
+        )
         ag = int(spawn["assignment_generation"])
 
-        session_title = await _compute_agent_session_title(
-            ctx._pool, effective_thread_key, selector,
+        effective_platform = (
+            str(effective_delivery.get("platform") or "").strip().lower()
         )
-        session_header = (
-            await _compute_agent_session_header(
-                ctx._pool,
-                effective_thread_key,
-                selector,
-            )
-            if await _should_show_agent_session_header(
-                ctx._pool,
-                thread_key=effective_thread_key,
-                history_messages=effective_history,
-            )
-            else None
-        )
-        slackbot_session_id = await slackbot_client.open_agent_session(
-            delivery=effective_delivery,
-            metadata=effective_metadata,
-            thread_key=effective_thread_key,
-            title=session_title,
-            header=session_header,
-        )
-        if slackbot_session_id:
-            effective_metadata["slackbot_agent_session_id"] = slackbot_session_id
-            effective_metadata["slackbot_live_delivery"] = True
-
-        effective_platform = str(effective_delivery.get("platform") or "").strip().lower()
         if effective_platform == "slack" or effective_thread_key.startswith("slack:"):
             requester_user_id = (
                 str(
@@ -1330,9 +1173,14 @@ async def do_agent_turn(
                     skipped += 1
                     continue
                 raw_history_metadata = item.get("metadata")
-                history_metadata = dict(raw_history_metadata) if isinstance(
-                    raw_history_metadata, dict,
-                ) else {}
+                history_metadata = (
+                    dict(raw_history_metadata)
+                    if isinstance(
+                        raw_history_metadata,
+                        dict,
+                    )
+                    else {}
+                )
                 history_metadata.setdefault("history_backfill", True)
                 history_metadata.setdefault("workflow_run_id", ctx.run_id)
                 history_user_id = item.get("user_id") or item.get("userId")
@@ -1400,11 +1248,18 @@ async def do_agent_turn(
 
     # Step 1: dispatch (or retrieve cached dispatch result)
     dispatch_result = await ctx.step(
-        "agent_turn", _dispatch, step_kind="agent_turn",
+        "agent_turn",
+        _dispatch,
+        step_kind="agent_turn",
     )
-    execution_id = dispatch_result.get("execution_id") if isinstance(
-        dispatch_result, dict,
-    ) else None
+    execution_id = (
+        dispatch_result.get("execution_id")
+        if isinstance(
+            dispatch_result,
+            dict,
+        )
+        else None
+    )
     if not execution_id:
         return dispatch_result
 
@@ -1438,6 +1293,7 @@ async def _message_request_exists(
 
 
 # ── Handler discovery ─────────────────────────────────────────────────
+
 
 @dataclass
 class _RegisteredHandler:
@@ -1497,7 +1353,8 @@ def _coerce_value(value: Any, target_type: type) -> Any:
 
 
 def _coerce_input(
-    raw: dict[str, Any], input_cls: type | None,
+    raw: dict[str, Any],
+    input_cls: type | None,
 ) -> Any:
     """Coerce a raw dict to a typed dataclass if one is registered."""
     if input_cls is None:
@@ -1514,7 +1371,9 @@ def _coerce_input(
 
 
 def _load_workflow_file(
-    py_file: Path, mod_name: str, discovered: dict[str, str],
+    py_file: Path,
+    mod_name: str,
+    discovered: dict[str, str],
 ) -> None:
     """Load a single workflow handler file into the registry."""
     try:
@@ -1530,7 +1389,11 @@ def _load_workflow_file(
 
         wf_name = getattr(mod, "WORKFLOW_NAME", None)
         if not isinstance(wf_name, str):
-            log.warning("workflow_handler_skip", file=str(py_file), reason="missing WORKFLOW_NAME")
+            log.warning(
+                "workflow_handler_skip",
+                file=str(py_file),
+                reason="missing WORKFLOW_NAME",
+            )
             return
         wf_handler = getattr(mod, "handler", None)
 
@@ -1547,12 +1410,16 @@ def _load_workflow_file(
             channel_val = getattr(mod, "SLACK_CHANNEL", None)
 
             async def _auto_handler(
-                inp: Any, ctx: WorkflowContext,
-                _prompt: str = prompt_val, _channel: str | None = channel_val,
+                inp: Any,
+                ctx: WorkflowContext,
+                _prompt: str = prompt_val,
+                _channel: str | None = channel_val,
             ) -> dict[str, Any]:
                 result = await ctx.agent_turn(_prompt)
                 text = result.get("result_text", "")
-                channel = (inp.get("slack_channel") if isinstance(inp, dict) else None) or _channel
+                channel = (
+                    inp.get("slack_channel") if isinstance(inp, dict) else None
+                ) or _channel
                 if text and channel:
                     await ctx.post_to_slack(channel, text)
                 return result
@@ -1561,7 +1428,11 @@ def _load_workflow_file(
         input_cls = getattr(mod, "Input", None)
         schedule = getattr(mod, "SCHEDULE", None)
         if schedule is not None and not isinstance(schedule, dict):
-            log.warning("workflow_schedule_skip", file=str(py_file), reason="SCHEDULE must be a dict")
+            log.warning(
+                "workflow_schedule_skip",
+                file=str(py_file),
+                reason="SCHEDULE must be a dict",
+            )
             schedule = None
         # Shorthand: CRON = "...", INTERVAL = 300, SLACK_CHANNEL = "..."
         if schedule is None:
@@ -1738,9 +1609,13 @@ def _registered_schedule_specs() -> list[ScheduleSpec]:
             or os.getenv(f"{wf_name.upper()}_THREAD_KEY", "")
         ).strip()
         slack_channel = (
-            str(sched.get("slack_channel", ""))
-            or os.getenv(f"{wf_name.upper()}_SLACK_CHANNEL", "")
-        ).strip().lstrip("#")
+            (
+                str(sched.get("slack_channel", ""))
+                or os.getenv(f"{wf_name.upper()}_SLACK_CHANNEL", "")
+            )
+            .strip()
+            .lstrip("#")
+        )
 
         # If both thread_key and slack_channel are empty, skip —
         # unless the workflow explicitly opts out of delivery.
@@ -1776,17 +1651,19 @@ def _registered_schedule_specs() -> list[ScheduleSpec]:
                 "platform": "slack",
             }
 
-        specs.append(ScheduleSpec(
-            schedule_id=sched.get("schedule_id", wf_name),
-            workflow_name=wf_name,
-            schedule_kind="cron" if cron_expr else "interval",
-            schedule_expr=cron_expr,
-            timezone=sched.get("timezone", "America/Los_Angeles"),
-            interval_seconds=interval_s,
-            catchup_policy=sched.get("catchup_policy", "skip"),
-            input_json=input_json,
-            enabled=bool(enabled_val),
-        ))
+        specs.append(
+            ScheduleSpec(
+                schedule_id=sched.get("schedule_id", wf_name),
+                workflow_name=wf_name,
+                schedule_kind="cron" if cron_expr else "interval",
+                schedule_expr=cron_expr,
+                timezone=sched.get("timezone", "America/Los_Angeles"),
+                interval_seconds=interval_s,
+                catchup_policy=sched.get("catchup_policy", "skip"),
+                input_json=input_json,
+                enabled=bool(enabled_val),
+            )
+        )
     return specs
 
 
@@ -1794,7 +1671,10 @@ def _registered_schedule_specs() -> list[ScheduleSpec]:
 
 
 def _next_cron_time(
-    expr: str, timezone: str, *, after: dt.datetime,
+    expr: str,
+    timezone: str,
+    *,
+    after: dt.datetime,
 ) -> dt.datetime:
     """Compute the next cron match after *after* using croniter."""
     from croniter import croniter
@@ -1814,14 +1694,18 @@ def _next_cron_time(
 
 
 def _next_schedule_time(
-    schedule: dict[str, Any], *, after: dt.datetime,
+    schedule: dict[str, Any],
+    *,
+    after: dt.datetime,
 ) -> dt.datetime:
     kind = str(schedule.get("schedule_kind") or "")
     if kind == "interval":
         interval_seconds = int(schedule.get("interval_seconds") or 0)
         if interval_seconds <= 0:
             raise ControlPlaneError(
-                "INVALID_SCHEDULE", "interval_seconds must be > 0", 422,
+                "INVALID_SCHEDULE",
+                "interval_seconds must be > 0",
+                422,
             )
         return after + dt.timedelta(seconds=interval_seconds)
     return _next_cron_time(
@@ -1832,21 +1716,22 @@ def _next_schedule_time(
 
 
 def _schedule_due_occurrences(
-    schedule: dict[str, Any], *, now: dt.datetime,
+    schedule: dict[str, Any],
+    *,
+    now: dt.datetime,
 ) -> tuple[list[dt.datetime], dt.datetime]:
     next_run_at = schedule.get("next_run_at")
     if not isinstance(next_run_at, dt.datetime):
         raise ControlPlaneError(
-            "INVALID_SCHEDULE", "schedule missing next_run_at", 422,
+            "INVALID_SCHEDULE",
+            "schedule missing next_run_at",
+            422,
         )
     catchup_policy = str(schedule.get("catchup_policy") or "skip")
     occurrences: list[dt.datetime] = []
     cursor = next_run_at
     if catchup_policy == "all":
-        while (
-            cursor <= now
-            and len(occurrences) < WORKFLOW_SCHEDULE_CATCHUP_LIMIT
-        ):
+        while cursor <= now and len(occurrences) < WORKFLOW_SCHEDULE_CATCHUP_LIMIT:
             occurrences.append(cursor)
             cursor = _next_schedule_time(schedule, after=cursor)
         return occurrences, cursor
@@ -1865,7 +1750,8 @@ def _schedule_due_occurrences(
 
 
 def _workflow_request_hash(
-    workflow_name: str, run_input: dict[str, Any],
+    workflow_name: str,
+    run_input: dict[str, Any],
 ) -> str:
     hash_input = dict(run_input)
     if workflow_name == "slack_thread_turn":
@@ -1973,7 +1859,11 @@ def _workflow_waiting_on(
             "correlation_id": state.get("correlation_id"),
             "deadline": state.get("deadline"),
         }
-    if step_kind == "child_workflow_wait" and isinstance(state, dict) and state.get("_waiting"):
+    if (
+        step_kind == "child_workflow_wait"
+        and isinstance(state, dict)
+        and state.get("_waiting")
+    ):
         return {
             "type": "workflow",
             "run_id": state.get("child_run_id") or child_run_id,
@@ -1988,7 +1878,8 @@ def _workflow_waiting_on(
 
 
 async def _latest_checkpoint_summary(
-    conn, run_id: str,
+    conn,
+    run_id: str,
 ) -> dict[str, Any]:
     row = await conn.fetchrow(
         "SELECT checkpoint_name, step_kind, state, execution_id, child_run_id "
@@ -2016,7 +1907,8 @@ async def _latest_checkpoint_summary(
 
 
 async def _fetch_run_response(
-    conn, run_id: str,
+    conn,
+    run_id: str,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         "SELECT r.run_id, r.workflow_name, r.workflow_version, "
@@ -2032,10 +1924,13 @@ async def _fetch_run_response(
     if not row:
         return None
     latest = await _latest_checkpoint_summary(conn, run_id)
-    child_runs_count = int(await conn.fetchval(
-        "SELECT COUNT(*)::int FROM workflow_runs WHERE parent_run_id = $1",
-        run_id,
-    ) or 0)
+    child_runs_count = int(
+        await conn.fetchval(
+            "SELECT COUNT(*)::int FROM workflow_runs WHERE parent_run_id = $1",
+            run_id,
+        )
+        or 0
+    )
     return {
         "ok": True,
         "run_id": str(row["run_id"]),
@@ -2057,29 +1952,25 @@ async def _fetch_run_response(
             else None
         ),
         "child_runs_count": child_runs_count,
-        "created_at": (
-            row["created_at"].isoformat() if row["created_at"] else None
-        ),
-        "started_at": (
-            row["started_at"].isoformat() if row["started_at"] else None
-        ),
+        "created_at": (row["created_at"].isoformat() if row["created_at"] else None),
+        "started_at": (row["started_at"].isoformat() if row["started_at"] else None),
         "completed_at": (
-            row["completed_at"].isoformat()
-            if row["completed_at"]
-            else None
+            row["completed_at"].isoformat() if row["completed_at"] else None
         ),
     }
 
 
 async def get_workflow_run(
-    pool, run_id: str,
+    pool,
+    run_id: str,
 ) -> dict[str, Any] | None:
     async with pool.acquire() as conn:
         return await _fetch_run_response(conn, run_id)
 
 
 async def get_workflow_checkpoints(
-    pool, run_id: str,
+    pool,
+    run_id: str,
 ) -> dict[str, Any] | None:
     exists = await pool.fetchval(
         "SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE run_id = $1)",
@@ -2096,18 +1987,18 @@ async def get_workflow_checkpoints(
     )
     items = []
     for row in rows:
-        items.append({
-            "checkpoint_name": str(row["checkpoint_name"]),
-            "step_kind": row["step_kind"],
-            "execution_id": row["execution_id"],
-            "child_run_id": row["child_run_id"],
-            "state": decode_jsonb(row["state"], None),
-            "created_at": (
-                row["created_at"].isoformat()
-                if row["created_at"]
-                else None
-            ),
-        })
+        items.append(
+            {
+                "checkpoint_name": str(row["checkpoint_name"]),
+                "step_kind": row["step_kind"],
+                "execution_id": row["execution_id"],
+                "child_run_id": row["child_run_id"],
+                "state": decode_jsonb(row["state"], None),
+                "created_at": (
+                    row["created_at"].isoformat() if row["created_at"] else None
+                ),
+            }
+        )
     return {"ok": True, "run_id": run_id, "checkpoints": items}
 
 
@@ -2147,36 +2038,32 @@ async def list_workflow_runs(
     )
     items = []
     for row in rows:
-        items.append({
-            "run_id": str(row["run_id"]),
-            "workflow_name": str(row["workflow_name"]),
-            "workflow_version": str(row["workflow_version"]),
-            "workflow_source_path": row["workflow_source_path"],
-            "parent_run_id": row["parent_run_id"],
-            "root_run_id": row["root_run_id"],
-            "status": str(row["status"]),
-            "thread_key": row["thread_key"],
-            "execution_id": row["execution_id"],
-            "error_text": row["error_text"],
-            "latest_checkpoint_name": row["latest_checkpoint_name"],
-            "latest_step_kind": row["latest_step_kind"],
-            "child_runs_count": int(row["child_runs_count"] or 0),
-            "created_at": (
-                row["created_at"].isoformat()
-                if row["created_at"]
-                else None
-            ),
-            "started_at": (
-                row["started_at"].isoformat()
-                if row["started_at"]
-                else None
-            ),
-            "completed_at": (
-                row["completed_at"].isoformat()
-                if row["completed_at"]
-                else None
-            ),
-        })
+        items.append(
+            {
+                "run_id": str(row["run_id"]),
+                "workflow_name": str(row["workflow_name"]),
+                "workflow_version": str(row["workflow_version"]),
+                "workflow_source_path": row["workflow_source_path"],
+                "parent_run_id": row["parent_run_id"],
+                "root_run_id": row["root_run_id"],
+                "status": str(row["status"]),
+                "thread_key": row["thread_key"],
+                "execution_id": row["execution_id"],
+                "error_text": row["error_text"],
+                "latest_checkpoint_name": row["latest_checkpoint_name"],
+                "latest_step_kind": row["latest_step_kind"],
+                "child_runs_count": int(row["child_runs_count"] or 0),
+                "created_at": (
+                    row["created_at"].isoformat() if row["created_at"] else None
+                ),
+                "started_at": (
+                    row["started_at"].isoformat() if row["started_at"] else None
+                ),
+                "completed_at": (
+                    row["completed_at"].isoformat() if row["completed_at"] else None
+                ),
+            }
+        )
     return {"ok": True, "items": items}
 
 
@@ -2344,17 +2231,16 @@ async def _claim_run(pool) -> dict[str, Any] | None:
 
 
 async def _load_checkpoints(
-    pool, run_id: str,
+    pool,
+    run_id: str,
 ) -> dict[str, Any]:
     """Bulk-load all checkpoints for a run into a dict."""
     rows = await pool.fetch(
-        "SELECT checkpoint_name, state "
-        "FROM workflow_checkpoints WHERE run_id = $1",
+        "SELECT checkpoint_name, state FROM workflow_checkpoints WHERE run_id = $1",
         run_id,
     )
     return {
-        str(row["checkpoint_name"]): decode_jsonb(row["state"], None)
-        for row in rows
+        str(row["checkpoint_name"]): decode_jsonb(row["state"], None) for row in rows
     }
 
 
@@ -2595,8 +2481,12 @@ async def _run_handler(pool, run_row: dict[str, Any]) -> None:
         # Handler suspended — set status and available_at for re-wake.
         now = dt.datetime.now(dt.timezone.utc)
         available_at = exc.available_at
-        linked_terminal = exc.status == "waiting" and await _linked_execution_is_terminal(
-            pool, run_id,
+        linked_terminal = (
+            exc.status == "waiting"
+            and await _linked_execution_is_terminal(
+                pool,
+                run_id,
+            )
         )
         if linked_terminal:
             # Linked execution finished — wake immediately so the handler
@@ -2777,7 +2667,8 @@ async def _run_handler(pool, run_row: dict[str, Any]) -> None:
 
 
 async def _tick_workflow_schedules(
-    pool, now: dt.datetime | None = None,
+    pool,
+    now: dt.datetime | None = None,
 ) -> int:
     current_now = now or dt.datetime.now(dt.timezone.utc)
     created = 0
@@ -2796,10 +2687,12 @@ async def _tick_workflow_schedules(
             for row in rows:
                 schedule = dict(row)
                 schedule["input_json"] = decode_jsonb(
-                    schedule.get("input_json"), {},
+                    schedule.get("input_json"),
+                    {},
                 )
                 occurrences, next_run_at = _schedule_due_occurrences(
-                    schedule, now=current_now,
+                    schedule,
+                    now=current_now,
                 )
                 last_run_at: dt.datetime | None = None
                 last_trigger_key: str | None = None
@@ -2869,7 +2762,8 @@ async def _tick_workflow_schedules_if_due(pool) -> None:
 
 
 async def notify_execution_terminal(
-    pool, execution_id: str,
+    pool,
+    execution_id: str,
 ) -> bool:
     """Wake a workflow run when its linked execution reaches terminal.
 
@@ -2898,7 +2792,8 @@ async def notify_execution_terminal(
 
 
 async def notify_workflow_run_terminal(
-    pool, child_run_id: str,
+    pool,
+    child_run_id: str,
 ) -> bool:
     rows = await pool.fetch(
         "SELECT DISTINCT r.run_id "
@@ -3076,7 +2971,8 @@ async def sync_registered_workflow_schedules(pool) -> None:
                     "interval_seconds": spec.interval_seconds,
                 }
                 next_run_at = _next_schedule_time(
-                    schedule_row, after=now,
+                    schedule_row,
+                    after=now,
                 )
                 existing = await conn.fetchrow(
                     "SELECT workflow_name, schedule_kind, schedule_expr, "
@@ -3088,16 +2984,18 @@ async def sync_registered_workflow_schedules(pool) -> None:
                 )
                 if existing:
                     current_input = decode_jsonb(existing["input_json"], {})
-                    spec_changed = any([
-                        str(existing["workflow_name"]) != spec.workflow_name,
-                        str(existing["schedule_kind"]) != spec.schedule_kind,
-                        existing["schedule_expr"] != spec.schedule_expr,
-                        str(existing["timezone"]) != spec.timezone,
-                        existing["interval_seconds"] != spec.interval_seconds,
-                        str(existing["catchup_policy"]) != spec.catchup_policy,
-                        current_input != spec.input_json,
-                        bool(existing["enabled"]) != spec.enabled,
-                    ])
+                    spec_changed = any(
+                        [
+                            str(existing["workflow_name"]) != spec.workflow_name,
+                            str(existing["schedule_kind"]) != spec.schedule_kind,
+                            existing["schedule_expr"] != spec.schedule_expr,
+                            str(existing["timezone"]) != spec.timezone,
+                            existing["interval_seconds"] != spec.interval_seconds,
+                            str(existing["catchup_policy"]) != spec.catchup_policy,
+                            current_input != spec.input_json,
+                            bool(existing["enabled"]) != spec.enabled,
+                        ]
+                    )
                     if spec_changed:
                         await conn.execute(
                             "UPDATE workflow_schedules "

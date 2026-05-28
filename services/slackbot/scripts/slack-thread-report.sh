@@ -107,7 +107,7 @@ async def main() -> None:
         """
         SELECT event_id, event_json, created_at
         FROM agent_execution_events
-        WHERE thread_key = $1 AND execution_id = $2 AND event_kind = 'amp_raw_event'
+        WHERE thread_key = $1 AND execution_id = $2 AND event_kind = 'harness_raw_event'
         ORDER BY event_id
         """,
         thread_key,

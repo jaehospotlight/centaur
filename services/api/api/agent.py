@@ -36,7 +36,6 @@ from api.sandbox.harness_protocol import (
 )
 from api.deps import mint_sandbox_token
 from api.harness_config import default_harness
-from api.sandbox.normalize import normalize_harness_event
 from api.sandbox.registry import get_backend
 from api.trace_context import get_or_create_thread_trace_id
 
@@ -55,7 +54,6 @@ _GITHUB_PREFIX_RE = re.compile(
 
 _VALID_STDOUT_EVENT_TYPES = frozenset(
     {
-        "amp_raw_event",
         "assistant",
         "command_execution",
         "content_block_delta",
@@ -715,7 +713,9 @@ async def _insert_system_message(
 ) -> None:
     """Insert a static system message with platform formatting rules (idempotent)."""
     pool = _get_pool()
-    effective_platform = platform or ("slack" if thread_key.startswith("slack:") else None)
+    effective_platform = platform or (
+        "slack" if thread_key.startswith("slack:") else None
+    )
     msg_id = f"system-{thread_key}-{effective_platform or 'generic'}"
     effective_user_id = user_id or await _get_latest_thread_user_id(thread_key)
     requester_identity = await _resolve_requester_identity(
@@ -780,9 +780,7 @@ def _resolve_harness_profile(
     if normalized_harness and normalized_harness not in _ENGINE_HARNESSES:
         raise ValueError(f"Unknown harness: {normalized_harness}")
 
-    persona_info = (
-        get_tool_manager().get_persona(persona) if persona else None
-    )
+    persona_info = get_tool_manager().get_persona(persona) if persona else None
     if persona and persona_info is None:
         raise ValueError(f"Unknown persona: {persona}")
 
@@ -917,7 +915,11 @@ async def get_or_spawn(
 
         trace_id = old_trace_id or thread_trace_id or str(uuid.uuid4())
         claimed = await claim_container(
-            thread_key, effective_harness, persona=resolved_persona, repo=repo, trace_id=trace_id
+            thread_key,
+            effective_harness,
+            persona=resolved_persona,
+            repo=repo,
+            trace_id=trace_id,
         )
         if claimed:
             if old_agent_thread_id:
@@ -1027,8 +1029,7 @@ def _build_session_context(
             github_login = github_handle.removeprefix("@")
             lines.extend(
                 [
-                    "- GitHub handle from Slack profile: "
-                    f"{github_handle}",
+                    f"- GitHub handle from Slack profile: {github_handle}",
                     "- GitHub handle source: "
                     f"{requester_identity['github_handle_source']}",
                     "- GitHub handle verified: yes",
@@ -1038,8 +1039,7 @@ def _build_session_context(
                     "- If you create a GitHub PR for this Slack request, "
                     f"the PR body MUST contain this standalone line: `Prompted by: {github_handle}`",
                     "- This is a GitHub PR body requirement, not a Slack response mention rule.",
-                    "- Assign the PR to the requester when possible: "
-                    f"`{github_login}`",
+                    f"- Assign the PR to the requester when possible: `{github_login}`",
                 ]
             )
         else:
@@ -1126,7 +1126,7 @@ async def _stream_stdout(
     turn_id: int,
     t0: float,
 ) -> AsyncIterator[dict]:
-    """Stream sandbox stdout, normalize events, yield SSE dicts.
+    """Stream sandbox stdout as raw harness events, plus synthesized turn.done.
 
     Keeps streaming across turns until the container exits (EOF).
     Callers that only need one turn can ``return`` from their own loop.
@@ -1188,8 +1188,7 @@ async def _stream_stdout(
             if evt.get("type") == "error":
                 result_text = ""
 
-            for canonical in normalize_harness_event(session.engine, evt):
-                yield {"data": json.dumps(canonical, separators=(",", ":"))}
+            yield {"data": json.dumps(evt, separators=(",", ":"))}
 
             if is_turn_done(session.engine, evt):
                 terminal_error = _terminal_error_from_harness_event(evt)
@@ -1318,7 +1317,9 @@ async def stream_connect(
     """
     rt = _get_runtime(session.sandbox_id)
 
-    effective_platform = platform or ("slack" if session.thread_key.startswith("slack:") else None)
+    effective_platform = platform or (
+        "slack" if session.thread_key.startswith("slack:") else None
+    )
     if effective_platform:
         await _insert_system_message(
             session.thread_key,
@@ -1414,7 +1415,9 @@ async def inject_stdin(
     """
     rt = _get_runtime(session.sandbox_id)
 
-    effective_platform = platform or ("slack" if session.thread_key.startswith("slack:") else None)
+    effective_platform = platform or (
+        "slack" if session.thread_key.startswith("slack:") else None
+    )
     if effective_platform:
         await _insert_system_message(
             session.thread_key,

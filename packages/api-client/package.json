@@ -9,7 +9,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@centaur/harness-events": "workspace:*",
     "axios": "^1.13.6",
     "eventsource-parser": "^3.0.6"
   },

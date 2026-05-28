@@ -26,7 +26,9 @@ async def _clear_workflow_tables(db_pool):
 
 @pytest.mark.asyncio
 async def test_create_slack_thread_turn_workflow_eager_start(
-    client, db_pool, api_key: str,
+    client,
+    db_pool,
+    api_key: str,
 ):
     thread_key = f"slack:C-test:{uuid.uuid4().hex}"
     payload = {
@@ -51,7 +53,9 @@ async def test_create_slack_thread_turn_workflow_eager_start(
                 },
                 {
                     "message_id": "slack:current",
-                    "parts": [{"type": "text", "text": "duplicate current should be skipped"}],
+                    "parts": [
+                        {"type": "text", "text": "duplicate current should be skipped"}
+                    ],
                     "user_id": "U123",
                 },
             ],
@@ -107,7 +111,9 @@ async def test_create_slack_thread_turn_workflow_eager_start(
         patch("api.workflow_engine._execute_run", new=AsyncMock()) as execute_run,
     ):
         response = await client.post(
-            "/workflows/runs", headers=_auth(api_key), json=payload,
+            "/workflows/runs",
+            headers=_auth(api_key),
+            json=payload,
         )
 
     assert response.status_code == 200
@@ -117,8 +123,7 @@ async def test_create_slack_thread_turn_workflow_eager_start(
     assert body["execution_id"] is None
 
     run_row = await db_pool.fetchrow(
-        "SELECT workflow_name, status "
-        "FROM workflow_runs WHERE run_id = $1",
+        "SELECT workflow_name, status FROM workflow_runs WHERE run_id = $1",
         body["run_id"],
     )
     assert run_row is not None
@@ -138,7 +143,9 @@ async def test_create_slack_thread_turn_workflow_eager_start(
 
 
 @pytest.mark.asyncio
-async def test_slack_thread_turn_active_assignment_does_not_backfill_stop_history(db_pool):
+async def test_slack_thread_turn_active_assignment_does_not_backfill_stop_history(
+    db_pool,
+):
     from api.workflow_engine import WorkflowContext
     from api.workflows.slack_thread_turn import Input, handler
 
@@ -160,7 +167,9 @@ async def test_slack_thread_turn_active_assignment_does_not_backfill_stop_histor
         lease_s=30.0,
         worker_id="w1",
     )
-    do_agent_turn_mock = AsyncMock(return_value={"ok": True, "execution_id": "exe-stop"})
+    do_agent_turn_mock = AsyncMock(
+        return_value={"ok": True, "execution_id": "exe-stop"}
+    )
 
     with patch("api.workflow_engine.do_agent_turn", new=do_agent_turn_mock):
         await handler(
@@ -190,7 +199,9 @@ async def test_slack_thread_turn_active_assignment_does_not_backfill_stop_histor
         )
 
     do_agent_turn_mock.assert_awaited_once()
-    assert do_agent_turn_mock.await_args.kwargs["parts"] == [{"type": "text", "text": "stop"}]
+    assert do_agent_turn_mock.await_args.kwargs["parts"] == [
+        {"type": "text", "text": "stop"}
+    ]
     assert do_agent_turn_mock.await_args.kwargs["history_messages"] == []
 
 
@@ -334,7 +345,9 @@ async def test_slack_thread_turn_attachment_roundtrip_to_agent(
         ]
     )
     assert blocks[0]["text"] == "<@U123>: please inspect this Slack file"
-    assert "User attached file: customer-list.pdf (application/pdf)" in blocks[1]["text"]
+    assert (
+        "User attached file: customer-list.pdf (application/pdf)" in blocks[1]["text"]
+    )
     assert f"/agent/attachments/{att_id}/download" in blocks[1]["text"]
 
     sandbox_token = mint_sandbox_token(thread_key, "rt-test")
@@ -412,8 +425,18 @@ def test_recovery_command_paraphrases_are_recognized():
         ("--invest --amp review this", "amp", "invest", "review this"),
         ("--invest --codex review this", "codex", "invest", "review this"),
         ("please use --opus and review this", None, None, "please use and review this"),
-        ("please use --model opus and review this", None, None, "please use and review this"),
-        ("please use `--model opus` and review this", None, None, "please use and review this"),
+        (
+            "please use --model opus and review this",
+            None,
+            None,
+            "please use and review this",
+        ),
+        (
+            "please use `--model opus` and review this",
+            None,
+            None,
+            "please use and review this",
+        ),
     ],
 )
 def test_prompt_selection_extraction_handles_slack_flag_shapes(
@@ -504,10 +527,20 @@ def test_prompt_switch_context_note_only_for_mid_thread_selector():
     from api.workflows.slack_thread_turn import _with_prompt_switch_context_note
 
     parts = [{"type": "text", "text": "pick this up"}]
-    history = [{"message_id": "slack:prior", "parts": [{"type": "text", "text": "prior"}]}]
+    history = [
+        {"message_id": "slack:prior", "parts": [{"type": "text", "text": "prior"}]}
+    ]
 
-    assert _with_prompt_switch_context_note(parts, switched=False, history_messages=history) == parts
-    assert _with_prompt_switch_context_note(parts, switched=True, history_messages=[]) == parts
+    assert (
+        _with_prompt_switch_context_note(
+            parts, switched=False, history_messages=history
+        )
+        == parts
+    )
+    assert (
+        _with_prompt_switch_context_note(parts, switched=True, history_messages=[])
+        == parts
+    )
     assert _with_prompt_switch_context_note(
         parts,
         switched=True,
@@ -534,13 +567,24 @@ def test_workflow_idempotency_hash_ignores_history_messages():
         "parts": [{"type": "text", "text": "current"}],
     }
 
-    assert _workflow_request_hash("slack_thread_turn", {
-        **base,
-        "history_messages": [{"message_id": "slack:0", "parts": []}],
-    }) == _workflow_request_hash("slack_thread_turn", {
-        **base,
-        "history_messages": [{"message_id": "slack:other", "parts": [{"type": "text", "text": "changed"}]}],
-    })
+    assert _workflow_request_hash(
+        "slack_thread_turn",
+        {
+            **base,
+            "history_messages": [{"message_id": "slack:0", "parts": []}],
+        },
+    ) == _workflow_request_hash(
+        "slack_thread_turn",
+        {
+            **base,
+            "history_messages": [
+                {
+                    "message_id": "slack:other",
+                    "parts": [{"type": "text", "text": "changed"}],
+                }
+            ],
+        },
+    )
 
 
 def test_recovery_hydration_reads_workflow_history_messages():
@@ -583,7 +627,14 @@ async def test_slack_thread_turn_hydrates_retry_with_last_substantive_user_ask(d
         "($8, $2, 'assistant', $9::jsonb, '{}'::jsonb, NOW())",
         f"msg:{thread_key}:ask",
         thread_key,
-        json.dumps([{"type": "text", "text": "Build the storage access workflow and wire in the bucket credentials."}]),
+        json.dumps(
+            [
+                {
+                    "type": "text",
+                    "text": "Build the storage access workflow and wire in the bucket credentials.",
+                }
+            ]
+        ),
         f"msg:{thread_key}:assistant-1",
         json.dumps([{"type": "text", "text": "I lost the earlier request."}]),
         f"msg:{thread_key}:retry-1",
@@ -639,7 +690,14 @@ async def test_slack_thread_turn_hydrates_slack_id_mention_prefixed_again(db_poo
         "($4, $2, 'assistant', $5::jsonb, '{}'::jsonb, NOW() - INTERVAL '2 minutes')",
         f"msg:{thread_key}:ask",
         thread_key,
-        json.dumps([{"type": "text", "text": "Draft the partner update and include the shipping risks."}]),
+        json.dumps(
+            [
+                {
+                    "type": "text",
+                    "text": "Draft the partner update and include the shipping risks.",
+                }
+            ]
+        ),
         f"msg:{thread_key}:assistant-1",
         json.dumps([{"type": "text", "text": "I need the original request again."}]),
     )
@@ -697,10 +755,19 @@ async def test_slack_thread_turn_recovery_filters_by_user_and_cursor(db_pool):
         "($11, $2, 'user', $12::jsonb, '{}'::jsonb, $13, NOW() - INTERVAL '1 minute')",
         f"msg:{thread_key}:alice-original",
         thread_key,
-        json.dumps([{"type": "text", "text": "Alice original ask: build the storage workflow"}]),
+        json.dumps(
+            [{"type": "text", "text": "Alice original ask: build the storage workflow"}]
+        ),
         user_a,
         f"msg:{thread_key}:bob-meta",
-        json.dumps([{"type": "text", "text": "Bob unrelated request: rename the project to Mantle"}]),
+        json.dumps(
+            [
+                {
+                    "type": "text",
+                    "text": "Bob unrelated request: rename the project to Mantle",
+                }
+            ]
+        ),
         user_b,
         retry_msg_id,
         json.dumps([{"type": "text", "text": "retry"}]),
@@ -963,7 +1030,9 @@ async def test_slack_thread_turn_without_flag_keeps_default_harness_path(db_pool
 
 
 @pytest.mark.asyncio
-async def test_slack_thread_turn_without_flag_replays_history_only_for_new_assignment(db_pool):
+async def test_slack_thread_turn_without_flag_replays_history_only_for_new_assignment(
+    db_pool,
+):
     from api.workflow_engine import WorkflowContext
     from api.workflows.slack_thread_turn import Input, handler
 
@@ -987,7 +1056,10 @@ async def test_slack_thread_turn_without_flag_replays_history_only_for_new_assig
     do_agent_turn_mock = AsyncMock(return_value={"ok": True, "execution_id": "exe-1"})
     with (
         patch("api.workflow_engine.do_agent_turn", new=do_agent_turn_mock),
-        patch("api.runtime_control.get_active_assignment", new=AsyncMock(return_value=None)),
+        patch(
+            "api.runtime_control.get_active_assignment",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         await handler(
             Input(
@@ -1039,10 +1111,12 @@ async def test_workflow_completes_when_execution_terminal(db_pool):
         "$3::jsonb, 'w1')",
         run_id,
         thread_key,
-        json.dumps({
-            "thread_key": thread_key,
-            "parts": [{"type": "text", "text": "hello"}],
-        }),
+        json.dumps(
+            {
+                "thread_key": thread_key,
+                "parts": [{"type": "text", "text": "hello"}],
+            }
+        ),
     )
 
     # Insert an existing checkpoint for the agent_turn step
@@ -1051,10 +1125,12 @@ async def test_workflow_completes_when_execution_terminal(db_pool):
         "run_id, checkpoint_name, step_kind, state, execution_id"
         ") VALUES ($1, 'agent_turn', 'agent_turn', $2::jsonb, $3)",
         run_id,
-        json.dumps({
-            "execution_id": execution_id,
-            "status": "waiting",
-        }),
+        json.dumps(
+            {
+                "execution_id": execution_id,
+                "status": "waiting",
+            }
+        ),
         execution_id,
     )
 
@@ -1073,10 +1149,12 @@ async def test_workflow_completes_when_execution_terminal(db_pool):
     run_row = {
         "run_id": run_id,
         "workflow_name": "slack_thread_turn",
-        "input_json": json.dumps({
-            "thread_key": thread_key,
-            "parts": [{"type": "text", "text": "hello"}],
-        }),
+        "input_json": json.dumps(
+            {
+                "thread_key": thread_key,
+                "parts": [{"type": "text", "text": "hello"}],
+            }
+        ),
         "status": "running",
         "worker_id": "w1",
     }
@@ -1305,10 +1383,12 @@ async def test_agent_turn_idempotency_ids_follow_deduped_step_names(db_pool):
         lease_s=30.0,
         worker_id="w1",
     )
-    enqueue_execution_mock = AsyncMock(side_effect=[
-        {"ok": True, "execution_id": "exe-first", "status": "queued"},
-        {"ok": True, "execution_id": "exe-second", "status": "queued"},
-    ])
+    enqueue_execution_mock = AsyncMock(
+        side_effect=[
+            {"ok": True, "execution_id": "exe-first", "status": "queued"},
+            {"ok": True, "execution_id": "exe-second", "status": "queued"},
+        ]
+    )
 
     with (
         patch(
@@ -1333,9 +1413,7 @@ async def test_agent_turn_idempotency_ids_follow_deduped_step_names(db_pool):
                 message_id=f"wf:{run_id}:batch_review:repair:chunk-4",
             )
 
-    assert [
-        call.kwargs["spawn_id"] for call in spawn_mock.await_args_list
-    ] == [
+    assert [call.kwargs["spawn_id"] for call in spawn_mock.await_args_list] == [
         f"wf:{run_id}:agent_turn:spawn",
         f"wf:{run_id}:agent_turn#2:spawn",
     ]
@@ -1356,333 +1434,6 @@ async def test_agent_turn_idempotency_ids_follow_deduped_step_names(db_pool):
         "agent_turn": "exe-first",
         "agent_turn#2": "exe-second",
     }
-
-
-@pytest.mark.asyncio
-async def test_agent_turn_opens_slack_session_after_spawn_with_resolved_header(
-    db_pool,
-    monkeypatch,
-):
-    from api.workflow_engine import SuspendWorkflow, WorkflowContext, do_agent_turn
-
-    monkeypatch.delenv("CODEX_MODEL", raising=False)
-    run_id = f"wfr_{uuid.uuid4().hex[:16]}"
-    thread_key = f"slack:C-test:{uuid.uuid4().hex}:session-after-spawn"
-    await db_pool.execute(
-        "INSERT INTO workflow_runs ("
-        "run_id, workflow_name, workflow_version, request_hash, root_run_id, "
-        "status, input_json, worker_id"
-        ") VALUES ($1, 'test', 'test-v1', 'hash', $1, 'running', '{}'::jsonb, 'w1')",
-        run_id,
-    )
-
-    ctx = WorkflowContext(
-        pool=db_pool,
-        run_id=run_id,
-        checkpoints={},
-        lease_s=30.0,
-        worker_id="w1",
-    )
-    order: list[str] = []
-
-    async def spawn_after_recording(*args, **kwargs):
-        order.append("spawn")
-        await db_pool.execute(
-            "INSERT INTO agent_runtime_assignments ("
-            "thread_key, assignment_generation, runtime_id, harness, engine, "
-            "persona_id, prompt_ref, effective_agents_md_sha256, state"
-            ") VALUES ($1, 1, 'rt-session-after-spawn', 'codex', 'codex', "
-            "NULL, 'harness:codex', 'sha', 'active')",
-            thread_key,
-        )
-        return {"assignment_generation": 1}
-
-    async def open_after_spawn(**kwargs):
-        order.append("open")
-        assert kwargs["title"] == "Centaur · codex"
-        assert kwargs["header"] == "base · codex"
-        return "sess-resolved"
-
-    append_message_mock = AsyncMock()
-    enqueue_execution_mock = AsyncMock(
-        return_value={"ok": True, "execution_id": "exe-resolved", "status": "queued"},
-    )
-
-    with (
-        patch(
-            "api.workflow_engine.spawn_assignment",
-            new=AsyncMock(side_effect=spawn_after_recording),
-        ),
-        patch(
-            "api.workflow_engine.slackbot_client.open_agent_session",
-            new=AsyncMock(side_effect=open_after_spawn),
-        ) as open_session_mock,
-        patch("api.workflow_engine.append_message", new=append_message_mock),
-        patch("api.workflow_engine.enqueue_execution", new=enqueue_execution_mock),
-    ):
-        with pytest.raises(SuspendWorkflow):
-            await do_agent_turn(
-                ctx,
-                prompt="hello",
-                thread_key=thread_key,
-                delivery={
-                    "platform": "slack",
-                    "channel": "C-test",
-                    "thread_ts": "1700000000.000100",
-                },
-            )
-
-    assert order == ["spawn", "open"]
-    open_session_mock.assert_awaited_once()
-    message_metadata = append_message_mock.await_args.kwargs["metadata"]
-    assert message_metadata["slackbot_agent_session_id"] == "sess-resolved"
-    assert message_metadata["slackbot_live_delivery"] is True
-    enqueue_metadata = enqueue_execution_mock.await_args.kwargs["metadata"]
-    assert enqueue_metadata["slackbot_agent_session_id"] == "sess-resolved"
-    assert enqueue_metadata["slackbot_live_delivery"] is True
-
-
-@pytest.mark.asyncio
-async def test_agent_turn_omits_slack_session_header_after_prior_thread_execution(
-    db_pool,
-    monkeypatch,
-):
-    from api.workflow_engine import SuspendWorkflow, WorkflowContext, do_agent_turn
-
-    monkeypatch.delenv("CODEX_MODEL", raising=False)
-    run_id = f"wfr_{uuid.uuid4().hex[:16]}"
-    thread_key = f"slack:C-test:{uuid.uuid4().hex}:header-followup"
-    await db_pool.execute(
-        "INSERT INTO workflow_runs ("
-        "run_id, workflow_name, workflow_version, request_hash, root_run_id, "
-        "status, input_json, worker_id"
-        ") VALUES ($1, 'test', 'test-v1', 'hash', $1, 'running', '{}'::jsonb, 'w1')",
-        run_id,
-    )
-    await db_pool.execute(
-        "INSERT INTO agent_execution_requests ("
-        "execution_id, thread_key, assignment_generation, execute_id, request_hash, "
-        "status, delivery, metadata"
-        ") VALUES ($1, $2, 1, $3, 'prior-hash', 'completed', $4::jsonb, $5::jsonb)",
-        f"exe-prior-{uuid.uuid4().hex[:8]}",
-        thread_key,
-        f"prior-execute-{uuid.uuid4().hex[:8]}",
-        json.dumps({"platform": "slack"}),
-        json.dumps({"slackbot_agent_session_id": "sess-prior"}),
-    )
-
-    ctx = WorkflowContext(
-        pool=db_pool,
-        run_id=run_id,
-        checkpoints={},
-        lease_s=30.0,
-        worker_id="w1",
-    )
-
-    async def spawn_after_recording(*args, **kwargs):
-        await db_pool.execute(
-            "INSERT INTO agent_runtime_assignments ("
-            "thread_key, assignment_generation, runtime_id, harness, engine, "
-            "persona_id, prompt_ref, effective_agents_md_sha256, state"
-            ") VALUES ($1, 2, 'rt-header-followup', 'codex', 'codex', "
-            "NULL, 'harness:codex', 'sha', 'active')",
-            thread_key,
-        )
-        return {"assignment_generation": 2}
-
-    async def open_after_spawn(**kwargs):
-        assert kwargs["title"] == "Centaur · codex"
-        assert kwargs["header"] is None
-        return "sess-followup"
-
-    with (
-        patch(
-            "api.workflow_engine.spawn_assignment",
-            new=AsyncMock(side_effect=spawn_after_recording),
-        ),
-        patch(
-            "api.workflow_engine.slackbot_client.open_agent_session",
-            new=AsyncMock(side_effect=open_after_spawn),
-        ) as open_session_mock,
-        patch("api.workflow_engine.append_message", new=AsyncMock()),
-        patch(
-            "api.workflow_engine.enqueue_execution",
-            new=AsyncMock(
-                return_value={
-                    "ok": True,
-                    "execution_id": "exe-followup",
-                    "status": "queued",
-                },
-            ),
-        ),
-    ):
-        with pytest.raises(SuspendWorkflow):
-            await do_agent_turn(
-                ctx,
-                prompt="follow up",
-                thread_key=thread_key,
-                delivery={
-                    "platform": "slack",
-                    "channel": "C-test",
-                    "thread_ts": "1700000000.000100",
-                },
-            )
-
-    open_session_mock.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_agent_turn_omits_slack_session_header_when_history_has_assistant_message(
-    db_pool,
-    monkeypatch,
-):
-    from api.workflow_engine import SuspendWorkflow, WorkflowContext, do_agent_turn
-
-    monkeypatch.delenv("CODEX_MODEL", raising=False)
-    run_id = f"wfr_{uuid.uuid4().hex[:16]}"
-    thread_key = f"slack:C-test:{uuid.uuid4().hex}:header-history"
-    await db_pool.execute(
-        "INSERT INTO workflow_runs ("
-        "run_id, workflow_name, workflow_version, request_hash, root_run_id, "
-        "status, input_json, worker_id"
-        ") VALUES ($1, 'test', 'test-v1', 'hash', $1, 'running', '{}'::jsonb, 'w1')",
-        run_id,
-    )
-
-    ctx = WorkflowContext(
-        pool=db_pool,
-        run_id=run_id,
-        checkpoints={},
-        lease_s=30.0,
-        worker_id="w1",
-    )
-
-    async def spawn_after_recording(*args, **kwargs):
-        await db_pool.execute(
-            "INSERT INTO agent_runtime_assignments ("
-            "thread_key, assignment_generation, runtime_id, harness, engine, "
-            "persona_id, prompt_ref, effective_agents_md_sha256, state"
-            ") VALUES ($1, 1, 'rt-header-history', 'codex', 'codex', "
-            "NULL, 'harness:codex', 'sha', 'active')",
-            thread_key,
-        )
-        return {"assignment_generation": 1}
-
-    async def open_after_spawn(**kwargs):
-        assert kwargs["title"] == "Centaur · codex"
-        assert kwargs["header"] is None
-        return "sess-history"
-
-    with (
-        patch(
-            "api.workflow_engine.spawn_assignment",
-            new=AsyncMock(side_effect=spawn_after_recording),
-        ),
-        patch(
-            "api.workflow_engine.slackbot_client.open_agent_session",
-            new=AsyncMock(side_effect=open_after_spawn),
-        ) as open_session_mock,
-        patch("api.workflow_engine.append_message", new=AsyncMock()),
-        patch(
-            "api.workflow_engine.enqueue_execution",
-            new=AsyncMock(
-                return_value={
-                    "ok": True,
-                    "execution_id": "exe-history",
-                    "status": "queued",
-                },
-            ),
-        ),
-    ):
-        with pytest.raises(SuspendWorkflow):
-            await do_agent_turn(
-                ctx,
-                prompt="follow up",
-                thread_key=thread_key,
-                history_messages=[
-                    {
-                        "message_id": f"slack:C-test:{uuid.uuid4().hex}",
-                        "role": "assistant",
-                        "parts": [{"type": "text", "text": "Earlier answer."}],
-                    },
-                ],
-                delivery={
-                    "platform": "slack",
-                    "channel": "C-test",
-                    "thread_ts": "1700000000.000100",
-                },
-            )
-
-    open_session_mock.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_agent_turn_spawn_failure_opens_unresolved_failure_session(db_pool):
-    from api.workflow_engine import WorkflowContext, do_agent_turn
-
-    run_id = f"wfr_{uuid.uuid4().hex[:16]}"
-    thread_key = f"slack:C-test:{uuid.uuid4().hex}:spawn-failure-session"
-    await db_pool.execute(
-        "INSERT INTO workflow_runs ("
-        "run_id, workflow_name, workflow_version, request_hash, root_run_id, "
-        "status, input_json, worker_id"
-        ") VALUES ($1, 'test', 'test-v1', 'hash', $1, 'running', '{}'::jsonb, 'w1')",
-        run_id,
-    )
-
-    ctx = WorkflowContext(
-        pool=db_pool,
-        run_id=run_id,
-        checkpoints={},
-        lease_s=30.0,
-        worker_id="w1",
-    )
-    append_message_mock = AsyncMock()
-    enqueue_execution_mock = AsyncMock()
-
-    with (
-        patch(
-            "api.workflow_engine.spawn_assignment",
-            new=AsyncMock(side_effect=RuntimeError("spawn unavailable")),
-        ),
-        patch(
-            "api.workflow_engine.slackbot_client.open_agent_session",
-            new=AsyncMock(return_value="sess-failed"),
-        ) as open_session_mock,
-        patch(
-            "api.workflow_engine.slackbot_client.session_text",
-            new=AsyncMock(),
-        ) as session_text_mock,
-        patch(
-            "api.workflow_engine.slackbot_client.session_done",
-            new=AsyncMock(),
-        ) as session_done_mock,
-        patch("api.workflow_engine.append_message", new=append_message_mock),
-        patch("api.workflow_engine.enqueue_execution", new=enqueue_execution_mock),
-    ):
-        with pytest.raises(RuntimeError, match="spawn unavailable"):
-            await do_agent_turn(
-                ctx,
-                prompt="hello",
-                thread_key=thread_key,
-                delivery={
-                    "platform": "slack",
-                    "channel": "C-test",
-                    "thread_ts": "1700000000.000100",
-                },
-            )
-
-    open_session_mock.assert_awaited_once()
-    open_kwargs = open_session_mock.await_args.kwargs
-    assert open_kwargs["title"] == "Centaur"
-    assert open_kwargs["header"] is None
-    session_text_mock.assert_awaited_once_with(
-        "sess-failed",
-        "Failed to start the runtime: spawn unavailable",
-    )
-    session_done_mock.assert_awaited_once_with("sess-failed")
-    append_message_mock.assert_not_awaited()
-    enqueue_execution_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1778,7 +1529,7 @@ async def test_sleep_suspends_and_resumes(db_pool):
     assert cp is not None
 
     # Replay with past wake time in checkpoint
-    past = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=1))
+    past = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=1)
     ctx2 = WorkflowContext(
         pool=db_pool,
         run_id=run_id,
@@ -1870,10 +1621,12 @@ async def test_tick_workflow_schedules_is_idempotent(db_pool):
         ") VALUES ($1, 'slack_thread_turn', 'cron', '45 14 * * *', "
         "'UTC', 'skip', $2::jsonb, TRUE, $3)",
         "sched-test",
-        json.dumps({
-            "thread_key": f"slack:C-test:{uuid.uuid4().hex}",
-            "parts": [{"type": "text", "text": "scheduled hello"}],
-        }),
+        json.dumps(
+            {
+                "thread_key": f"slack:C-test:{uuid.uuid4().hex}",
+                "parts": [{"type": "text", "text": "scheduled hello"}],
+            }
+        ),
         next_run_at,
     )
 
@@ -1884,8 +1637,7 @@ async def test_tick_workflow_schedules_is_idempotent(db_pool):
     assert created_second == 0
 
     runs = await db_pool.fetch(
-        "SELECT workflow_name, trigger_key FROM workflow_runs "
-        "WHERE trigger_key = $1",
+        "SELECT workflow_name, trigger_key FROM workflow_runs WHERE trigger_key = $1",
         f"schedule:sched-test:{int(next_run_at.timestamp())}",
     )
     assert len(runs) == 1
@@ -2103,11 +1855,13 @@ async def test_post_to_slack_raises_on_tool_error(db_pool):
         worker_id="w1",
     )
     tool_manager = AsyncMock()
-    tool_manager.call_tool.return_value = json.dumps({
-        "error": "Channel 'investing' not found or bot not a member",
-        "tool": "slack",
-        "method": "send_message",
-    })
+    tool_manager.call_tool.return_value = json.dumps(
+        {
+            "error": "Channel 'investing' not found or bot not a member",
+            "tool": "slack",
+            "method": "send_message",
+        }
+    )
 
     with patch("api.app.get_tool_manager", return_value=tool_manager):
         with pytest.raises(RuntimeError, match="not found or bot not a member"):

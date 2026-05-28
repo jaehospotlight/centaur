@@ -1,7 +1,6 @@
 """Normalize raw harness events into canonical event dicts.
 
-1:1 port of packages/harness-events/src/normalize.ts.  Pure functions — no I/O,
-no globals, no imports from other api modules.
+Pure functions — no I/O, no globals, no imports from other api modules.
 
 Public API:
     normalize_harness_event(engine, event) -> list[dict]

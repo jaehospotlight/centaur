@@ -114,6 +114,30 @@ export interface StreamEvent {
   data: Record<string, unknown>;
 }
 
+export type ChatStreamChunk =
+  | { type: "markdown_text"; text: string }
+  | {
+      type: "task_update";
+      id: string;
+      title: string;
+      status: "pending" | "in_progress" | "complete" | "error";
+      output?: string;
+    }
+  | { type: "plan_update"; title: string };
+
+export interface ChatStreamContext {
+  execution_id: string;
+  thread_key: string;
+  platform?: string | null;
+  thread_id?: string | null;
+  stream_options: {
+    recipientUserId?: string;
+    recipientTeamId?: string;
+    taskDisplayMode?: "timeline" | "plan";
+    stopBlocks?: unknown[];
+  };
+}
+
 export class CentaurClient {
   readonly http: AxiosInstance;
   private log?: { info: Function; warn: Function; error: Function };
@@ -292,9 +316,49 @@ export class CentaurClient {
     }
   }
 
+  async *streamChatChunks(opts: {
+    executionId: string;
+    afterEventId?: number;
+    pollMs?: number;
+    signal?: AbortSignal;
+  }): AsyncGenerator<ChatStreamChunk, void, undefined> {
+    const params = new URLSearchParams();
+    if (opts.afterEventId !== undefined) params.set("after_event_id", String(opts.afterEventId));
+    if (opts.pollMs !== undefined) params.set("poll_ms", String(opts.pollMs));
+
+    const url = `${this.http.defaults.baseURL}/agent/executions/${encodeURIComponent(opts.executionId)}/chat-stream?${params.toString()}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: this.authHeader },
+      signal: opts.signal,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`/agent/executions/{execution}/chat-stream failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+    if (!res.body) return;
+
+    const stream = (res.body as ReadableStream<Uint8Array>)
+      .pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>)
+      .pipeThrough(new EventSourceParserStream());
+
+    for await (const event of stream as unknown as AsyncIterable<EventSourceMessage>) {
+      if (!event.data || event.data === "[DONE]") continue;
+      yield JSON.parse(event.data) as ChatStreamChunk;
+    }
+  }
+
   async getExecution(executionId: string) {
     const { data } = await this.http.get(`/agent/executions/${encodeURIComponent(executionId)}`);
     return data as Record<string, unknown>;
+  }
+
+  async getChatStreamContext(executionId: string): Promise<ChatStreamContext> {
+    const { data } = await this.http.get(
+      `/agent/executions/${encodeURIComponent(executionId)}/chat-stream/context`,
+    );
+    return data as ChatStreamContext;
   }
 
   async getMessages(threadKey: string, opts?: { cursor?: string; limit?: number }) {

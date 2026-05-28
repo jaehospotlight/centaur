@@ -37,7 +37,6 @@ from api.otel import (
 )
 from api.vm_metrics import record_tool_call
 from api.deps import get_key_info, get_sandbox_claims, verify_api_key
-from api import slackbot_client
 from centaur_sdk import ToolContext, reset_tool_context, set_tool_context
 
 log = structlog.get_logger()
@@ -396,9 +395,7 @@ def _parse_oauth_fields(
                 f"oauth_token entry {secret_name!r} field {field_name!r} is not "
                 f"valid for grant {grant!r}; allowed: {sorted(allowed)}"
             )
-        parsed[field_name] = _parse_oauth_field_source(
-            secret_name, field_name, raw
-        )
+        parsed[field_name] = _parse_oauth_field_source(secret_name, field_name, raw)
     missing = required - parsed.keys()
     if missing:
         raise ValueError(
@@ -597,8 +594,7 @@ def _parse_hmac_credentials(
     """Parse ``credentials`` for an ``hmac_sign`` entry; require ``secret``."""
     if not isinstance(raw, dict) or not raw:
         raise ValueError(
-            f"hmac_sign entry {secret_name!r} 'credentials' must be a non-empty "
-            f"table"
+            f"hmac_sign entry {secret_name!r} 'credentials' must be a non-empty table"
         )
     parsed: dict[str, OAuthFieldSource] = {}
     for field_name, value in raw.items():
@@ -829,7 +825,9 @@ def _parse_secret(entry: Any, *, default_hosts: tuple[str, ...] = ()) -> SecretD
             replacer=entry,
         )
     if not isinstance(entry, dict):
-        raise ValueError(f"secret entry must be a string or table, got {type(entry).__name__}")
+        raise ValueError(
+            f"secret entry must be a string or table, got {type(entry).__name__}"
+        )
     name = entry.get("name")
     if not isinstance(name, str) or not name:
         raise ValueError(f"secret entry missing 'name': {entry!r}")
@@ -1153,72 +1151,6 @@ async def _active_execution_parent_context(
     if not isinstance(otel, dict):
         return None
     return context_from_serialized(otel.get("execution_span_context"))
-
-
-async def _capture_live_slack_send(
-    *,
-    request: Request | None,
-    sandbox_claims: dict[str, Any] | None,
-    tool_name: str,
-    method_name: str,
-    args: dict[str, Any],
-) -> dict[str, Any] | None:
-    if request is None or not sandbox_claims:
-        return None
-    if tool_name != "slack" or method_name != "send_message":
-        return None
-
-    thread_key = str(sandbox_claims.get("thread_key") or "")
-    parts = thread_key.split(":")
-    if len(parts) < 4 or parts[0] != "slack":
-        return None
-    active_channel = parts[2]
-    active_thread_ts = parts[3]
-    requested_channel = str(args.get("channel") or args.get("channel_id") or "").lstrip("#")
-    requested_thread_ts = str(args.get("thread_ts") or "")
-    channel_is_id = bool(re.match(r"^[CDG][A-Z0-9]+$", requested_channel))
-    if channel_is_id and requested_channel != active_channel:
-        return None
-    if requested_thread_ts and requested_thread_ts != active_thread_ts:
-        return None
-
-    text = str(args.get("text") or args.get("message") or "").strip()
-    if not text:
-        return None
-
-    pool = getattr(request.app.state, "db_pool", None)
-    if pool is None:
-        return None
-    session_id = await pool.fetchval(
-        "SELECT metadata->>'slackbot_agent_session_id' "
-        "FROM agent_execution_requests "
-        "WHERE thread_key = $1 "
-        "AND status = 'running' "
-        "AND ("
-        "  metadata->>'slackbot_live_delivery' = 'true' "
-        "  OR metadata->>('slackbot' || '_v' || '2_live_delivery') = 'true'"
-        ") "
-        "AND COALESCE(metadata->>'slackbot_agent_session_id', '') <> '' "
-        "ORDER BY started_at DESC NULLS LAST, created_at DESC LIMIT 1",
-        thread_key,
-    )
-    session_id = str(session_id or "").strip()
-    if not session_id:
-        return None
-
-    await slackbot_client.session_text(session_id, text)
-    log.info(
-        "slack_send_message_captured",
-        thread_key=thread_key,
-        sandbox_container_id=sandbox_claims.get("container_id"),
-        slackbot_agent_session_id=session_id,
-    )
-    return {
-        "captured": True,
-        "message": "Captured into the active Slackbot live reply; no separate Slack message was posted.",
-        "channel": active_channel,
-        "thread_ts": active_thread_ts,
-    }
 
 
 async def _extract_tool_attachment(
@@ -1921,7 +1853,10 @@ class ToolManager:
                 name="openai-codex",
                 hosts=("chatgpt.com",),
                 fields=(
-                    ("client_id", OAuthFieldSource(secret_ref="OPENAI_CODEX_CLIENT_ID")),
+                    (
+                        "client_id",
+                        OAuthFieldSource(secret_ref="OPENAI_CODEX_CLIENT_ID"),
+                    ),
                     ("refresh_token", OAuthFieldSource(secret_ref="OPENAI_CODEX_BLOB")),
                 ),
                 token_endpoint="https://auth.openai.com/oauth/token",
@@ -2194,24 +2129,6 @@ class ToolManager:
         }
         t0 = time.monotonic()
         log.info("tool_call_started", **call_fields)
-        captured_slack_send = await _capture_live_slack_send(
-            request=request,
-            sandbox_claims=sandbox_claims,
-            tool_name=tool_name,
-            method_name=method_name,
-            args=args,
-        )
-        if captured_slack_send is not None:
-            duration_ms = round((time.monotonic() - t0) * 1000)
-            log.info(
-                "tool_call_completed",
-                duration_ms=duration_ms,
-                success=True,
-                result_size_bytes=_payload_size_bytes(captured_slack_send),
-                captured=True,
-                **call_fields,
-            )
-            return captured_slack_send
         validation_error = _tool_arg_validation_error(method, args)
         if validation_error is not None:
             log.warning(
@@ -2350,38 +2267,6 @@ class ToolManager:
         ) as span:
             t0 = time.monotonic()
             log.info("tool_call_started", **call_fields)
-            captured_slack_send = await _capture_live_slack_send(
-                request=request,
-                sandbox_claims=sandbox_claims,
-                tool_name=tool_name,
-                method_name=method_name,
-                args=args,
-            )
-            if captured_slack_send is not None:
-                duration_ms = round((time.monotonic() - t0) * 1000)
-                set_span_attributes(
-                    span,
-                    {
-                        "centaur.tool.duration_ms": duration_ms,
-                        "centaur.tool.success": True,
-                        "centaur.tool.captured": True,
-                        "centaur.tool.result_size_bytes": _payload_size_bytes(
-                            captured_slack_send
-                        ),
-                    },
-                )
-                log.info(
-                    "tool_call_completed",
-                    duration_ms=duration_ms,
-                    success=True,
-                    result_size_bytes=_payload_size_bytes(captured_slack_send),
-                    captured=True,
-                    **call_fields,
-                )
-                record_tool_call(tool_name, method_name, True, duration_ms / 1000)
-                if format == "toon":
-                    return _to_toon(captured_slack_send)
-                return _normalize_for_serialization(captured_slack_send)
             validation_error = _tool_arg_validation_error(method, args)
             if validation_error is not None:
                 mark_error(span, validation_error["message"])
@@ -2473,7 +2358,9 @@ class ToolManager:
             except (SystemExit, Exception) as e:
                 duration_ms = round((time.monotonic() - t0) * 1000)
                 if isinstance(e, asyncio.TimeoutError):
-                    error_msg = f"Tool call timed out after {_timeout_label(lt.timeout_s)}"
+                    error_msg = (
+                        f"Tool call timed out after {_timeout_label(lt.timeout_s)}"
+                    )
                 elif isinstance(e, SystemExit):
                     error_msg = f"sys.exit({e.code})"
                 else:

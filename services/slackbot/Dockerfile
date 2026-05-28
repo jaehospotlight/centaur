@@ -7,8 +7,10 @@ RUN bun install -g pnpm@10.28.1
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY services/slackbot/package.json services/slackbot/package.json
-RUN pnpm install --filter slackbot --prod --frozen-lockfile
+COPY packages/api-client/package.json packages/api-client/package.json
+RUN pnpm install --filter slackbot... --prod --frozen-lockfile
 
+COPY packages/api-client/ packages/api-client/
 COPY services/slackbot/ services/slackbot/
 WORKDIR /repo/services/slackbot
 

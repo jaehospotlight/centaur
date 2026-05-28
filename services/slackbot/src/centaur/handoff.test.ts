@@ -1,7 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test'
-import { CentaurHandoff } from './handoff'
+import { CentaurHandoff, type NormalizedSlackEvent } from './handoff'
 import type { AppConfig } from '../config'
-import type { NormalizedSlackEvent } from '../slack/types'
 
 const config: AppConfig = {
   NODE_ENV: 'test',

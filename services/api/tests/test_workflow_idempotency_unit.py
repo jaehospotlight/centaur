@@ -97,9 +97,6 @@ async def test_agent_turn_skips_existing_history_message_before_append():
     })
 
     with (
-        patch("api.workflow_engine._compute_agent_session_title", new=AsyncMock(return_value=None)),
-        patch("api.workflow_engine._compute_agent_session_header", new=AsyncMock(return_value=None)),
-        patch("api.workflow_engine.slackbot_client.open_agent_session", new=AsyncMock(return_value=None)),
         patch("api.workflow_engine.spawn_assignment", new=AsyncMock(return_value={"assignment_generation": 1})),
         patch("api.workflow_engine._message_request_exists", new=AsyncMock(return_value=True)) as exists,
         patch("api.workflow_engine.append_message", new=append_message),

@@ -24,7 +24,7 @@ from api.agent import (
     steer_stdin,
     stop_session,
 )
-from api import slackbot_client
+from api.chat_stream import CHAT_STREAM_EVENT_KIND, ChatStreamProjector
 from api.harness_config import default_harness
 from api.otel import (
     add_span_event,
@@ -64,9 +64,6 @@ from api.sandbox.registry import get_backend
 
 log = structlog.get_logger()
 
-_SLACKBOT_LIVE_DELIVERY_METADATA_KEY = "slackbot_live_delivery"
-_LEGACY_SLACKBOT_LIVE_DELIVERY_METADATA_KEY = "slackbot" + "_v" + "2_live_delivery"
-
 EXECUTION_SILENCE_TIMEOUT_S = int(os.getenv("EXECUTION_SILENCE_TIMEOUT_S", "600"))
 EXECUTION_TOOL_SILENCE_TIMEOUT_S = int(
     os.getenv("EXECUTION_TOOL_SILENCE_TIMEOUT_S", "1800")
@@ -100,8 +97,7 @@ EXECUTION_RESERVED_USER_SLOTS = max(
     int(os.getenv("EXECUTION_RESERVED_USER_SLOTS", "16")),
     0,
 )
-_MAX_SLACKBOT_TEXT_CHARS = 12_000
-_MAX_SLACKBOT_STEP_CHARS = 12_000
+_MAX_OBSERVATION_TEXT_CHARS = 12_000
 _MAX_WORKFLOW_EXECUTION_SLOTS = max(
     EXECUTION_WORKER_CONCURRENCY - EXECUTION_RESERVED_USER_SLOTS,
     1,
@@ -199,88 +195,6 @@ def prompt_identity(
     effective = agents_md_override if agents_md_override is not None else prompt_ref
     sha = hashlib.sha256(effective.encode("utf-8")).hexdigest()
     return prompt_ref, sha
-
-
-def _agent_session_title(
-    *, persona_id: str | None, engine: str | None, harness: str | None
-) -> str:
-    parts = ["Centaur"]
-    persona = (persona_id or "").strip()
-    runtime = (engine or harness or default_harness()).strip()
-    if persona:
-        parts.append(persona)
-    if runtime and runtime != persona:
-        parts.append(runtime)
-    return " · ".join(parts)
-
-
-# ── Per-message header (rendered italic at the top of every assistant message) ──
-
-_DEFAULT_CLAUDE_MODEL = "claude-opus-4-8"
-
-_CLAUDE_MODEL_ALIASES: dict[str, str] = {
-    "opus": _DEFAULT_CLAUDE_MODEL,
-    "sonnet": "claude-sonnet-4-6",
-    "haiku": "claude-haiku-4-5",
-}
-
-
-def _resolve_claude_model_label(model: str | None) -> str:
-    raw = (model or os.getenv("CLAUDE_MODEL") or "opus").strip().lower()
-    if raw.startswith("claude-"):
-        return raw
-    return _CLAUDE_MODEL_ALIASES.get(raw, raw or _DEFAULT_CLAUDE_MODEL)
-
-
-def _resolve_codex_model_label(model: str | None) -> str:
-    raw = (model or os.getenv("CODEX_MODEL") or "").strip().lower()
-    if not raw:
-        return "codex"
-    if raw.startswith("codex-"):
-        return raw
-    return f"codex-{raw}"
-
-
-def _engine_model_label(
-    *,
-    engine: str | None,
-    harness: str | None,
-    model: str | None = None,
-) -> str:
-    """Return the `engine-model` segment for the per-message header.
-
-    Falls back to the engine identifier when no model is known, so the
-    header always renders something deterministic per (engine, persona) pair.
-    """
-    engine_name = (engine or harness or "").strip().lower()
-    explicit = (model or "").strip().lower()
-    if engine_name == "claude-code":
-        return _resolve_claude_model_label(explicit or None)
-    if engine_name == "codex":
-        return _resolve_codex_model_label(explicit or None)
-    if engine_name == "amp":
-        return f"amp-{explicit}" if explicit else "amp"
-    if explicit:
-        return explicit
-    return engine_name or "centaur"
-
-
-def _agent_session_header(
-    *,
-    persona_id: str | None,
-    engine: str | None,
-    harness: str | None,
-    model: str | None = None,
-) -> str:
-    """Return ``"<persona> · <engine-model>"`` for the per-message header line.
-
-    Persona is normalized to the literal ``"base"`` when no persona is
-    active so the header is always two segments. The slackbot wraps this
-    in italics; we do not add markdown styling here.
-    """
-    persona = (persona_id or "").strip() or "base"
-    engine_label = _engine_model_label(engine=engine, harness=harness, model=model)
-    return f"{persona} · {engine_label}"
 
 
 def flatten_event_parts(event: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1043,7 +957,9 @@ def build_execution_state_payload(
     return payload
 
 
-def _clip_slackbot(value: Any, max_chars: int = _MAX_SLACKBOT_STEP_CHARS) -> str:
+def _clip_observation_text(
+    value: Any, max_chars: int = _MAX_OBSERVATION_TEXT_CHARS
+) -> str:
     text = (
         value
         if isinstance(value, str)
@@ -1051,138 +967,6 @@ def _clip_slackbot(value: Any, max_chars: int = _MAX_SLACKBOT_STEP_CHARS) -> str
     )
     text = text.strip()
     return text if len(text) <= max_chars else f"{text[: max_chars - 1]}…"
-
-
-def _has_slackbot_live_delivery(metadata: dict[str, Any]) -> bool:
-    return (
-        metadata.get(_SLACKBOT_LIVE_DELIVERY_METADATA_KEY) is True
-        or metadata.get(_LEGACY_SLACKBOT_LIVE_DELIVERY_METADATA_KEY) is True
-    )
-
-
-async def _mark_slackbot_live_delivery_failed(
-    pool,
-    execution_id: str,
-    reason: str,
-    *,
-    streamed_answer_chars: int | None = None,
-) -> None:
-    await pool.execute(
-        "UPDATE agent_execution_requests "
-        "SET metadata = jsonb_set("
-        "  jsonb_set(metadata, "
-        "  '{slackbot_live_delivery_failed}', "
-        "  to_jsonb($2::text), "
-        "  true), "
-        "  '{slackbot_streamed_answer_chars}', "
-        "  to_jsonb($3::int), "
-        "  true"
-        "), updated_at = NOW() "
-        "WHERE execution_id = $1",
-        execution_id,
-        reason,
-        max(streamed_answer_chars or 0, 0),
-    )
-
-
-def _canonical_text_blocks(event: dict[str, Any]) -> list[str]:
-    if event.get("type") == "assistant":
-        message = event.get("message") if isinstance(event.get("message"), dict) else {}
-        content = (
-            message.get("content") if isinstance(message.get("content"), list) else []
-        )
-        return [
-            str(block.get("text") or "")
-            for block in content
-            if isinstance(block, dict)
-            and block.get("type") == "text"
-            and str(block.get("text") or "").strip()
-        ]
-    if event.get("type") == "result":
-        text = str(event.get("result") or event.get("text") or "")
-        return [text] if text.strip() else []
-    return []
-
-
-def _slackbot_streamed_answer_chars(value: Any) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return max(value, 0)
-    return 0
-
-
-def _slackbot_live_delivery_covers_result(result_text: str, streamed_chars: int) -> bool:
-    text = result_text.strip()
-    if not text:
-        return True
-    return streamed_chars >= len(text)
-
-
-async def _send_slackbot_canonical_event(
-    session_id: str, event: dict[str, Any]
-) -> bool:
-    sent_text = False
-    for text in _canonical_text_blocks(event):
-        await slackbot_client.session_text(
-            session_id,
-            _clip_slackbot(text, _MAX_SLACKBOT_TEXT_CHARS),
-        )
-        sent_text = True
-
-    event_type = str(event.get("type") or "")
-    if event_type == "assistant":
-        message = event.get("message") if isinstance(event.get("message"), dict) else {}
-        content = (
-            message.get("content") if isinstance(message.get("content"), list) else []
-        )
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            tool_id = str(block.get("id") or uuid.uuid4())
-            tool_name = str(block.get("name") or "Tool")
-            tool_input = (
-                block.get("input") if isinstance(block.get("input"), dict) else {}
-            )
-            await slackbot_client.session_step(
-                session_id,
-                step_id=tool_id,
-                title=tool_name,
-                status="in_progress",
-                details=_clip_slackbot(tool_input),
-            )
-    elif event_type == "tool":
-        content = event.get("content") if isinstance(event.get("content"), list) else []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            tool_id = str(block.get("tool_use_id") or uuid.uuid4())
-            is_error = bool(block.get("is_error"))
-            await slackbot_client.session_step(
-                session_id,
-                step_id=tool_id,
-                title="Tool result",
-                status="error" if is_error else "complete",
-                output=_clip_slackbot(block.get("content")),
-            )
-    elif event_type == "command_execution":
-        command = str(event.get("command") or "Command")
-        await slackbot_client.session_step(
-            session_id,
-            step_id=f"command-{hashlib.sha256(command.encode()).hexdigest()[:12]}",
-            title=command[:256],
-            status="complete" if event.get("status") == "completed" else "in_progress",
-            output=_clip_slackbot(event.get("aggregated_output") or ""),
-        )
-    elif event_type == "error":
-        await slackbot_client.session_step(
-            session_id,
-            step_id=f"error-{uuid.uuid4().hex[:12]}",
-            title="Execution error",
-            status="error",
-            output=_clip_slackbot(event.get("error") or event),
-        )
-    return sent_text
 
 
 async def append_execution_event(
@@ -1469,9 +1253,7 @@ async def _enqueue_execution_impl(
                 silence_deadline,
                 hard_deadline,
             )
-            if _delivery_platform(
-                delivery
-            ) != "dev" and not _has_slackbot_live_delivery(metadata):
+            if _delivery_platform(delivery) != "dev":
                 await conn.execute(
                     "INSERT INTO agent_final_delivery_outbox ("
                     "execution_id, thread_key, delivery, state"
@@ -1941,7 +1723,6 @@ async def _mark_execution_terminal(
     terminal_reason: str,
     result_text: str,
     error_text: str | None,
-    slackbot_streamed_answer_chars_override: int | None = None,
 ) -> None:
     next_attempt_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
         seconds=FINAL_DELIVERY_READY_GRACE_S,
@@ -1981,9 +1762,7 @@ async def _mark_execution_terminal(
     prompt_ref = None
     prompt_sha = None
     repo_context: dict[str, str] = {}
-    slackbot_streamed_answer_chars = 0
     suppress_final_delivery = False
-    suppress_legacy_delivery = False
     metadata: dict[str, Any] = {}
     raw_agent_thread_id = await pool.fetchval(
         "SELECT agent_thread_id FROM sandbox_sessions WHERE thread_key = $1",
@@ -2003,36 +1782,6 @@ async def _mark_execution_terminal(
             suppress_final_delivery = bool(
                 isinstance(steer_replacement, dict)
                 and steer_replacement.get("suppress_cancellation_delivery") is True
-            )
-            slackbot_live_delivery_failed = bool(
-                metadata.get("slackbot_live_delivery_failed")
-            )
-            raw_streamed_answer_chars = metadata.get("slackbot_streamed_answer_chars")
-            if (
-                isinstance(raw_streamed_answer_chars, int)
-                and not slackbot_live_delivery_failed
-            ):
-                slackbot_streamed_answer_chars = max(raw_streamed_answer_chars, 0)
-            if (
-                slackbot_streamed_answer_chars_override is not None
-                and not slackbot_live_delivery_failed
-            ):
-                slackbot_streamed_answer_chars = max(
-                    slackbot_streamed_answer_chars,
-                    slackbot_streamed_answer_chars_override,
-                    0,
-                )
-            result_has_text = bool(result_text.strip())
-            suppress_legacy_delivery = (
-                _has_slackbot_live_delivery(metadata)
-                and not slackbot_live_delivery_failed
-                and (
-                    not result_has_text
-                    or _slackbot_live_delivery_covers_result(
-                        result_text,
-                        slackbot_streamed_answer_chars,
-                    )
-                )
             )
         assignment_row = await pool.fetchrow(
             "SELECT harness, engine, persona_id, prompt_ref, effective_agents_md_sha256 "
@@ -2106,39 +1855,16 @@ async def _mark_execution_terminal(
     delivery_platform = _delivery_platform(
         decode_jsonb(row["delivery"], {}) if row else {}
     )
-    if delivery_platform == "dev" or suppress_legacy_delivery:
-        slackbot_agent_session_id = str(metadata.get("slackbot_agent_session_id") or "")
-        result_size = payload_size_bytes(result_text)
-        if suppress_legacy_delivery and result_size > 0 and slackbot_streamed_answer_chars <= 0:
-            log.warning(
-                "final_delivery_skipped_without_live_answer",
-                execution_id=execution_id,
-                thread_key=thread_key,
-                status=status,
-                terminal_reason=terminal_reason,
-                agent_thread_id=agent_thread_id or None,
-                slackbot_agent_session_id=slackbot_agent_session_id or None,
-                slackbot_streamed_answer_chars=slackbot_streamed_answer_chars,
-                result_size_bytes=result_size,
-                slackbot_live_delivery_failed=bool(
-                    metadata.get("slackbot_live_delivery_failed")
-                ),
-            )
+    if delivery_platform == "dev":
         log.info(
-            "final_delivery_skipped"
-            if suppress_legacy_delivery
-            else "final_delivery_skipped_dev",
+            "final_delivery_skipped_dev",
             execution_id=execution_id,
             thread_key=thread_key,
             status=status,
             terminal_reason=terminal_reason,
-            reason="slackbot_live_delivery"
-            if suppress_legacy_delivery
-            else "dev_delivery",
+            reason="dev_delivery",
             agent_thread_id=agent_thread_id or None,
-            slackbot_agent_session_id=slackbot_agent_session_id or None,
-            slackbot_streamed_answer_chars=slackbot_streamed_answer_chars,
-            result_size_bytes=result_size,
+            result_size_bytes=payload_size_bytes(result_text),
         )
         try:
             from api.workflow_engine import notify_execution_terminal
@@ -2171,34 +1897,18 @@ async def _mark_execution_terminal(
             thread_key,
             canonical_json(decode_jsonb(row["delivery"], {}) if row else {}),
         )
-        session_header = _agent_session_header(
-            persona_id=persona_id,
-            engine=engine,
-            harness=harness,
-        )
         await pool.execute(
             "UPDATE agent_final_delivery_outbox SET state = 'pending', final_payload = $1::jsonb, "
             "next_attempt_at = $2, lease_owner = NULL, lease_expires_at = NULL, updated_at = NOW() "
-            "WHERE execution_id = $3",
+            "WHERE execution_id = $3 AND state <> 'delivered'",
             canonical_json(
                 {
                     "execution_id": execution_id,
                     "thread_key": thread_key,
                     "status": status,
                     "terminal_reason": terminal_reason,
-                    "session_title": _agent_session_title(
-                        persona_id=persona_id,
-                        engine=engine,
-                        harness=harness,
-                    ),
-                    "session_header": session_header,
                     "result_text": result_text,
                     **({"error_text": error_text} if error_text else {}),
-                    **(
-                        {"slackbot_streamed_answer_chars": slackbot_streamed_answer_chars}
-                        if slackbot_streamed_answer_chars
-                        else {}
-                    ),
                     **({"agent_thread_id": agent_thread_id} if agent_thread_id else {}),
                     **({"repo_context": repo_context} if repo_context else {}),
                     **(
@@ -2222,12 +1932,6 @@ async def _mark_execution_terminal(
             "thread_key": thread_key,
             "status": status,
             "terminal_reason": terminal_reason,
-            "session_title": _agent_session_title(
-                persona_id=persona_id,
-                engine=engine,
-                harness=harness,
-            ),
-            "session_header": session_header,
             "result_text": result_text,
             **({"error_text": error_text} if error_text else {}),
             **({"repo_context": repo_context} if repo_context else {}),
@@ -2535,18 +2239,13 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
             )
             set_span_attributes(
                 span,
-                {
-                    "centaur.user_id": metadata.get("user_id"),
-                    "centaur.slackbot.live_delivery": bool(
-                        _has_slackbot_live_delivery(metadata)
-                    ),
-                },
+                {"centaur.user_id": metadata.get("user_id")},
             )
         input_text = await _execution_input_text(
             pool, execution_id, thread_key, assignment_generation
         )
         if input_text:
-            clipped_input = _clip_slackbot(input_text)
+            clipped_input = _clip_observation_text(input_text)
             set_span_attributes(
                 span,
                 {
@@ -2576,7 +2275,7 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
                 )
                 result_text = terminal["result_text"]
                 if result_text:
-                    clipped_output = _clip_slackbot(result_text)
+                    clipped_output = _clip_observation_text(result_text)
                     set_span_attributes(
                         span,
                         {
@@ -2584,7 +2283,9 @@ async def _process_execution(pool, row: dict[str, Any]) -> None:
                         },
                     )
                 if status in {"failed_permanent", "cancelled"}:
-                    mark_error(span, str(terminal_reason or terminal["error_text"] or status))
+                    mark_error(
+                        span, str(terminal_reason or terminal["error_text"] or status)
+                    )
 
 
 async def _execution_input_text(
@@ -2626,7 +2327,9 @@ async def _store_execution_span_context(
         "UPDATE agent_execution_requests "
         "SET metadata = metadata || $1::jsonb, updated_at = NOW() "
         "WHERE execution_id = $2",
-        canonical_json({_OTEL_METADATA_KEY: {_OTEL_EXECUTION_SPAN_CONTEXT_KEY: span_context}}),
+        canonical_json(
+            {_OTEL_METADATA_KEY: {_OTEL_EXECUTION_SPAN_CONTEXT_KEY: span_context}}
+        ),
         execution_id,
     )
 
@@ -2788,7 +2491,9 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
     else:
         requester_user_id = None
         if isinstance(delivery, dict):
-            requester_user_id = delivery.get("recipient_user_id") or delivery.get("user_id")
+            requester_user_id = delivery.get("recipient_user_id") or delivery.get(
+                "user_id"
+            )
         requester_user_id = requester_user_id or execution_metadata.get("user_id")
         trace_metadata = _execution_laminar_metadata(
             thread_key=thread_key,
@@ -2821,7 +2526,9 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
             inject_result = await inject_stdin(
                 session,
                 "",
-                platform=delivery.get("platform") if isinstance(delivery, dict) else None,
+                platform=delivery.get("platform")
+                if isinstance(delivery, dict)
+                else None,
                 user_id=requester_user_id,
                 trace_id=inject_span_context.get("trace_id"),
                 traceparent=current_traceparent(span),
@@ -2872,17 +2579,10 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
     await backend.attach(session)
     rt = _get_runtime(session.sandbox_id)
     observations = ExecutionObservationAccumulator()
+    chat_stream_projector = ChatStreamProjector()
     started_at = claimed_at or row.get("created_at")
     first_token_at: dt.datetime | None = None
-    slackbot_session_id = str(execution_metadata.get("slackbot_agent_session_id") or "")
-    slackbot_forward_live = True
-    slackbot_text_sent = False
-    slackbot_done = False
     harness_thread_id = ""
-    # Tolerate up to 5 consecutive harness_event failures before falling back
-    # to the outbox path; the streak resets on the next success.
-    slackbot_live_failure_streak = 0
-    slackbot_live_failure_limit = 5
 
     async def _finalize_execution(
         *,
@@ -2942,41 +2642,6 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
             record_oneshot(harness, status == "completed")
         if user_id:
             record_execution_by_user(user_id, harness, status)
-        nonlocal slackbot_session_id, slackbot_text_sent, slackbot_done
-        finalize_session_id = slackbot_session_id or str(
-            execution_metadata.get("slackbot_agent_session_id") or ""
-        )
-        if finalize_session_id and not slackbot_done and slackbot_forward_live:
-            try:
-                terminal_result_sent_to_slackbot = False
-                await slackbot_client.session_done(
-                    finalize_session_id, harness_thread_id or None
-                )
-                slackbot_done = True
-                log.info(
-                    "slackbot_live_delivery_finalized",
-                    execution_id=execution_id,
-                    thread_key=thread_key,
-                    slackbot_agent_session_id=finalize_session_id,
-                    harness_thread_id=harness_thread_id or None,
-                    streamed_answer_chars=slackbot_streamed_answer_chars,
-                    terminal_result_sent_to_slackbot=terminal_result_sent_to_slackbot,
-                    result_size_bytes=payload_size_bytes(result_text),
-                    slackbot_text_sent=slackbot_text_sent,
-                )
-            except Exception:
-                log.warning(
-                    "slackbot_live_delivery_finalize_failed",
-                    execution_id=execution_id,
-                    thread_key=thread_key,
-                    exc_info=True,
-                )
-                await _mark_slackbot_live_delivery_failed(
-                    pool,
-                    execution_id,
-                    "finalize_failed",
-                )
-                slackbot_session_id = ""
         await _mark_execution_terminal(
             pool,
             execution_id=execution_id,
@@ -2985,7 +2650,6 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
             terminal_reason=terminal_reason,
             result_text=result_text,
             error_text=error_text,
-            slackbot_streamed_answer_chars_override=slackbot_streamed_answer_chars,
         )
 
     execution_started_payload = {
@@ -3045,7 +2709,6 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
 
     turn_done_event: dict[str, Any] | None = None
     latest_terminal_result_text = ""
-    slackbot_streamed_answer_chars = 0
     pending_event: asyncio.Task | None = None
     stream = _stream_stdout(
         session,
@@ -3141,93 +2804,24 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
                 extracted = extract_result(engine, canonical_event)
                 if extracted:
                     latest_terminal_result_text = extracted
-            if slackbot_session_id and slackbot_forward_live:
-                slack_events = canonical_events or [payload]
-                for slack_event in slack_events:
-                    if harness_thread_id and isinstance(slack_event, dict):
-                        slack_event.setdefault("session_id", harness_thread_id)
-                    if isinstance(slack_event, dict):
-                        slack_event.setdefault("centaur_thread_key", thread_key)
-                        slack_event.setdefault("centaur_execution_id", execution_id)
-                        slack_event.setdefault(
-                            "centaur_assignment_generation", assignment_generation
-                        )
-                    harness_result = await slackbot_client.harness_event(
-                        slackbot_session_id, slack_event
-                    )
-                    if harness_result is None:
-                        slackbot_live_failure_streak += 1
-                        log.warning(
-                            "slackbot_live_delivery_failed",
-                            execution_id=execution_id,
-                            thread_key=thread_key,
-                            event_type=slack_event.get("type")
-                            if isinstance(slack_event, dict)
-                            else None,
-                            consecutive_failures=slackbot_live_failure_streak,
-                            failure_limit=slackbot_live_failure_limit,
-                        )
-                        if slackbot_live_failure_streak >= slackbot_live_failure_limit:
-                            log.error(
-                                "slackbot_live_delivery_disabled",
-                                execution_id=execution_id,
-                                thread_key=thread_key,
-                                consecutive_failures=slackbot_live_failure_streak,
-                            )
-                            await _mark_slackbot_live_delivery_failed(
-                                pool,
-                                execution_id,
-                                "harness_event_failed",
-                                streamed_answer_chars=slackbot_streamed_answer_chars,
-                            )
-                            with contextlib.suppress(Exception):
-                                await slackbot_client.set_status(delivery, "")
-                            slackbot_forward_live = False
-                        break
-                    if isinstance(harness_result, dict):
-                        slackbot_live_failure_streak = 0
-                        harness_thread_id = str(
-                            harness_result.get("threadId") or harness_thread_id
-                        )
-                        slackbot_done = bool(harness_result.get("done"))
-                        streamed_chars = harness_result.get("streamedAnswerChars")
-                        previous_streamed_answer_chars = slackbot_streamed_answer_chars
-                        streamed_chars = _slackbot_streamed_answer_chars(streamed_chars)
-                        if streamed_chars:
-                            slackbot_streamed_answer_chars = max(
-                                slackbot_streamed_answer_chars,
-                                streamed_chars,
-                            )
-                        if (
-                            slack_event.get("type")
-                            in {
-                                "assistant",
-                                "item.agentMessage.delta",
-                                "result",
-                                "turn.done",
-                            }
-                            and slackbot_streamed_answer_chars
-                            > previous_streamed_answer_chars
-                        ):
-                            slackbot_text_sent = True
             observations.raw_event_count += 1
-            # ``amp_raw_event`` is a HISTORICAL label preserved for API and
-            # dashboard back-compat. Despite the name, this row stores the
-            # raw stream payload from WHICHEVER harness produced the event
-            # (amp, codex, claude-code, pi-mono). To filter by actual engine
-            # use the projected observation events emitted below, or join
-            # this row's thread_key against ``agent_runtime_assignments``.
-            # If you rename this label, update at least:
-            #   - packages/api-client/test/client.test.ts (asserts "amp_raw_event")
-            #   - _VALID_STDOUT_EVENT_TYPES in services/api/api/agent.py
-            #   - any Grafana / VictoriaLogs dashboards keyed on it.
             await append_execution_event(
                 pool,
                 thread_key=thread_key,
                 execution_id=execution_id,
-                event_kind="amp_raw_event",
+                event_kind="harness_raw_event",
                 event_json=payload,
             )
+            for stream_event in canonical_events or [payload]:
+                chat_chunks = chat_stream_projector.project(stream_event)
+                for chat_chunk in chat_chunks:
+                    await append_execution_event(
+                        pool,
+                        thread_key=thread_key,
+                        execution_id=execution_id,
+                        event_kind=CHAT_STREAM_EVENT_KIND,
+                        event_json=chat_chunk,
+                    )
             for canonical_event in canonical_events:
                 projected = project_execution_observations(
                     canonical_event,

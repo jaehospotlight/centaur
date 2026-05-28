@@ -2,7 +2,14 @@ import type { Emulator } from 'emulate'
 
 type PatchedSlack = {
   url: string
+  requests: SlackPatchRequest[]
+  reset(): void
   close(): Promise<void>
+}
+
+type SlackPatchRequest = {
+  path: string
+  body: Record<string, unknown>
 }
 
 type StreamState = {
@@ -15,6 +22,7 @@ const STREAMS = new Map<string, StreamState>()
 
 export async function createPatchedSlackApi(emulator: Emulator): Promise<PatchedSlack> {
   const port = await availablePort(4013)
+  const requests: SlackPatchRequest[] = []
   const server = Bun.serve({
     port,
     async fetch(request: Request) {
@@ -33,28 +41,35 @@ export async function createPatchedSlackApi(emulator: Emulator): Promise<Patched
       if (pathname === '/api/chat.startStream') {
         // Emulate 0.5.0 does not implement Slack chat.startStream.
         // This maps streams onto chat.postMessage so E2E tests can still inspect state.
-        return startStream(emulator.url, request)
+        return startStream(emulator.url, request, requests)
       }
       if (pathname === '/api/chat.appendStream') {
         // Emulate 0.5.0 does not implement Slack chat.appendStream.
         // This accumulates chunks into the message created by chat.startStream.
-        return appendStream(emulator.url, request)
+        return appendStream(emulator.url, request, requests)
       }
       if (pathname === '/api/chat.stopStream') {
         // Emulate 0.5.0 does not implement Slack chat.stopStream.
         // This finalizes the accumulated stream text through chat.update.
-        return stopStream(emulator.url, request)
+        return stopStream(emulator.url, request, requests)
       }
-      return fetch(new URL(`${pathname}${url.search}`, emulator.url), {
-        method: request.method,
-        headers: request.headers,
-        body: request.body
-      })
+      return nativeResponse(
+        await fetch(new URL(`${pathname}${url.search}`, emulator.url), {
+          method: request.method,
+          headers: request.headers,
+          body: request.body
+        })
+      )
     }
   })
 
   return {
     url: `http://localhost:${server.port}`,
+    requests,
+    reset: () => {
+      requests.length = 0
+      STREAMS.clear()
+    },
     close: async () => {
       await server.stop()
     }
@@ -88,54 +103,72 @@ async function isPortOpen(port: number): Promise<boolean> {
   })
 }
 
-async function startStream(emulatorUrl: string, request: Request): Promise<Response> {
+async function startStream(
+  emulatorUrl: string,
+  request: Request,
+  requests: SlackPatchRequest[]
+): Promise<Response> {
   const body = await slackBody(request)
+  requests.push({ path: '/api/chat.startStream', body })
   const channel = stringField(body.channel)
   const threadTs = stringField(body.thread_ts)
-  const text = chunksText(body.chunks) || ' '
+  const text = streamPayloadText(body) || ' '
   const posted = await slackFetch(emulatorUrl, request, '/api/chat.postMessage', {
     channel,
     thread_ts: threadTs || undefined,
-    text
+    text,
+    token: body.token
   })
-  if (!posted.ok) return Response.json(posted)
+  if (!posted.ok) return jsonResponse(posted)
   const ts = stringField(posted.ts)
   STREAMS.set(streamKey(channel, ts), { channel, ts, text })
-  return Response.json({ ok: true, channel, ts })
+  return jsonResponse({ ok: true, channel, ts })
 }
 
-async function appendStream(emulatorUrl: string, request: Request): Promise<Response> {
+async function appendStream(
+  emulatorUrl: string,
+  request: Request,
+  requests: SlackPatchRequest[]
+): Promise<Response> {
   const body = await slackBody(request)
+  requests.push({ path: '/api/chat.appendStream', body })
   const channel = stringField(body.channel)
   const ts = stringField(body.ts)
   const key = streamKey(channel, ts)
   const existing = STREAMS.get(key) ?? { channel, ts, text: '' }
-  existing.text += chunksText(body.chunks)
+  existing.text += streamPayloadText(body)
   STREAMS.set(key, existing)
   await slackFetch(emulatorUrl, request, '/api/chat.update', {
     channel,
     ts,
-    text: existing.text || ' '
+    text: existing.text || ' ',
+    token: body.token
   })
-  return Response.json({ ok: true, channel, ts })
+  return jsonResponse({ ok: true, channel, ts })
 }
 
-async function stopStream(emulatorUrl: string, request: Request): Promise<Response> {
+async function stopStream(
+  emulatorUrl: string,
+  request: Request,
+  requests: SlackPatchRequest[]
+): Promise<Response> {
   const body = await slackBody(request)
+  requests.push({ path: '/api/chat.stopStream', body })
   const channel = stringField(body.channel)
   const ts = stringField(body.ts)
   const key = streamKey(channel, ts)
   const existing = STREAMS.get(key) ?? { channel, ts, text: '' }
-  const finalText = [existing.text, blocksText(body.blocks), chunksText(body.chunks)]
+  const finalText = [existing.text, blocksText(body.blocks), streamPayloadText(body)]
     .filter(text => text.trim())
     .join('\n')
   await slackFetch(emulatorUrl, request, '/api/chat.update', {
     channel,
     ts,
-    text: finalText || existing.text || ' '
+    text: finalText || existing.text || ' ',
+    token: body.token
   })
   STREAMS.delete(key)
-  return Response.json({ ok: true, channel, ts })
+  return jsonResponse({ ok: true, channel, ts })
 }
 
 async function slackBody(request: Request): Promise<Record<string, unknown>> {
@@ -159,16 +192,43 @@ async function slackFetch(
   const response = await fetch(new URL(path, emulatorUrl), {
     method: 'POST',
     headers: {
-      authorization: original.headers.get('authorization') ?? '',
+      authorization: original.headers.get('authorization') ?? authorizationFromToken(body.token),
       'content-type': 'application/json'
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(withoutToken(body))
   })
   return (await response.json()) as Record<string, unknown>
 }
 
-function slackOk(): Response {
-  return Response.json({ ok: true })
+function slackOk(): Promise<Response> {
+  return jsonResponse({ ok: true })
+}
+
+async function jsonResponse(body: Record<string, unknown>, init?: ResponseInit): Promise<Response> {
+  const ResponseCtor = await nativeResponseCtor()
+  return new ResponseCtor(JSON.stringify(body), {
+    ...init,
+    headers: {
+      'content-type': 'application/json',
+      ...Object.fromEntries(new Headers(init?.headers).entries())
+    }
+  })
+}
+
+async function nativeResponse(response: Response): Promise<Response> {
+  const ResponseCtor = response.constructor as typeof Response
+  return new ResponseCtor(await response.arrayBuffer(), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers
+  })
+}
+
+let responseCtorPromise: Promise<typeof Response> | undefined
+
+async function nativeResponseCtor(): Promise<typeof Response> {
+  responseCtorPromise ??= fetch('data:,').then(response => response.constructor as typeof Response)
+  return responseCtorPromise
 }
 
 function streamKey(channel: string, ts: string): string {
@@ -179,6 +239,16 @@ function stringField(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+function authorizationFromToken(value: unknown): string {
+  const token = stringField(value)
+  return token ? `Bearer ${token}` : ''
+}
+
+function withoutToken(body: Record<string, unknown>): Record<string, unknown> {
+  const { token: _token, ...rest } = body
+  return rest
+}
+
 function parseMaybeJson(value: string): unknown {
   const trimmed = value.trim()
   if (!trimmed || !['[', '{'].includes(trimmed[0] ?? '')) return value
@@ -187,6 +257,10 @@ function parseMaybeJson(value: string): unknown {
   } catch {
     return value
   }
+}
+
+function streamPayloadText(body: Record<string, unknown>): string {
+  return [stringField(body.markdown_text), chunksText(body.chunks)].filter(Boolean).join('\n')
 }
 
 function chunksText(value: unknown): string {

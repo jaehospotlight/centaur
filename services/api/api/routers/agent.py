@@ -17,6 +17,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from pydantic import BaseModel
 
+from api.chat_stream import CHAT_STREAM_EVENT_KIND
 from api.agent import (
     get_status,
     stop_session,
@@ -68,7 +69,9 @@ def _enforce_sandbox_thread_scope(request: Request, thread_key: str) -> None:
         return
     allowed = claims.get("thread_key")
     if not sandbox_thread_in_scope(allowed, thread_key):
-        raise HTTPException(status_code=403, detail="Sandbox token is scoped to a different thread")
+        raise HTTPException(
+            status_code=403, detail="Sandbox token is scoped to a different thread"
+        )
 
 
 # ── Known harness flags ─────────────────────────────────────────────────────
@@ -84,7 +87,11 @@ _HARNESS_FLAGS: dict[str, str] = {
 
 _KNOWN_FLAGS = {
     *_HARNESS_FLAGS,
-    "opus", "sonnet", "haiku", "engine", "model",
+    "opus",
+    "sonnet",
+    "haiku",
+    "engine",
+    "model",
 }
 
 
@@ -114,10 +121,17 @@ def parse_harness_from_message(text: str) -> tuple[str | None, str, bool]:
 
     # 3. Strip legacy engine/model flags (no harness effect)
     cleaned = re.sub(
-        r"(^|\s)--(engine|model)\s+[A-Za-z0-9._-]+(?=\s|$)", " ", cleaned, flags=re.IGNORECASE
+        r"(^|\s)--(engine|model)\s+[A-Za-z0-9._-]+(?=\s|$)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"(^|\s)--(opus|sonnet|haiku)(?=\s|$)", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\bmodel\s*=\s*[A-Za-z0-9._-]+\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"(^|\s)--(opus|sonnet|haiku)(?=\s|$)", " ", cleaned, flags=re.IGNORECASE
+    )
+    cleaned = re.sub(
+        r"\bmodel\s*=\s*[A-Za-z0-9._-]+\b", "", cleaned, flags=re.IGNORECASE
+    )
 
     # 4. Generic --flag → persona/harness name (any unknown flag)
     generic_re = re.compile(r"(^|\s)--([a-z][a-z0-9-]*)(?=\s|$)", re.IGNORECASE)
@@ -178,7 +192,9 @@ class SteerExecutionRequest(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-def _normalize_message_event(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _normalize_message_event(
+    body: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     if body.get("user_id"):
         metadata = {**metadata, "user_id": body.get("user_id")}
@@ -407,7 +423,9 @@ async def post_messages(request: Request):
     if assignment_generation is None:
         raise HTTPException(status_code=422, detail="assignment_generation is required")
 
-    raw_messages = body.get("messages") if isinstance(body.get("messages"), list) else None
+    raw_messages = (
+        body.get("messages") if isinstance(body.get("messages"), list) else None
+    )
     if raw_messages is None:
         raw_messages = [body]
 
@@ -422,7 +440,9 @@ async def post_messages(request: Request):
             **body,
             **msg,
             "thread_key": thread_key,
-            "assignment_generation": msg.get("assignment_generation", assignment_generation),
+            "assignment_generation": msg.get(
+                "assignment_generation", assignment_generation
+            ),
         }
         event, metadata = _normalize_message_event(normalized)
         message_id = str(msg.get("message_id") or f"msg-{uuid.uuid4().hex[:16]}")
@@ -440,12 +460,19 @@ async def post_messages(request: Request):
         except ControlPlaneError as exc:
             return _json_error(exc.code, exc.message, exc.status_code)
 
-    log.info("message_buffered", thread_key=thread_key, message_count=len(raw_messages), inserted=inserted)
+    log.info(
+        "message_buffered",
+        thread_key=thread_key,
+        message_count=len(raw_messages),
+        inserted=inserted,
+    )
     return {"ok": True, "inserted": inserted, "message_ids": stored}
 
 
 @router.get("/messages", dependencies=[Depends(require_scope("agent:execute"))])
-async def get_messages(request: Request, thread_key: str, cursor: str | None = None, limit: int = 50):
+async def get_messages(
+    request: Request, thread_key: str, cursor: str | None = None, limit: int = 50
+):
     """Paginated chat_messages for a thread."""
     _enforce_sandbox_thread_scope(request, thread_key)
     pool = request.app.state.db_pool
@@ -484,14 +511,18 @@ async def get_messages(request: Request, thread_key: str, cursor: str | None = N
         meta = row["metadata"]
         if isinstance(meta, str):
             meta = _json.loads(meta)
-        messages.append({
-            "id": row["id"],
-            "role": row["role"],
-            "parts": parts,
-            "user_id": row["user_id"],
-            "metadata": meta,
-            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-        })
+        messages.append(
+            {
+                "id": row["id"],
+                "role": row["role"],
+                "parts": parts,
+                "user_id": row["user_id"],
+                "metadata": meta,
+                "created_at": row["created_at"].isoformat()
+                if row["created_at"]
+                else None,
+            }
+        )
 
     return {
         "messages": messages,
@@ -542,13 +573,15 @@ async def status(request: Request, key: str):
             last_id = session_row["last_delivered_id"]
             if last_id is None:
                 count_row = await pool.fetchrow(
-                    "SELECT COUNT(*) as cnt FROM chat_messages WHERE thread_key = $1", key
+                    "SELECT COUNT(*) as cnt FROM chat_messages WHERE thread_key = $1",
+                    key,
                 )
             else:
                 count_row = await pool.fetchrow(
                     "SELECT COUNT(*) as cnt FROM chat_messages WHERE thread_key = $1 "
                     "AND created_at > (SELECT created_at FROM chat_messages WHERE id = $2)",
-                    key, last_id,
+                    key,
+                    last_id,
                 )
             result["pending_messages"] = count_row["cnt"] if count_row else 0
         else:
@@ -583,7 +616,9 @@ async def runtime(request: Request, key: str):
     persona_id = active["persona_id"] if active else None
     return {
         "thread_key": key,
-        "assignment_generation": int(active["assignment_generation"]) if active else None,
+        "assignment_generation": int(active["assignment_generation"])
+        if active
+        else None,
         "runtime_id": active["runtime_id"] if active else None,
         "harness": active["harness"] if active else None,
         "engine": active["engine"] if active else None,
@@ -594,7 +629,9 @@ async def runtime(request: Request, key: str):
     }
 
 
-@router.get("/executions/{execution_id}", dependencies=[Depends(require_scope("agent:execute"))])
+@router.get(
+    "/executions/{execution_id}", dependencies=[Depends(require_scope("agent:execute"))]
+)
 async def execution_status(request: Request, execution_id: str):
     pool = request.app.state.db_pool
     result = await get_execution(pool, execution_id)
@@ -604,7 +641,10 @@ async def execution_status(request: Request, execution_id: str):
     return result
 
 
-@router.get("/threads/{thread_key}/executions", dependencies=[Depends(require_scope("agent:execute"))])
+@router.get(
+    "/threads/{thread_key}/executions",
+    dependencies=[Depends(require_scope("agent:execute"))],
+)
 async def thread_executions(request: Request, thread_key: str, limit: int = 20):
     _enforce_sandbox_thread_scope(request, thread_key)
     pool = request.app.state.db_pool
@@ -614,7 +654,10 @@ async def thread_executions(request: Request, thread_key: str, limit: int = 20):
     }
 
 
-@router.get("/threads/{thread_key}/events", dependencies=[Depends(require_scope("agent:execute"))])
+@router.get(
+    "/threads/{thread_key}/events",
+    dependencies=[Depends(require_scope("agent:execute"))],
+)
 async def thread_events(
     request: Request,
     thread_key: str,
@@ -654,7 +697,10 @@ async def thread_events(
             if not rows:
                 if execution_id:
                     snapshot = await get_execution_terminal_snapshot(pool, execution_id)
-                    if snapshot and snapshot["event_json"].get("thread_key") == thread_key:
+                    if (
+                        snapshot
+                        and snapshot["event_json"].get("thread_key") == thread_key
+                    ):
                         if emitted_rows:
                             return
                         payload = snapshot["event_json"]
@@ -690,12 +736,162 @@ async def thread_events(
     )
 
 
+@router.get(
+    "/executions/{execution_id}/chat-stream",
+    dependencies=[Depends(require_scope("agent:execute"))],
+)
+async def execution_chat_stream(
+    request: Request,
+    execution_id: str,
+    after_event_id: int = 0,
+    poll_ms: int = 500,
+):
+    """Stream Chat SDK-compatible chunks for one execution.
+
+    This endpoint deliberately hides harness/raw event shapes. Consumers can
+    pass each event payload directly to Chat SDK. The stream closes when the
+    execution reaches a terminal state and no more chat chunks remain.
+    """
+    pool = request.app.state.db_pool
+    execution = await get_execution(pool, execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="execution not found")
+    thread_key = execution["thread_key"]
+    _enforce_sandbox_thread_scope(request, thread_key)
+    poll_s = max(0.05, min(poll_ms / 1000.0, 5.0))
+
+    async def _iter_events():
+        cursor = max(0, after_event_id)
+        while True:
+            if await request.is_disconnected():
+                break
+
+            rows = await pool.fetch(
+                "SELECT event_id, event_kind, event_json FROM agent_execution_events "
+                "WHERE thread_key = $1 AND execution_id = $2 AND event_id > $3 "
+                "AND event_kind = $4 "
+                "ORDER BY event_id ASC LIMIT 200",
+                thread_key,
+                execution_id,
+                cursor,
+                CHAT_STREAM_EVENT_KIND,
+            )
+
+            if not rows:
+                if await get_execution_terminal_snapshot(pool, execution_id):
+                    return
+                await asyncio.sleep(poll_s)
+                continue
+
+            for row in rows:
+                cursor = int(row["event_id"])
+                payload = row["event_json"]
+                if isinstance(payload, str):
+                    try:
+                        payload = _json.loads(payload)
+                    except Exception:
+                        payload = {"type": "unknown", "raw": payload}
+                event_kind = str(row["event_kind"])
+                yield ServerSentEvent(
+                    id=str(cursor),
+                    event=event_kind,
+                    data=_json.dumps(payload, separators=(",", ":")),
+                )
+
+    return EventSourceResponse(
+        _iter_events(),
+        ping_message_factory=lambda: ServerSentEvent(comment="keepalive"),
+        sep="\n",
+    )
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = _json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _chat_sdk_stream_context_payload(
+    *,
+    execution_id: str,
+    thread_key: str,
+    delivery: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    platform = str(delivery.get("platform") or metadata.get("platform") or "")
+    channel = delivery.get("channel")
+    thread_ts = delivery.get("thread_ts")
+    thread_id = None
+    if platform == "slack" and isinstance(channel, str) and channel:
+        thread_id = (
+            f"slack:{channel}:{thread_ts}"
+            if isinstance(thread_ts, str)
+            else f"slack:{channel}:"
+        )
+
+    stream_options: dict[str, Any] = {}
+    recipient_user_id = delivery.get("recipient_user_id") or delivery.get("user_id")
+    recipient_team_id = delivery.get("recipient_team_id") or delivery.get("team_id")
+    task_display_mode = delivery.get("task_display_mode")
+    stop_blocks = delivery.get("stop_blocks")
+
+    if isinstance(recipient_user_id, str) and recipient_user_id:
+        stream_options["recipientUserId"] = recipient_user_id
+    if isinstance(recipient_team_id, str) and recipient_team_id:
+        stream_options["recipientTeamId"] = recipient_team_id
+    if task_display_mode in {"timeline", "plan"}:
+        stream_options["taskDisplayMode"] = task_display_mode
+    if isinstance(stop_blocks, list):
+        stream_options["stopBlocks"] = stop_blocks
+
+    return {
+        "execution_id": execution_id,
+        "thread_key": thread_key,
+        "platform": platform or None,
+        "thread_id": thread_id,
+        "stream_options": stream_options,
+    }
+
+
+@router.get(
+    "/executions/{execution_id}/chat-stream/context",
+    dependencies=[Depends(require_scope("agent:execute"))],
+)
+async def execution_chat_stream_context(request: Request, execution_id: str):
+    """Return Chat SDK-ready thread id and stream options for one execution."""
+    pool = request.app.state.db_pool
+    row = await pool.fetchrow(
+        "SELECT thread_key, delivery, metadata FROM agent_execution_requests "
+        "WHERE execution_id = $1",
+        execution_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="execution not found")
+    thread_key = str(row["thread_key"])
+    _enforce_sandbox_thread_scope(request, thread_key)
+    return _chat_sdk_stream_context_payload(
+        execution_id=execution_id,
+        thread_key=thread_key,
+        delivery=_json_dict(row["delivery"]),
+        metadata=_json_dict(row["metadata"]),
+    )
+
+
 class ReleaseRequest(BaseModel):
     release_id: str | None = None
     cancel_inflight: bool = False
 
 
-@router.post("/threads/{thread_key}/release", dependencies=[Depends(require_scope("agent:execute"))])
+@router.post(
+    "/threads/{thread_key}/release",
+    dependencies=[Depends(require_scope("agent:execute"))],
+)
 async def release_thread(request: Request, thread_key: str, body: ReleaseRequest):
     _enforce_sandbox_thread_scope(request, thread_key)
     pool = request.app.state.db_pool
@@ -711,7 +907,10 @@ async def release_thread(request: Request, thread_key: str, body: ReleaseRequest
         return _json_error(exc.code, exc.message, exc.status_code)
 
 
-@router.post("/executions/{execution_id}/cancel", dependencies=[Depends(require_scope("agent:execute"))])
+@router.post(
+    "/executions/{execution_id}/cancel",
+    dependencies=[Depends(require_scope("agent:execute"))],
+)
 async def execution_cancel(request: Request, execution_id: str):
     pool = request.app.state.db_pool
     # Resolve the execution's thread first so a sandbox token cannot cancel an
@@ -732,7 +931,10 @@ async def execution_cancel(request: Request, execution_id: str):
     return result
 
 
-@router.post("/executions/{execution_id}/steer", dependencies=[Depends(require_scope("agent:execute"))])
+@router.post(
+    "/executions/{execution_id}/steer",
+    dependencies=[Depends(require_scope("agent:execute"))],
+)
 async def steer_execution_endpoint(execution_id: str, request: Request):
     """Steer a running execution with a new user message.
 
@@ -772,11 +974,15 @@ class ClaimFinalDeliveryRequest(BaseModel):
     platform: str | None = None
 
 
-@router.post("/final-deliveries/claim", dependencies=[Depends(require_scope("agent:execute"))])
+@router.post(
+    "/final-deliveries/claim", dependencies=[Depends(require_scope("agent:execute"))]
+)
 async def claim_final_delivery(request: Request, body: ClaimFinalDeliveryRequest):
     claims = get_sandbox_claims(request)
     if claims is not None:
-        raise HTTPException(status_code=403, detail="Sandbox tokens cannot claim final deliveries")
+        raise HTTPException(
+            status_code=403, detail="Sandbox tokens cannot claim final deliveries"
+        )
     pool = request.app.state.db_pool
     limit = max(1, min(body.limit, 20))
     lease_seconds = max(15, min(body.lease_seconds, 600))
@@ -836,7 +1042,9 @@ async def claim_final_delivery(request: Request, body: ClaimFinalDeliveryRequest
             trace_id=row["trace_id"],
             consumer_id=body.consumer_id,
             attempt_count=int(row["attempt_count"]),
-            platform=(delivery or {}).get("platform") if isinstance(delivery, dict) else None,
+            platform=(delivery or {}).get("platform")
+            if isinstance(delivery, dict)
+            else None,
         )
     return {"deliveries": deliveries}
 
@@ -960,7 +1168,10 @@ async def mark_final_failed(
         error_class=body.error_class,
     )
     if active_lease_required and not body.consumer_id:
-        raise HTTPException(status_code=409, detail="non-retryable delivery failures require an active lease")
+        raise HTTPException(
+            status_code=409,
+            detail="non-retryable delivery failures require an active lease",
+        )
     owner_check = ""
     params: list[Any] = [execution_id, last_error]
     if body.consumer_id:
@@ -1044,7 +1255,9 @@ async def list_threads(request: Request, limit: int = 200):
     """List threads with summary info."""
     claims = get_sandbox_claims(request)
     if claims is not None:
-        raise HTTPException(status_code=403, detail="Sandbox tokens cannot list all threads")
+        raise HTTPException(
+            status_code=403, detail="Sandbox tokens cannot list all threads"
+        )
     pool = request.app.state.db_pool
     limit = min(limit, 500)
     rows = await pool.fetch(
@@ -1107,17 +1320,23 @@ async def list_threads(request: Request, limit: int = 200):
 
     threads = []
     for row in rows:
-        threads.append({
-            "slack_thread_key": row["thread_key"],
-            "harness": row["harness"],
-            "state": row["state"],
-            "created_at": row["created_at"].timestamp() if row["created_at"] else None,
-            "last_activity": row["last_activity"].timestamp() if row["last_activity"] else None,
-            "turn_count": row["message_count"],
-            "first_message": row["first_user_text"],
-            "last_user_message": row["last_user_text"],
-            "thread_name": row["thread_name"],
-        })
+        threads.append(
+            {
+                "slack_thread_key": row["thread_key"],
+                "harness": row["harness"],
+                "state": row["state"],
+                "created_at": row["created_at"].timestamp()
+                if row["created_at"]
+                else None,
+                "last_activity": row["last_activity"].timestamp()
+                if row["last_activity"]
+                else None,
+                "turn_count": row["message_count"],
+                "first_message": row["first_user_text"],
+                "last_user_message": row["last_user_text"],
+                "thread_name": row["thread_name"],
+            }
+        )
 
     return {"threads": threads}
 
@@ -1172,7 +1391,9 @@ async def thread_detail(request: Request, key: str):
         "harness": row["harness"],
         "state": row["state"],
         "created_at": row["created_at"].timestamp() if row["created_at"] else None,
-        "last_activity": row["last_activity"].timestamp() if row["last_activity"] else None,
+        "last_activity": row["last_activity"].timestamp()
+        if row["last_activity"]
+        else None,
         "message_count": row["message_count"],
         "last_user_message": _extract_text(row["last_user_parts"]),
         "thread_name": row["thread_name"],
@@ -1235,7 +1456,7 @@ async def thread_detail(request: Request, key: str):
                     c = tu.get("cost_usd")
                     if isinstance(c, (int, float)):
                         total_cost += c
-                    for m in (tu.get("models") or []):
+                    for m in tu.get("models") or []:
                         if isinstance(m, str):
                             models.add(m)
 
@@ -1243,7 +1464,10 @@ async def thread_detail(request: Request, key: str):
             for part in parts:
                 if not isinstance(part, dict):
                     continue
-                if part.get("type") == "data-user-message" or part.get("type") == "data-context-message":
+                if (
+                    part.get("type") == "data-user-message"
+                    or part.get("type") == "data-context-message"
+                ):
                     data = part.get("data") or {}
                     uid = data.get("user_id")
                     if uid and isinstance(uid, str) and uid.strip():
@@ -1251,7 +1475,9 @@ async def thread_detail(request: Request, key: str):
                         if uid not in participants:
                             participants[uid] = {
                                 "id": uid,
-                                "name": data.get("user_name") or data.get("name") or uid,
+                                "name": data.get("user_name")
+                                or data.get("name")
+                                or uid,
                                 "username": data.get("username"),
                                 "avatar_url": data.get("avatar_url"),
                             }
@@ -1270,18 +1496,22 @@ async def thread_detail(request: Request, key: str):
                         c = tu.get("cost_usd")
                         if isinstance(c, (int, float)):
                             total_cost += c
-                        for m in (tu.get("models") or []):
+                        for m in tu.get("models") or []:
                             if isinstance(m, str):
                                 models.add(m)
 
     detail["participants"] = list(participants.values())
-    detail["token_usage"] = {
-        "total_tokens": total_tokens,
-        "input_tokens": total_input or None,
-        "output_tokens": total_output or None,
-        "cost_usd": total_cost if total_cost > 0 else None,
-        "models": sorted(models),
-    } if has_usage else None
+    detail["token_usage"] = (
+        {
+            "total_tokens": total_tokens,
+            "input_tokens": total_input or None,
+            "output_tokens": total_output or None,
+            "cost_usd": total_cost if total_cost > 0 else None,
+            "models": sorted(models),
+        }
+        if has_usage
+        else None
+    )
 
     return detail
 
@@ -1289,13 +1519,29 @@ async def thread_detail(request: Request, key: str):
 # ── Internal DB query (read-only) ───────────────────────────────────────────
 
 _ALLOWED_TABLES = {
-    "chat_messages", "sandbox_sessions", "attachments", "api_keys",
-    "agent_runtime_assignments", "agent_message_requests",
-    "agent_execution_requests", "agent_execution_events",
-    "agent_final_delivery_outbox", "agent_spawn_requests",
+    "chat_messages",
+    "sandbox_sessions",
+    "attachments",
+    "api_keys",
+    "agent_runtime_assignments",
+    "agent_message_requests",
+    "agent_execution_requests",
+    "agent_execution_events",
+    "agent_final_delivery_outbox",
+    "agent_spawn_requests",
     "agent_release_requests",
 }
-_BLOCKED_PATTERNS = {"drop ", "delete ", "insert ", "update ", "alter ", "create ", "truncate ", "grant ", "revoke "}
+_BLOCKED_PATTERNS = {
+    "drop ",
+    "delete ",
+    "insert ",
+    "update ",
+    "alter ",
+    "create ",
+    "truncate ",
+    "grant ",
+    "revoke ",
+}
 
 
 @router.post("/query", dependencies=[Depends(verify_api_key)])
@@ -1306,7 +1552,9 @@ async def query_db(request: Request):
     """
     claims = get_sandbox_claims(request)
     if claims is not None:
-        raise HTTPException(status_code=403, detail="Sandbox tokens cannot run direct queries")
+        raise HTTPException(
+            status_code=403, detail="Sandbox tokens cannot run direct queries"
+        )
     body = await request.json()
     sql = (body.get("sql") or "").strip()
     if not sql:
@@ -1317,7 +1565,9 @@ async def query_db(request: Request):
         raise HTTPException(status_code=400, detail="Only SELECT queries are allowed")
     for pat in _BLOCKED_PATTERNS:
         if pat in sql_lower:
-            raise HTTPException(status_code=400, detail=f"Query contains blocked keyword: {pat.strip()}")
+            raise HTTPException(
+                status_code=400, detail=f"Query contains blocked keyword: {pat.strip()}"
+            )
 
     pool = request.app.state.db_pool
     try:

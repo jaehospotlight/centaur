@@ -2,11 +2,9 @@ import { createHmac } from 'node:crypto'
 import { connect } from 'node:net'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import { createEmulator, type Emulator } from 'emulate'
-import { createSlackWebClient } from '../../src/slack/installations'
-import { pollFinalDeliveriesOnce } from '../../src/centaur/final-delivery'
 import { createPatchedSlackApi } from './slack-patches'
 
-const IMPLEMENTATION = 'custom-web-api-wrapper'
+const IMPLEMENTATION = 'vercel-chat-sdk-slack-adapter'
 const BOT_TOKEN = 'xoxb-centaur-emulate'
 const USER_TOKEN = 'xoxp-centaur-user'
 const API_KEY = 'aiv2_slackbot_emulate'
@@ -36,19 +34,11 @@ type WorkflowRunRequest = {
   }
 }
 
-type FakeDelivery = {
-  execution_id: string
-  thread_key: string
-  delivery: Record<string, unknown>
-  final_payload: Record<string, unknown>
-}
-
 let emulator: Emulator
 let patchedSlack: Awaited<ReturnType<typeof createPatchedSlackApi>>
 let centaur: Awaited<ReturnType<typeof createFakeCentaur>>
 let app: Awaited<typeof import('../../src/index')>['app']
-let slack: ReturnType<typeof createSlackWebClient>
-let botSlack: ReturnType<typeof createSlackWebClient>
+let slackApiUrl: string
 
 beforeAll(async () => {
   const slackPort = await preferredPort(4003)
@@ -77,9 +67,7 @@ beforeAll(async () => {
   })
   patchedSlack = await createPatchedSlackApi(emulator)
   centaur = await createFakeCentaur()
-  const slackApiUrl = `${patchedSlack.url}/api/`
-  slack = createSlackWebClient(USER_TOKEN, { slackApiUrl })
-  botSlack = createSlackWebClient(BOT_TOKEN, { slackApiUrl })
+  slackApiUrl = `${patchedSlack.url}/api/`
 
   Object.assign(process.env, {
     NODE_ENV: 'test',
@@ -98,6 +86,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   emulator.reset()
+  patchedSlack.reset()
   centaur.reset()
 })
 
@@ -128,12 +117,11 @@ describe(`Slack Emulate E2E (${IMPLEMENTATION})`, () => {
     )
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({ ok: true })
+    expect(await response.text()).toBe('ok')
     await Promise.all(waits)
 
     const run = onlyRun()
     expect(run.workflow_name).toBe('slack_thread_turn')
-    expect('eager_start' in run).toBe(false)
     expect(run.trigger_key).toBe(`slack:${TEAM_ID}:${CHANNEL_ID}:${parent.ts}`)
     expect(run.input.thread_key).toBe(`slack:${TEAM_ID}:${CHANNEL_ID}:${parent.ts}`)
     expect(run.input.message_id).toBe(`slack:${TEAM_ID}:${CHANNEL_ID}:${parent.ts}`)
@@ -292,17 +280,24 @@ describe(`Slack Emulate E2E (${IMPLEMENTATION})`, () => {
       waitUntilContext(firstWaits)
     )
     await Promise.all(firstWaits)
-    const second = await app.request('/api/webhooks/slack', payload)
+    const secondWaits: Promise<unknown>[] = []
+    const second = await app.request(
+      '/api/webhooks/slack',
+      payload,
+      {},
+      waitUntilContext(secondWaits)
+    )
+    await Promise.all(secondWaits)
 
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
-    expect(await second.json()).toEqual({ ok: true, duplicate: true })
+    expect(await second.text()).toBe('ok')
     expect(centaur.workflowRuns).toHaveLength(1)
   })
 
   it('records reactions in Emulate without handing reaction events to Centaur', async () => {
     const message = await postUserMessage('Please react to this')
-    const reaction = await slack.reactions.add({
+    const reaction = await slackCall(USER_TOKEN, 'reactions.add', {
       channel: CHANNEL_ID,
       timestamp: message.ts,
       name: 'eyes'
@@ -324,123 +319,80 @@ describe(`Slack Emulate E2E (${IMPLEMENTATION})`, () => {
 
     expect(response.status).toBe(200)
     expect(centaur.workflowRuns).toHaveLength(0)
-    const reactions = await slack.reactions.get({ channel: CHANNEL_ID, timestamp: message.ts })
+    const reactions = await slackCall(USER_TOKEN, 'reactions.get', {
+      channel: CHANNEL_ID,
+      timestamp: message.ts
+    })
     expect(reactions.message?.reactions?.[0]).toMatchObject({ name: 'eyes', count: 1 })
   })
 
-  it('posts, updates, deletes, and reads Slack messages through Slackbot API routes', async () => {
-    const post = await app.request('/api/slack/messages', {
-      method: 'POST',
-      headers: apiHeaders(),
-      body: JSON.stringify({ channel: CHANNEL_ID, text: 'route-created' })
-    })
-    expect(post.status).toBe(200)
-    const posted = (await post.json()) as { ts: string }
-
-    const update = await app.request('/api/slack/messages', {
-      method: 'PATCH',
-      headers: apiHeaders(),
-      body: JSON.stringify({ channel: CHANNEL_ID, ts: posted.ts, text: 'route-updated' })
-    })
-    expect(update.status).toBe(200)
-    expect(await channelText()).toContain('route-updated')
-
-    const replies = await app.request(
-      `/api/slack/conversations/replies?channel=${CHANNEL_ID}&ts=${posted.ts}`,
-      { headers: apiHeaders() }
+  it('streams API-normalized Chat SDK chunks through Slack stream endpoints into Emulate history', async () => {
+    const parent = await postUserMessage(`<@${BOT_USER_ID}> render all rich chunks`)
+    const waits: Promise<unknown>[] = []
+    const response = await app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-emulate-chat-sdk-stream',
+        event: {
+          type: 'app_mention',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          ts: parent.ts,
+          text: `<@${BOT_USER_ID}> render all rich chunks`
+        }
+      }),
+      {},
+      waitUntilContext(waits)
     )
-    expect(replies.status).toBe(200)
-    expect(
-      ((await replies.json()) as { messages: Array<{ text: string }> }).messages[0]?.text
-    ).toBe('route-updated')
 
-    const deleted = await app.request('/api/slack/messages', {
-      method: 'DELETE',
-      headers: apiHeaders(),
-      body: JSON.stringify({ channel: CHANNEL_ID, ts: posted.ts })
-    })
-    expect(deleted.status).toBe(200)
-    expect(await channelText()).not.toContain('route-updated')
-  })
+    expect(response.status).toBe(200)
+    await Promise.all(waits)
 
-  it('renders agent sessions through patched Slack stream endpoints into Emulate history', async () => {
-    const parent = await postUserMessage('Start session here')
-    const opened = await app.request('/api/slack/agent-sessions', {
-      method: 'POST',
-      headers: apiHeaders(),
-      body: JSON.stringify({
-        channel: CHANNEL_ID,
-        parent_ts: parent.ts,
-        recipient_team_id: TEAM_ID,
-        recipient_user_id: USER_ID,
-        title: 'Centaur execution',
-        header: 'base · codex'
-      })
-    })
-    expect(opened.status).toBe(200)
-    const { session_id: sessionId } = (await opened.json()) as { session_id: string }
+    expect(centaur.chatStreams).toEqual(['exe-wfr-1'])
+    expect(centaur.delivered).toEqual(['exe-wfr-1'])
 
-    await app.request(`/api/slack/agent-sessions/${sessionId}/step`, {
-      method: 'POST',
-      headers: apiHeaders(),
-      body: JSON.stringify({
-        id: 'cmd-1',
-        title: 'Command execution',
-        status: 'in_progress',
-        details: 'call demo ping'
-      })
-    })
-    await app.request(`/api/slack/agent-sessions/${sessionId}/text`, {
-      method: 'POST',
-      headers: apiHeaders(),
-      body: JSON.stringify({ markdown: 'Final answer from stream.' })
-    })
-    const done = await app.request(`/api/slack/agent-sessions/${sessionId}/done`, {
-      method: 'POST',
-      headers: apiHeaders(),
-      body: JSON.stringify({})
-    })
-    expect(done.status).toBe(200)
+    const streamBodies = patchedSlack.requests
+      .filter(request =>
+        ['/api/chat.startStream', '/api/chat.appendStream', '/api/chat.stopStream'].includes(
+          request.path
+        )
+      )
+      .map(request => request.body)
+    const chunkBodies = streamBodies.flatMap(body =>
+      Array.isArray(body.chunks) ? (body.chunks as Array<Record<string, unknown>>) : []
+    )
+    const structuredChunks = chunkBodies.filter(chunk => chunk.type !== 'markdown_text')
+    expect(structuredChunks.map(chunk => chunk.type)).toEqual([
+      'plan_update',
+      'task_update',
+      'task_update',
+      'task_update',
+      'task_update'
+    ])
+    const markdownText = chunkBodies
+      .filter(chunk => chunk.type === 'markdown_text')
+      .map(chunk => String(chunk.text ?? ''))
+      .join('\n')
+    expect(markdownText).toContain(fakeMarkdownOne())
+    expect(markdownText).toContain(fakeMarkdownTwo())
+
+    const stopBody = patchedSlack.requests.find(
+      request => request.path === '/api/chat.stopStream'
+    )?.body
+    expect(stopBody?.blocks).toEqual(fakeStopBlocks())
 
     const text = await threadText(parent.ts)
+    expect(text).toContain('Execution plan')
+    expect(text).toContain('Thinking')
     expect(text).toContain('Command execution')
-    expect(text).toContain('Final answer from stream.')
-  })
-
-  it('polls final-delivery fallback and posts the completed result into Slack', async () => {
-    const parent = await postUserMessage('Fallback target')
-    centaur.deliveries.push({
-      execution_id: 'exe-emulate-final',
-      thread_key: `slack:${TEAM_ID}:${CHANNEL_ID}:${parent.ts}`,
-      delivery: {
-        platform: 'slack',
-        channel: CHANNEL_ID,
-        thread_ts: parent.ts,
-        recipient_user_id: USER_ID,
-        team_id: TEAM_ID
-      },
-      final_payload: {
-        session_title: 'Recovered execution',
-        result_text: 'Fallback result delivered.'
-      }
-    })
-
-    await pollFinalDeliveriesOnce(
-      {
-        CENTAUR_API_URL: centaur.url,
-        SLACKBOT_API_KEY: API_KEY,
-        CENTAUR_API_KEY: undefined
-      } as any,
-      botSlack
-    )
-
-    expect(centaur.delivered).toContain('exe-emulate-final')
-    expect(await threadText(parent.ts)).toContain('Fallback result delivered.')
+    expect(text).toContain('[the run](https://example.com/run/123)')
+    expect(text).toContain('Final answer from Chat SDK.')
+    expect(text).toContain('Block Kit footer')
   })
 })
 
 async function postUserMessage(text: string, threadTs?: string): Promise<{ ts: string }> {
-  const response = await slack.chat.postMessage({
+  const response = await slackCall(USER_TOKEN, 'chat.postMessage', {
     channel: CHANNEL_ID,
     thread_ts: threadTs,
     text
@@ -450,7 +402,7 @@ async function postUserMessage(text: string, threadTs?: string): Promise<{ ts: s
 }
 
 async function postBotMessage(text: string, threadTs?: string): Promise<{ ts: string }> {
-  const response = await botSlack.chat.postMessage({
+  const response = await slackCall(BOT_TOKEN, 'chat.postMessage', {
     channel: CHANNEL_ID,
     thread_ts: threadTs,
     text
@@ -459,18 +411,41 @@ async function postBotMessage(text: string, threadTs?: string): Promise<{ ts: st
   return { ts: String(response.ts) }
 }
 
-async function channelText(): Promise<string> {
-  const history = await slack.conversations.history({ channel: CHANNEL_ID, limit: 100 })
-  return (history.messages ?? []).map(message => message.text ?? '').join('\n')
-}
-
 async function threadText(threadTs: string): Promise<string> {
-  const replies = await slack.conversations.replies({
+  const replies = await slackCall(USER_TOKEN, 'conversations.replies', {
     channel: CHANNEL_ID,
     ts: threadTs,
     limit: 100
   })
-  return (replies.messages ?? []).map(message => message.text ?? '').join('\n')
+  const messages = Array.isArray(replies.messages)
+    ? (replies.messages as Array<{ text?: string }>)
+    : []
+  return messages.map(message => message.text ?? '').join('\n')
+}
+
+async function slackCall(
+  token: string,
+  method: string,
+  body: Record<string, unknown>
+): Promise<Record<string, any>> {
+  const response = await fetch(new URL(method, slackApiUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/x-www-form-urlencoded'
+    },
+    body: encodeSlackForm(body)
+  })
+  return (await response.json()) as Record<string, any>
+}
+
+function encodeSlackForm(body: Record<string, unknown>): URLSearchParams {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(body)) {
+    if (value === undefined) continue
+    params.set(key, typeof value === 'string' ? value : JSON.stringify(value))
+  }
+  return params
 }
 
 function onlyRun(): WorkflowRunRequest {
@@ -503,13 +478,6 @@ function signedSlackEvent(input: {
   }
 }
 
-function apiHeaders(): Record<string, string> {
-  return {
-    authorization: `Bearer ${API_KEY}`,
-    'content-type': 'application/json'
-  }
-}
-
 function waitUntilContext(waits: Promise<unknown>[]): any {
   return {
     waitUntil: (promise: Promise<unknown>) => waits.push(promise),
@@ -519,8 +487,23 @@ function waitUntilContext(waits: Promise<unknown>[]): any {
 }
 
 async function createFakeCentaur() {
+  const ResponseCtor = await nativeResponseCtor()
+  const json = (body: Record<string, unknown>, init?: ResponseInit) =>
+    new ResponseCtor(JSON.stringify(body), {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        ...Object.fromEntries(new Headers(init?.headers).entries())
+      }
+    })
+  const text = (body: string, init?: ResponseInit) => new ResponseCtor(body, init)
   const workflowRuns: WorkflowRunRequest[] = []
-  const deliveries: FakeDelivery[] = []
+  const workflowRunById = new Map<
+    string,
+    { request: WorkflowRunRequest; runId: string; executionId: string }
+  >()
+  const executionToRun = new Map<string, string>()
+  const chatStreams: string[] = []
   const delivered: string[] = []
   const failed: string[] = []
   const port = await preferredPort(4014)
@@ -529,34 +512,81 @@ async function createFakeCentaur() {
     async fetch(request: Request) {
       const url = new URL(request.url)
       if (url.pathname === '/workflows/runs') {
-        workflowRuns.push((await request.json()) as WorkflowRunRequest)
-        return Response.json({ ok: true, run_id: `wfr-${workflowRuns.length}` })
+        const body = (await request.json()) as WorkflowRunRequest
+        workflowRuns.push(body)
+        const runId = `wfr-${workflowRuns.length}`
+        const executionId = `exe-${runId}`
+        workflowRunById.set(runId, { request: body, runId, executionId })
+        executionToRun.set(executionId, runId)
+        return json(workflowRunResponse(runId, body, executionId))
       }
-      if (url.pathname === '/agent/final-deliveries/claim') {
-        return Response.json({ deliveries: deliveries.splice(0) })
+      const workflowMatch = /^\/workflows\/runs\/([^/]+)$/.exec(url.pathname)
+      if (workflowMatch) {
+        const runId = decodeURIComponent(workflowMatch[1] ?? '')
+        const run = workflowRunById.get(runId)
+        if (!run) return json({ ok: false, error: 'not_found' }, { status: 404 })
+        return json(workflowRunResponse(run.runId, run.request, run.executionId))
+      }
+      const contextMatch = /^\/agent\/executions\/([^/]+)\/chat-stream\/context$/.exec(url.pathname)
+      if (contextMatch) {
+        const executionId = decodeURIComponent(contextMatch[1] ?? '')
+        const run = runForExecution(executionId)
+        if (!run) return json({ ok: false, error: 'not_found' }, { status: 404 })
+        const delivery = run.request.input.delivery
+        return json({
+          execution_id: executionId,
+          thread_key: run.request.input.thread_key,
+          platform: 'slack',
+          thread_id: `slack:${delivery.channel}:${delivery.thread_ts}`,
+          stream_options: {
+            recipientUserId: delivery.recipient_user_id,
+            recipientTeamId: delivery.recipient_team_id,
+            taskDisplayMode: 'plan',
+            stopBlocks: fakeStopBlocks()
+          }
+        })
+      }
+      const chatStreamMatch = /^\/agent\/executions\/([^/]+)\/chat-stream$/.exec(url.pathname)
+      if (chatStreamMatch) {
+        const executionId = decodeURIComponent(chatStreamMatch[1] ?? '')
+        if (!runForExecution(executionId)) {
+          return json({ ok: false, error: 'not_found' }, { status: 404 })
+        }
+        chatStreams.push(executionId)
+        return text(chatStreamSse(), {
+          headers: { 'content-type': 'text/event-stream' }
+        })
       }
       const deliveredMatch = /^\/agent\/final-deliveries\/([^/]+)\/delivered$/.exec(url.pathname)
       if (deliveredMatch) {
         delivered.push(decodeURIComponent(deliveredMatch[1] ?? ''))
-        return Response.json({ ok: true })
+        return json({ ok: true })
       }
       const failedMatch = /^\/agent\/final-deliveries\/([^/]+)\/failed$/.exec(url.pathname)
       if (failedMatch) {
         failed.push(decodeURIComponent(failedMatch[1] ?? ''))
-        return Response.json({ ok: true })
+        return json({ ok: true })
       }
-      return Response.json({ ok: false, error: 'not_found' }, { status: 404 })
+      return json({ ok: false, error: 'not_found' }, { status: 404 })
     }
   })
+
+  function runForExecution(executionId: string) {
+    const runId = executionToRun.get(executionId)
+    return runId ? workflowRunById.get(runId) : undefined
+  }
+
   return {
     url: `http://localhost:${server.port}`,
     workflowRuns,
-    deliveries,
+    chatStreams,
     delivered,
     failed,
     reset() {
       workflowRuns.length = 0
-      deliveries.length = 0
+      workflowRunById.clear()
+      executionToRun.clear()
+      chatStreams.length = 0
       delivered.length = 0
       failed.length = 0
     },
@@ -564,6 +594,100 @@ async function createFakeCentaur() {
       await server.stop()
     }
   }
+}
+
+async function nativeResponseCtor(): Promise<typeof Response> {
+  const response = await fetch('data:,')
+  return response.constructor as typeof Response
+}
+
+function workflowRunResponse(
+  runId: string,
+  request: WorkflowRunRequest,
+  executionId: string
+): Record<string, unknown> {
+  return {
+    ok: true,
+    run_id: runId,
+    workflow_name: request.workflow_name,
+    status: 'running',
+    thread_key: request.input.thread_key,
+    execution_id: executionId,
+    waiting_on: { type: 'execution', execution_id: executionId }
+  }
+}
+
+function chatStreamSse(): string {
+  return `${fakeChatStreamChunks()
+    .map((chunk, index) =>
+      [`id: ${index + 1}`, 'event: chat_stream_chunk', `data: ${JSON.stringify(chunk)}`, ''].join(
+        '\n'
+      )
+    )
+    .join('\n')}\n`
+}
+
+function fakeChatStreamChunks(): Array<Record<string, unknown>> {
+  return [
+    { type: 'plan_update', title: 'Execution plan' },
+    {
+      type: 'task_update',
+      id: 'thinking',
+      title: 'Thinking',
+      status: 'in_progress',
+      output: 'Checking Slack context before answering.'
+    },
+    {
+      type: 'task_update',
+      id: 'cmd-1',
+      title: 'Command execution',
+      status: 'in_progress',
+      output: '```sh\ncall demo ping\n```'
+    },
+    { type: 'markdown_text', text: fakeMarkdownOne() },
+    {
+      type: 'task_update',
+      id: 'cmd-1',
+      title: 'Command execution',
+      status: 'complete',
+      output: 'ok'
+    },
+    {
+      type: 'task_update',
+      id: 'thinking',
+      title: 'Thinking',
+      status: 'complete',
+      output: 'Ready.'
+    },
+    { type: 'markdown_text', text: fakeMarkdownTwo() }
+  ]
+}
+
+function fakeMarkdownOne(): string {
+  return 'Review [the run](https://example.com/run/123) before merging. '
+}
+
+function fakeMarkdownTwo(): string {
+  return 'Final answer from Chat SDK.'
+}
+
+function fakeStopBlocks(): Array<Record<string, unknown>> {
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: 'Block Kit footer' }
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Open run' },
+          url: 'https://example.com/run/123'
+        }
+      ]
+    }
+  ]
 }
 
 async function preferredPort(port: number): Promise<number> {

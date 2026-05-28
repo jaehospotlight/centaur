@@ -3,6 +3,8 @@ export { CentaurClient } from "./client";
 export type {
   ExecuteOptions,
   MessageOptions,
+  ChatStreamContext,
+  ChatStreamChunk,
   InputContentBlock,
   ThreadMessageRecord,
   WorkflowRunOptions,

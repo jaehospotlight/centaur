@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CentaurClient, type StreamEvent } from "../src/client";
+import { CentaurClient, type ChatStreamChunk, type StreamEvent } from "../src/client";
 
 async function collectEvents(events: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
   const collected: StreamEvent[] = [];
+  for await (const event of events) {
+    collected.push(event);
+  }
+  return collected;
+}
+
+async function collectChunks(events: AsyncIterable<ChatStreamChunk>): Promise<ChatStreamChunk[]> {
+  const collected: ChatStreamChunk[] = [];
   for await (const event of events) {
     collected.push(event);
   }
@@ -35,7 +43,7 @@ describe("CentaurClient", () => {
   it("parses SSE ids, events, JSON data, [DONE], and invalid JSON payloads", async () => {
     const fetchMock = vi.fn(async () => sseResponse([
       "id: 11",
-      "event: amp_raw_event",
+      "event: harness_raw_event",
       'data: {"type":"assistant","message":{"content":"hello"}}',
       "",
       "id: 12",
@@ -57,7 +65,7 @@ describe("CentaurClient", () => {
     await expect(collectEvents(client.streamEvents({ threadKey: "thread-1" }))).resolves.toEqual([
       {
         eventId: 11,
-        eventKind: "amp_raw_event",
+        eventKind: "harness_raw_event",
         data: { type: "assistant", message: { content: "hello" } },
       },
       {
@@ -92,6 +100,84 @@ describe("CentaurClient", () => {
           "X-Centaur-Thread-Key": "slack:C123:1700000000.000100",
         },
       }),
+    );
+  });
+
+  it("streams Chat SDK chunks directly from the execution chat stream endpoint", async () => {
+    const fetchMock = vi.fn(async () => sseResponse([
+      "id: 21",
+      "event: chat_stream_chunk",
+      'data: {"type":"task_update","id":"tool-1","title":"Command execution","status":"in_progress"}',
+      "",
+      "id: 22",
+      "event: chat_stream_chunk",
+      'data: {"type":"markdown_text","text":"Done"}',
+      "",
+      "",
+    ].join("\n")));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new CentaurClient({
+      apiUrl: "http://api.local",
+      apiKey: "test-key",
+    });
+
+    await expect(collectChunks(client.streamChatChunks({
+      executionId: "exe:123",
+      afterEventId: 20,
+      pollMs: 100,
+    }))).resolves.toEqual([
+      {
+        type: "task_update",
+        id: "tool-1",
+        title: "Command execution",
+        status: "in_progress",
+      },
+      { type: "markdown_text", text: "Done" },
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://api.local/agent/executions/exe%3A123/chat-stream?after_event_id=20&poll_ms=100",
+      expect.objectContaining({
+        method: "GET",
+        headers: { Authorization: "Bearer test-key" },
+      }),
+    );
+  });
+
+  it("fetches Chat SDK stream context without exposing Centaur delivery shape", async () => {
+    const client = new CentaurClient({
+      apiUrl: "http://api.local",
+      apiKey: "test-key",
+    });
+    const getMock = vi.spyOn(client.http, "get").mockResolvedValue({
+      data: {
+        execution_id: "exe:123",
+        thread_key: "slack:T123:C123:1780000000.123456",
+        platform: "slack",
+        thread_id: "slack:C123:1780000000.123456",
+        stream_options: {
+          recipientUserId: "U123",
+          recipientTeamId: "T123",
+          taskDisplayMode: "plan",
+          stopBlocks: [{ type: "section", text: { type: "mrkdwn", text: "Done" } }],
+        },
+      },
+    });
+
+    await expect(client.getChatStreamContext("exe:123")).resolves.toEqual({
+      execution_id: "exe:123",
+      thread_key: "slack:T123:C123:1780000000.123456",
+      platform: "slack",
+      thread_id: "slack:C123:1780000000.123456",
+      stream_options: {
+        recipientUserId: "U123",
+        recipientTeamId: "T123",
+        taskDisplayMode: "plan",
+        stopBlocks: [{ type: "section", text: { type: "mrkdwn", text: "Done" } }],
+      },
+    });
+    expect(getMock).toHaveBeenCalledWith(
+      "/agent/executions/exe%3A123/chat-stream/context",
     );
   });
 
