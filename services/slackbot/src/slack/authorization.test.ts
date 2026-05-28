@@ -45,6 +45,24 @@ describe('authorizeSlackOrg', () => {
     ).toEqual({ ok: true, externalTeamId: 'TEXTERNAL' })
   })
 
+  it('allows home-workspace users in external Slack Connect channels', () => {
+    expect(
+      authorizeSlackOrg({
+        envelope: {
+          type: 'event_callback',
+          team_id: 'THOME',
+          event: {
+            type: 'app_mention',
+            team: 'THOME',
+            user_team: 'THOME',
+            source_team: 'TEXTERNAL'
+          }
+        },
+        allowedExternalTeamIds: []
+      })
+    ).toEqual({ ok: true })
+  })
+
   it('falls back to source_team when user_team is absent', () => {
     expect(
       authorizeSlackOrg({

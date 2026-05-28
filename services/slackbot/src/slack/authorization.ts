@@ -34,7 +34,11 @@ function externalSlackTeamId(envelope: SlackEnvelope): string | undefined {
   if (!homeTeamId || !isRecord(envelope.event)) return undefined
 
   const event = envelope.event as SlackEventWithTeam
-  const candidates = [event.user_team, event.source_team, event.team]
+  if (typeof event.user_team === 'string' && event.user_team) {
+    return event.user_team === homeTeamId ? undefined : event.user_team
+  }
+
+  const candidates = [event.source_team, event.team]
   for (const candidate of candidates) {
     if (typeof candidate === 'string' && candidate && candidate !== homeTeamId) {
       return candidate
