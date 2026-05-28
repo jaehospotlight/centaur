@@ -1,8 +1,5 @@
 export const VERSION = '0.1.0'
 
-export const OPENAI_CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
-export const CLAUDE_CODE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
-
 export const AUTH_MODES = ['api_key', 'access_token'] as const
 export type AuthMode = (typeof AUTH_MODES)[number]
 

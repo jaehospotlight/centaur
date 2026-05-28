@@ -10,10 +10,8 @@ import { Cli, z } from 'incur'
 
 import {
   AUTH_MODES,
-  CLAUDE_CODE_CLIENT_ID,
   HARNESSES,
   INSTALL_MODES,
-  OPENAI_CODEX_CLIENT_ID,
   SECRET_BACKENDS,
   VERSION,
   type Harness,
@@ -306,6 +304,7 @@ function runInteractive(command: string[]) {
 }
 
 async function collectCodexSubscriptionSecrets(promptUser: boolean): Promise<SecretMap> {
+  let clientId = process.env.OPENAI_CODEX_CLIENT_ID || ''
   let refreshToken = ''
   let accountId = ''
   if (promptUser) {
@@ -324,16 +323,23 @@ async function collectCodexSubscriptionSecrets(promptUser: boolean): Promise<Sec
       console.log('  Found existing Codex ChatGPT login; using ~/.codex/auth.json.')
     }
   }
+  clientId =
+    clientId ||
+    (await askSecret('OPENAI_CODEX_CLIENT_ID', {
+      nonInteractive: !promptUser,
+      required: true,
+    }))
   refreshToken = refreshToken || (await askSecret('OPENAI_CODEX refresh token', { nonInteractive: !promptUser, required: true }))
   accountId = accountId || (await askSecret('OPENAI_CODEX account id', { nonInteractive: !promptUser, required: true }))
   return {
-    OPENAI_CODEX_CLIENT_ID,
+    OPENAI_CODEX_CLIENT_ID: clientId,
     OPENAI_CODEX_BLOB: JSON.stringify({ refresh_token: refreshToken }),
     OPENAI_CODEX_ACCOUNT_ID: accountId,
   }
 }
 
 async function collectClaudeSubscriptionSecrets(promptUser: boolean): Promise<SecretMap> {
+  let clientId = process.env.CLAUDE_CODE_CLIENT_ID || ''
   let refreshToken = ''
   if (promptUser) {
     refreshToken = readClaudeSubscriptionAuth()
@@ -347,9 +353,15 @@ async function collectClaudeSubscriptionSecrets(promptUser: boolean): Promise<Se
       console.log('  Found existing Claude Code login; using local credentials.')
     }
   }
+  clientId =
+    clientId ||
+    (await askSecret('CLAUDE_CODE_CLIENT_ID', {
+      nonInteractive: !promptUser,
+      required: true,
+    }))
   refreshToken = refreshToken || (await askSecret('CLAUDE_CODE refresh token', { nonInteractive: !promptUser, required: true }))
   return {
-    CLAUDE_CODE_CLIENT_ID,
+    CLAUDE_CODE_CLIENT_ID: clientId,
     CLAUDE_CODE_BLOB: JSON.stringify({ refresh_token: refreshToken }),
   }
 }
@@ -443,13 +455,13 @@ function collectSecretsFromEnv(state: {
   if (state.harness === 'codex' && state.authMode === 'api_key') {
     secrets.OPENAI_API_KEY = requireEnv('OPENAI_API_KEY')
   } else if (state.harness === 'codex') {
-    secrets.OPENAI_CODEX_CLIENT_ID = process.env.OPENAI_CODEX_CLIENT_ID || OPENAI_CODEX_CLIENT_ID
+    secrets.OPENAI_CODEX_CLIENT_ID = requireEnv('OPENAI_CODEX_CLIENT_ID')
     secrets.OPENAI_CODEX_BLOB = requireEnv('OPENAI_CODEX_BLOB')
     secrets.OPENAI_CODEX_ACCOUNT_ID = requireEnv('OPENAI_CODEX_ACCOUNT_ID')
   } else if (state.authMode === 'api_key') {
     secrets.ANTHROPIC_API_KEY = requireEnv('ANTHROPIC_API_KEY')
   } else {
-    secrets.CLAUDE_CODE_CLIENT_ID = process.env.CLAUDE_CODE_CLIENT_ID || CLAUDE_CODE_CLIENT_ID
+    secrets.CLAUDE_CODE_CLIENT_ID = requireEnv('CLAUDE_CODE_CLIENT_ID')
     secrets.CLAUDE_CODE_BLOB = requireEnv('CLAUDE_CODE_BLOB')
   }
   return secrets

@@ -126,11 +126,9 @@ requests so the sandbox never sees them.
 Store these three items in your secrets backend (1Password vault, Kubernetes
 Secret, etc.) when running in `access_token` mode:
 
-- `OPENAI_CODEX_CLIENT_ID`: the Codex CLI's OAuth client id. This is a
-  fixed, publicly known constant: `app_EMoamEEZ73f0CkXaXp7hrann`. It is
-  the same for every Codex install and never rotates, but the broker
-  still resolves it through your secrets backend, so store the literal
-  value as-is.
+- `OPENAI_CODEX_CLIENT_ID`: the Codex CLI OAuth client id collected by
+  `centaur secrets collect`. The broker resolves it through your secrets
+  backend alongside the refresh-token blob.
 - `OPENAI_CODEX_BLOB`: a JSON document `{"refresh_token": "..."}`. The
   broker rotates this in place on every refresh, so the backing item must
   be writable.
@@ -139,9 +137,10 @@ Secret, etc.) when running in `access_token` mode:
   `chatgpt-account-id` header so the backend can route to the right
   workspace. Store it alongside the other two, not in code.
 
-To bootstrap, run `codex login` locally, then copy the refresh token and
-account id from `~/.codex/auth.json` into the matching secret items. Use
-the constant above for `OPENAI_CODEX_CLIENT_ID`.
+To bootstrap, run `centaur secrets collect --harness codex --auth-mode
+access_token`. The CLI runs the local Codex login flow, reads
+`~/.codex/auth.json`, prompts for any missing masked values, and writes the
+matching secret items to the selected backend.
 
 ### Claude Auth Modes
 
@@ -174,19 +173,17 @@ requests; the broker overwrites the Bearer at request time.
 Store these two items in your secrets backend (1Password vault, Kubernetes
 Secret, etc.) when running in `access_token` mode:
 
-- `CLAUDE_CODE_CLIENT_ID`: the Claude Code CLI's OAuth client id. This
-  is a fixed, publicly known constant:
-  `9d1c250a-e61b-44d9-88ed-5944d1962f5e`. It is the same for every Claude
-  Code install and never rotates, but the broker still resolves it through
-  your secrets backend, so store the literal value as-is.
+- `CLAUDE_CODE_CLIENT_ID`: the Claude Code CLI OAuth client id collected
+  by `centaur secrets collect`. The broker resolves it through your
+  secrets backend alongside the refresh-token blob.
 - `CLAUDE_CODE_BLOB`: a JSON document `{"refresh_token": "..."}`. The
   broker rotates this in place on every refresh, so the backing item must be
   writable.
 
-To bootstrap, run `claude login` locally, then copy the refresh token from
-`~/.claude/.credentials.json` (or from the `Claude Code-credentials` keychain
-item on macOS) into `CLAUDE_CODE_BLOB`. Use the constant above for
-`CLAUDE_CODE_CLIENT_ID`.
+To bootstrap, run `centaur secrets collect --harness claude-code
+--auth-mode access_token`. The CLI runs the local Claude Code login flow,
+reads the credentials file or macOS keychain item, prompts for any missing
+masked values, and writes the matching secret items to the selected backend.
 
 ## 4. Configure Slack
 

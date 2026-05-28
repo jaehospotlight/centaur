@@ -212,12 +212,12 @@ const threadData: ThreadData[] = [
           title: 'Updating dependencies...',
           items: [
             {
-              command: "pnpm up wagmi viem @tempo-xyz/accounts mppx",
+              command: "npm install wagmi@latest viem@latest @tempo-xyz/accounts@latest mppx@latest",
               output:
                 '@tempo-xyz/accounts 0.10.3 -> 0.10.6\nwagmi 3.6.12 -> pkg.pr.new/wagmi@838a05e\nviem already current\nmppx already current',
             },
             {
-              command: "pnpm install --lockfile-only && pnpm install --frozen-lockfile",
+              command: "npm install",
               output: 'Lockfile is up to date\nDone in 4.1s',
             },
           ],
@@ -271,7 +271,7 @@ const threadData: ThreadData[] = [
                 'worker/api/relay.ts: Handler.relay({ feePayer, transports })\npackages/accounts/src/relay.ts: eth_signRawTransaction requires configured sponsorship',
             },
             {
-              command: "pnpm test relay",
+              command: "npm test -- relay",
               output:
                 'passes eth_sendRawTransaction through\nreturns a fee-payer setup error for eth_signRawTransaction when sponsorship is missing',
             },

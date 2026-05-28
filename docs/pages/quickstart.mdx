@@ -19,17 +19,17 @@ such as `/md/quickstart.md`.
 
 ## 1. Install prerequisites
 
-For agent-driven setup, install the onboarding CLI from this checkout. The
-commands return structured output and CTAs so an agent can keep driving the next
-step:
+For agent-driven setup, install the onboarding CLI first. The commands return
+structured output and CTAs so an agent can keep driving the next step:
 
 ```bash
-pnpm install
-pnpm --silent --filter @centaur/cli centaur init --harness codex --auth-mode api_key
-pnpm --silent --filter @centaur/cli centaur integrations slack-manifest --domain centaur.example.com --app-name centaur --output org/slack-app-manifest.json --copy --harness codex --auth-mode api_key
-pnpm --silent --filter @centaur/cli centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org
-pnpm --silent --filter @centaur/cli centaur doctor --deep --harness codex --auth-mode api_key --secret-backend local-env --install-mode local
-pnpm --silent --filter @centaur/cli centaur deploy k3s
+curl -fsSL https://centaur.run/install.sh | bash
+centaur --llms
+centaur init --harness codex --auth-mode api_key
+centaur integrations slack-manifest --domain centaur.example.com --app-name centaur --output org/slack-app-manifest.json --copy --harness codex --auth-mode api_key
+centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org
+centaur doctor --deep --harness codex --auth-mode api_key --secret-backend local-env --install-mode local
+centaur deploy k3s
 ```
 
 Pick one default harness for the deployment: `codex` or `claude-code`. Use

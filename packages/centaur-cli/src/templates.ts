@@ -3,9 +3,7 @@ import { dirname, join } from 'node:path'
 
 import {
   CLAUDE_ACCESS_TOKEN_SECRETS,
-  CLAUDE_CODE_CLIENT_ID,
   CODEX_ACCESS_TOKEN_SECRETS,
-  OPENAI_CODEX_CLIENT_ID,
   type AuthMode,
   type Harness,
 } from './constants.js'
@@ -124,8 +122,7 @@ export function harnessAuthPlan(harness: Harness, authMode: AuthMode) {
         authMode === 'access_token'
           ? [
               'centaur secrets collect --harness codex --auth-mode access_token runs codex login with a dedicated ChatGPT account.',
-              'The CLI reads ~/.codex/auth.json and stores OPENAI_CODEX_BLOB plus OPENAI_CODEX_ACCOUNT_ID in the selected backend.',
-              `The CLI stores OPENAI_CODEX_CLIENT_ID as ${OPENAI_CODEX_CLIENT_ID}.`,
+              'The CLI reads ~/.codex/auth.json, prompts for OPENAI_CODEX_CLIENT_ID, and stores Codex OAuth values in the selected backend.',
             ]
           : ['Store OPENAI_API_KEY in the configured secret backend.'],
     }
@@ -153,8 +150,7 @@ export function harnessAuthPlan(harness: Harness, authMode: AuthMode) {
       authMode === 'access_token'
         ? [
             'centaur secrets collect --harness claude-code --auth-mode access_token runs claude login with a dedicated Claude.ai Pro or Max account.',
-            'The CLI reads Claude Code credentials and stores CLAUDE_CODE_BLOB in the selected backend.',
-            `The CLI stores CLAUDE_CODE_CLIENT_ID as ${CLAUDE_CODE_CLIENT_ID}.`,
+            'The CLI reads Claude Code credentials, prompts for CLAUDE_CODE_CLIENT_ID, and stores Claude OAuth values in the selected backend.',
           ]
         : ['Store ANTHROPIC_API_KEY in the configured secret backend.'],
   }
@@ -164,7 +160,7 @@ function selectedHarnessSecrets(harness: Harness, authMode: AuthMode) {
   if (harness === 'codex') {
     if (authMode === 'access_token') {
       return `# Codex access_token mode: ChatGPT subscription through iron-token-broker
-OPENAI_CODEX_CLIENT_ID=${OPENAI_CODEX_CLIENT_ID}
+OPENAI_CODEX_CLIENT_ID=...
 OPENAI_CODEX_BLOB={"refresh_token":"..."}
 OPENAI_CODEX_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
 `
@@ -175,7 +171,7 @@ OPENAI_API_KEY=...
   }
   if (authMode === 'access_token') {
     return `# Claude Code access_token mode: Claude.ai Pro or Max subscription through iron-token-broker
-CLAUDE_CODE_CLIENT_ID=${CLAUDE_CODE_CLIENT_ID}
+CLAUDE_CODE_CLIENT_ID=...
 CLAUDE_CODE_BLOB={"refresh_token":"..."}
 `
   }

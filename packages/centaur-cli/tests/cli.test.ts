@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest'
 import { app, k3sDeploymentCommands } from '../src/app.js'
 import { envChecks } from '../src/checks.js'
 import { CentaurClient, parseSse } from '../src/client.js'
-import { CLAUDE_CODE_CLIENT_ID, OPENAI_CODEX_CLIENT_ID } from '../src/constants.js'
 import { runAgent } from '../src/run.js'
 import { kubernetesEnvFile, writeSecrets } from '../src/secrets.js'
 import { harnessAuthPlan, slackManifest, writeOverlay, writeSlackManifest } from '../src/templates.js'
@@ -81,7 +80,7 @@ describe('harness auth', () => {
       'OPENAI_CODEX_BLOB',
       'OPENAI_CODEX_ACCOUNT_ID',
     ])
-    expect(plan.bootstrap.join('\n')).toContain(OPENAI_CODEX_CLIENT_ID)
+    expect(plan.bootstrap.join('\n')).toContain('OPENAI_CODEX_CLIENT_ID')
   })
 
   it('describes Claude Code subscription OAuth secrets for the selected harness', () => {
@@ -90,7 +89,7 @@ describe('harness auth', () => {
     expect(plan.values.api.extraEnv).toEqual({ CLAUDE_CODE_AUTH_MODE: 'access_token' })
     expect(plan.values.sandbox.extraEnv).toEqual({ CLAUDE_CODE_AUTH_MODE: 'access_token' })
     expect(plan.requiredSecrets).toEqual(['CLAUDE_CODE_CLIENT_ID', 'CLAUDE_CODE_BLOB'])
-    expect(plan.bootstrap.join('\n')).toContain(CLAUDE_CODE_CLIENT_ID)
+    expect(plan.bootstrap.join('\n')).toContain('CLAUDE_CODE_CLIENT_ID')
   })
 })
 
@@ -114,8 +113,8 @@ describe('overlay scaffolding', () => {
       'CODEX_AUTH_MODE: access_token',
     )
     const secrets = readFileSync(join(overlayPath, 'secrets.example.env'), 'utf8')
-    expect(secrets).toContain(`OPENAI_CODEX_CLIENT_ID=${OPENAI_CODEX_CLIENT_ID}`)
-    expect(secrets).not.toContain(`CLAUDE_CODE_CLIENT_ID=${CLAUDE_CODE_CLIENT_ID}`)
+    expect(secrets).toContain('OPENAI_CODEX_CLIENT_ID=...')
+    expect(secrets).not.toContain('CLAUDE_CODE_CLIENT_ID=...')
     expect(readFileSync(join(overlayPath, 'slack-app-manifest.json'), 'utf8')).toContain(
       '/api/webhooks/slack',
     )
