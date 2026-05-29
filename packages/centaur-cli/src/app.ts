@@ -760,6 +760,46 @@ function deployCta(
   }
 }
 
+function deployFailureCta(
+  subcommand: 'k3s' | 'k8s' | 'kind',
+  options: Parameters<typeof deployApplyCommandParts>[1],
+) {
+  return {
+    description: 'Deploy failed; inspect and retry:',
+    commands: [
+      {
+        command: commandLine([
+          'doctor',
+          '--deep',
+          '--overlay-path',
+          dirname(options.values),
+          '--install-mode',
+          subcommand === 'k8s' ? 'k8s' : 'local',
+          '--image-source',
+          options.imageSource,
+        ]),
+        description: 'recheck local tools, cluster access, and generated setup files',
+      },
+      {
+        command: commandLine([
+          'logs',
+          '--component',
+          'api',
+          '--namespace',
+          options.namespace,
+          '--release',
+          options.release,
+        ]),
+        description: 'inspect API logs if the release partially started',
+      },
+      {
+        command: commandLine(deployApplyCommandParts(subcommand, options)),
+        description: 'retry the same deploy command after fixing the error',
+      },
+    ],
+  }
+}
+
 function supportsBrokeredTokenStore(secretBackend: string) {
   return secretBackend === 'onepassword' || secretBackend === 'onepassword-connect'
 }
@@ -2072,14 +2112,26 @@ const deploy = Cli.create('deploy', {
         timeout: c.options.timeout,
         updateDependencies: c.options.updateDependencies,
       })
-      if (c.options.apply) runDeploymentCommands(commands)
+      const deployOptions = { ...c.options }
+      if (c.options.apply) {
+        try {
+          runDeploymentCommands(commands)
+        } catch (error) {
+          return c.error({
+            code: 'DEPLOY_FAILED',
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
+            cta: deployFailureCta('k8s', deployOptions),
+          })
+        }
+      }
       return c.ok(
         {
           applied: c.options.apply,
           commands: formatDeploymentCommands(commands),
         },
         {
-          cta: deployCta('k8s', { ...c.options, applied: c.options.apply }),
+          cta: deployCta('k8s', { ...deployOptions, applied: c.options.apply }),
         },
       )
     },
@@ -2107,14 +2159,26 @@ const deploy = Cli.create('deploy', {
         timeout: c.options.timeout,
         updateDependencies: c.options.updateDependencies,
       })
-      if (c.options.apply) runDeploymentCommands(commands)
+      const deployOptions = { ...c.options }
+      if (c.options.apply) {
+        try {
+          runDeploymentCommands(commands)
+        } catch (error) {
+          return c.error({
+            code: 'DEPLOY_FAILED',
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
+            cta: deployFailureCta('k3s', deployOptions),
+          })
+        }
+      }
       return c.ok(
         {
           applied: c.options.apply,
           commands: formatDeploymentCommands(commands),
         },
         {
-          cta: deployCta('k3s', { ...c.options, applied: c.options.apply }),
+          cta: deployCta('k3s', { ...deployOptions, applied: c.options.apply }),
         },
       )
     },
@@ -2143,14 +2207,26 @@ const deploy = Cli.create('deploy', {
         timeout: c.options.timeout,
         updateDependencies: c.options.updateDependencies,
       })
-      if (c.options.apply) runDeploymentCommands(commands)
+      const deployOptions = { ...c.options }
+      if (c.options.apply) {
+        try {
+          runDeploymentCommands(commands)
+        } catch (error) {
+          return c.error({
+            code: 'DEPLOY_FAILED',
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
+            cta: deployFailureCta('kind', deployOptions),
+          })
+        }
+      }
       return c.ok(
         {
           applied: c.options.apply,
           commands: formatDeploymentCommands(commands),
         },
         {
-          cta: deployCta('kind', { ...c.options, applied: c.options.apply }),
+          cta: deployCta('kind', { ...deployOptions, applied: c.options.apply }),
         },
       )
     },

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -637,6 +637,39 @@ describe('deploy plans', () => {
       "centaur run 'Reply with exactly PONG and nothing else.' --local --harness claude-code --expect PONG --release-thread --namespace custom --release pony",
     )
     expect(ctaCommands[2]).toBe('centaur slackbot smoke --namespace custom --release pony')
+  })
+
+  it('returns recovery CTAs when an applied deploy command fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'centaur-cli-deploy-fail-'))
+    for (const [name, body] of Object.entries({
+      kubectl: '#!/bin/sh\nif [ "$1" = "config" ]; then exit 0; fi\ncat >/dev/null\nprintf "ok\\n"\n',
+      helm: '#!/bin/sh\nprintf "bad helm\\n" >&2\nexit 1\n',
+    })) {
+      const path = join(root, name)
+      writeFileSync(path, body)
+      chmodSync(path, 0o755)
+    }
+    const previousPath = process.env.PATH
+    process.env.PATH = `${root}:${previousPath || ''}`
+    try {
+      const { stdout, exitCode } = await runCliWithExit([
+        'deploy',
+        'k3s',
+        '--apply',
+        '--json',
+      ])
+      const output = JSON.parse(stdout)
+      const ctaCommands = output.cta.commands.map((command: { command: string }) => command.command)
+
+      expect(exitCode).toBe(1)
+      expect(output.code).toBe('DEPLOY_FAILED')
+      expect(output.retryable).toBe(true)
+      expect(ctaCommands[0]).toContain('centaur doctor --deep --overlay-path org')
+      expect(ctaCommands[1]).toBe('centaur logs --component api --namespace centaur --release centaur')
+      expect(ctaCommands[2]).toContain('centaur deploy k3s --apply')
+    } finally {
+      process.env.PATH = previousPath
+    }
   })
 })
 
