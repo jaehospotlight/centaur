@@ -28,7 +28,7 @@ export function emptyState(): OnboardingState {
     domain: '',
     adminEmail: '',
     installMode: 'local',
-    imageSource: 'ghcr',
+    imageSource: 'local',
     secretBackend: 'local-env',
     overlayPath: '',
     harness: 'codex',

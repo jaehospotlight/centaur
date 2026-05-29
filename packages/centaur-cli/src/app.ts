@@ -370,6 +370,46 @@ type DeploymentCommandOptions = {
   updateDependencies?: boolean
 }
 
+const FIREWALL_CA_BOOTSTRAP_SCRIPT = `
+set -eu
+namespace="$1"
+ca_secret="centaur-firewall-ca"
+ca_key_secret="centaur-firewall-ca-key"
+if kubectl -n "$namespace" get secret "$ca_secret" >/dev/null 2>&1 && kubectl -n "$namespace" get secret "$ca_key_secret" >/dev/null 2>&1; then
+  exit 0
+fi
+if kubectl -n "$namespace" get secret "$ca_secret" >/dev/null 2>&1 || kubectl -n "$namespace" get secret "$ca_key_secret" >/dev/null 2>&1; then
+  echo "partial firewall CA secrets exist in namespace $namespace; expected both $ca_secret and $ca_key_secret" >&2
+  exit 1
+fi
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+openssl genrsa -out "$tmp/ca-key.pem" 4096 >/dev/null 2>&1
+openssl req -x509 -new -nodes \\
+  -key "$tmp/ca-key.pem" -sha256 -days 3650 \\
+  -subj "/CN=centaur iron-proxy CA" \\
+  -addext "basicConstraints=critical,CA:TRUE" \\
+  -addext "keyUsage=critical,keyCertSign" \\
+  -out "$tmp/ca-cert.pem" >/dev/null 2>&1
+kubectl -n "$namespace" create secret generic "$ca_secret" --from-file=ca-cert.pem="$tmp/ca-cert.pem" >/dev/null
+kubectl -n "$namespace" create secret generic "$ca_key_secret" --from-file=ca-cert.pem="$tmp/ca-cert.pem" --from-file=ca-key.pem="$tmp/ca-key.pem" >/dev/null
+`.trim()
+
+function firewallCaApplyCommands(namespace: string) {
+  return [['sh', '-c', FIREWALL_CA_BOOTSTRAP_SCRIPT, 'centaur-firewall-ca-bootstrap', namespace]]
+}
+
+function namespaceApplyCommands(namespace: string) {
+  return [
+    ['kubectl', 'create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml'],
+    ['kubectl', 'apply', '-f', '-'],
+  ]
+}
+
+function egressNamespaceApplyCommands() {
+  return namespaceApplyCommands('centaur-egress')
+}
+
 function secretApplyCommands(namespace: string, options: DeploymentCommandOptions = {}) {
   if (!options.secretsFile) return []
   return [
@@ -391,7 +431,7 @@ function secretApplyCommands(namespace: string, options: DeploymentCommandOption
   ]
 }
 
-function imageSourceHelmArgs(imageSource: ImageSource = 'ghcr') {
+function imageSourceHelmArgs(imageSource: ImageSource = 'local') {
   if (imageSource === 'local') {
     return [
       '--set',
@@ -450,9 +490,10 @@ export function kindDeploymentCommands(
   return [
     ['kind', 'create', 'cluster', '--name', clusterName],
     ['kubectl', 'cluster-info', '--context', `kind-${clusterName}`],
-    ['kubectl', 'create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml'],
-    ['kubectl', 'apply', '-f', '-'],
+    ...namespaceApplyCommands(namespace),
+    ...egressNamespaceApplyCommands(),
     ...secretApplyCommands(namespace, options),
+    ...firewallCaApplyCommands(namespace),
     ...(options.updateDependencies ? [['helm', 'dependency', 'update', chartPath]] : []),
     helmUpgradeCommand(release, chartPath, namespace, values, options),
   ]
@@ -467,9 +508,10 @@ export function k3sDeploymentCommands(
   const chartPath = resolveChartPath()
   return [
     ['kubectl', 'config', 'current-context'],
-    ['kubectl', 'create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml'],
-    ['kubectl', 'apply', '-f', '-'],
+    ...namespaceApplyCommands(namespace),
+    ...egressNamespaceApplyCommands(),
     ...secretApplyCommands(namespace, options),
+    ...firewallCaApplyCommands(namespace),
     ...(options.updateDependencies ? [['helm', 'dependency', 'update', chartPath]] : []),
     helmUpgradeCommand(release, chartPath, namespace, values, options),
   ]
@@ -482,12 +524,14 @@ export function k8sDeploymentCommands(
   options: DeploymentCommandOptions = {},
 ) {
   const chartPath = resolveChartPath()
+  const deploymentOptions = { imageSource: 'ghcr' as ImageSource, ...options }
   return [
-    ['kubectl', 'create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml'],
-    ['kubectl', 'apply', '-f', '-'],
-    ...secretApplyCommands(namespace, options),
-    ...(options.updateDependencies ? [['helm', 'dependency', 'update', chartPath]] : []),
-    helmUpgradeCommand(release, chartPath, namespace, values, options),
+    ...namespaceApplyCommands(namespace),
+    ...egressNamespaceApplyCommands(),
+    ...secretApplyCommands(namespace, deploymentOptions),
+    ...firewallCaApplyCommands(namespace),
+    ...(deploymentOptions.updateDependencies ? [['helm', 'dependency', 'update', chartPath]] : []),
+    helmUpgradeCommand(release, chartPath, namespace, values, deploymentOptions),
   ]
 }
 
@@ -781,6 +825,29 @@ function secretInputSteps(
   ]
 }
 
+const BACKEND_SECRET_KEYS = new Set([
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_CODEX_CLIENT_ID',
+  'OPENAI_CODEX_BLOB',
+  'OPENAI_CODEX_ACCOUNT_ID',
+  'CLAUDE_CODE_CLIENT_ID',
+  'CLAUDE_CODE_BLOB',
+])
+
+function splitSecretsForBackend(backend: SecretBackend, secrets: SecretMap) {
+  if (backend !== 'onepassword' && backend !== 'onepassword-connect') {
+    return { backendSecrets: secrets, infraSecrets: {} as SecretMap }
+  }
+  const backendSecrets: SecretMap = {}
+  const infraSecrets: SecretMap = {}
+  for (const [key, value] of Object.entries(secrets)) {
+    if (BACKEND_SECRET_KEYS.has(key)) backendSecrets[key] = value
+    else infraSecrets[key] = value
+  }
+  return { backendSecrets, infraSecrets }
+}
+
 function setupPlan(options: SetupPlanOptions) {
   const manifestPath = join(options.overlayPath, 'slack-app-manifest.json')
   const localSocketMode = options.installMode === 'local'
@@ -1029,8 +1096,9 @@ function brokeredTokenBackendCheck(secretBackend: string, authMode: string) {
   return [
     {
       name: 'backend:brokered-token-store',
-      ok: true,
-      detail: `${secretBackend} can bootstrap access_token auth, but production refresh-token rotation needs onepassword or onepassword-connect`,
+      ok: false,
+      detail: `${secretBackend} cannot run access_token auth because iron-token-broker needs a writable refresh-token store`,
+      repair: 'Use --secret-backend onepassword or --secret-backend onepassword-connect for Codex/Claude subscription auth.',
     },
   ]
 }
@@ -1675,6 +1743,13 @@ async function collectWizardSecrets(state: {
     defaultValue: generatedSecret(),
     required: true,
   })
+  if (state.authMode === 'access_token') {
+    secrets.IRON_BROKER_TOKEN = await askSecret('IRON_BROKER_TOKEN', {
+      nonInteractive: !promptUser,
+      defaultValue: generatedSecret(),
+      required: true,
+    })
+  }
   return secrets
 }
 
@@ -1912,6 +1987,9 @@ function collectSecretsFromEnv(state: {
     SANDBOX_SIGNING_KEY: process.env.SANDBOX_SIGNING_KEY || generatedSecret(),
     SLACKBOT_API_KEY: process.env.SLACKBOT_API_KEY || generatedSecret(),
   }
+  if (state.authMode === 'access_token') {
+    secrets.IRON_BROKER_TOKEN = process.env.IRON_BROKER_TOKEN || generatedSecret()
+  }
   if (state.installMode === 'local') secrets.SLACK_APP_TOKEN = requireEnv('SLACK_APP_TOKEN')
   if (state.harness === 'codex' && state.authMode === 'api_key') {
     secrets.OPENAI_API_KEY = requireEnv('OPENAI_API_KEY')
@@ -2042,7 +2120,7 @@ const integrations = Cli.create('integrations', {
       copy: z.boolean().default(false).describe('Copy manifest JSON to the system clipboard'),
       backend: secretBackendSchema.default('local-env').describe('Secret backend for the next secrets step'),
       installMode: installModeSchema.default('local').describe('Install mode for the next secrets step'),
-      imageSource: imageSourceSchema.default('ghcr').describe('Container image source for the next deploy step'),
+      imageSource: imageSourceSchema.default('local').describe('Container image source for the next deploy step'),
       harness: harnessSchema.default('codex').describe('Selected default harness'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
       overlayPath: z.string().default('org').describe('Overlay path for the next secrets step'),
@@ -2118,7 +2196,7 @@ const integrations = Cli.create('integrations', {
       assistantName: z.string().default('centaur').describe('Assistant display name'),
       domain: z.string().default('centaur.example.com').describe('Public deployment domain'),
       installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
-      imageSource: imageSourceSchema.default('ghcr').describe('Container image source for deploy commands'),
+      imageSource: imageSourceSchema.default('local').describe('Container image source for deploy commands'),
       backend: secretBackendSchema.default('local-env').describe('Secret backend'),
       harness: harnessSchema.default('codex').describe('Selected default harness'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
@@ -2156,7 +2234,7 @@ const secrets = Cli.create('secrets', {
   options: z.object({
     backend: secretBackendSchema.default('local-env').describe('Secret backend to populate'),
     installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
-    imageSource: imageSourceSchema.default('ghcr').describe('Container image source for the next deploy command'),
+    imageSource: imageSourceSchema.default('local').describe('Container image source for the next deploy command'),
     harness: harnessSchema.default('codex').describe('Selected default harness'),
     authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
     overlayPath: z.string().default('org').describe('Overlay path for local generated files'),
@@ -2278,11 +2356,62 @@ const secrets = Cli.create('secrets', {
         defaultSecretTarget('sops', c.options.overlayPath),
       vaultPath: c.options.vaultPath || promptedBackendOptions.vaultPath,
     }
-    const result = writeSecrets(c.options.backend, secrets, backendOptions)
+    if (c.options.backend === 'onepassword') {
+      if (process.env.OP_SERVICE_ACCOUNT_TOKEN) secrets.OP_SERVICE_ACCOUNT_TOKEN = process.env.OP_SERVICE_ACCOUNT_TOKEN
+      if (process.env.OP_VAULT) secrets.OP_VAULT = process.env.OP_VAULT
+    }
+    const { backendSecrets, infraSecrets } = splitSecretsForBackend(c.options.backend, secrets)
+    let result: ReturnType<typeof writeSecrets>
+    let infraResult: ReturnType<typeof writeSecrets> | undefined
+    try {
+      if (Object.keys(infraSecrets).length > 0) {
+        infraResult = writeSecrets('local-env', infraSecrets, {
+          localEnvPath: backendOptions.localEnvPath,
+        })
+      }
+      result = writeSecrets(c.options.backend, backendSecrets, backendOptions)
+    } catch (error) {
+      const retryCommand = commandLine(secretsCollectCommandParts({
+        ...collectCommandOptions,
+        fromEnv: c.options.fromEnv,
+        json: true,
+      }))
+      return c.error({
+        code: 'SECRET_WRITE_FAILED',
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+        cta: {
+          description: 'Secret backend write failed; inspect backend permissions and retry:',
+          commands: [
+            {
+              command: commandLine([
+                'secrets',
+                'doctor',
+                '--backend',
+                c.options.backend,
+                '--harness',
+                c.options.harness,
+                '--auth-mode',
+                c.options.authMode,
+                '--overlay-path',
+                c.options.overlayPath,
+                '--json',
+              ]),
+              description: 'check selected secret backend access',
+            },
+            {
+              command: retryCommand,
+              description: 'retry the same secret collection command after fixing backend access',
+            },
+          ],
+        },
+      })
+    }
     const deploySecretsFile =
-      c.options.backend === 'local-env'
+      infraResult?.target ||
+      (c.options.backend === 'local-env'
         ? backendOptions.localEnvPath
-        : deploySecretsFileForBackend(c.options.backend, c.options.overlayPath)
+        : deploySecretsFileForBackend(c.options.backend, c.options.overlayPath))
     const nextDeployCommand = deploymentCommandForInstallMode(c.options.installMode, {
       apply: true,
       imageSource: c.options.imageSource,
@@ -2331,8 +2460,10 @@ const secrets = Cli.create('secrets', {
     return c.ok(
       {
         backend: result.backend,
-        target: result.target,
-        writtenKeys: result.writtenKeys,
+        target: infraResult ? `${result.target}; ${infraResult.target}` : result.target,
+        writtenKeys: Array.from(new Set([...result.writtenKeys, ...(infraResult?.writtenKeys || [])])).sort(),
+        backendWrittenKeys: result.writtenKeys,
+        infraWrittenKeys: infraResult?.writtenKeys || [],
         command: result.command,
         steps: commandSteps(nextCommands),
       },
@@ -2404,7 +2535,7 @@ const deploy = Cli.create('deploy', {
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml').describe('Helm values file'),
-      imageSource: imageSourceSchema.default('ghcr').describe('Use published GHCR images or local image names'),
+      imageSource: imageSourceSchema.default('local').describe('Use published GHCR images or local image names'),
       secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
       secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
       wait: z.boolean().default(true).describe('Wait for Kubernetes resources to become ready'),
@@ -2454,7 +2585,7 @@ const deploy = Cli.create('deploy', {
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml').describe('Helm values file'),
-      imageSource: imageSourceSchema.default('ghcr').describe('Use published GHCR images or local image names'),
+      imageSource: imageSourceSchema.default('local').describe('Use published GHCR images or local image names'),
       secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
       secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
       wait: z.boolean().default(true).describe('Wait for Kubernetes resources to become ready'),
@@ -2631,7 +2762,7 @@ export const app = Cli.create('centaur', {
       assistantName: z.string().default('centaur').describe('Assistant display name'),
       domain: z.string().default('centaur.example.com').describe('Public deployment domain'),
       installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
-      imageSource: imageSourceSchema.default('ghcr').describe('Container image source for deploy commands'),
+      imageSource: imageSourceSchema.default('local').describe('Container image source for deploy commands'),
       backend: secretBackendSchema.default('local-env').describe('Secret backend'),
       harness: harnessSchema.default('codex').describe('Selected default harness'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
@@ -2814,7 +2945,7 @@ export const app = Cli.create('centaur', {
       domain: z.string().default('centaur.example.com').describe('Public deployment domain'),
       adminEmail: z.string().default('admin@example.com').describe('Admin email'),
       installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
-      imageSource: imageSourceSchema.default('ghcr').describe('Use published GHCR images or local image names'),
+      imageSource: imageSourceSchema.default('local').describe('Use published GHCR images or local image names'),
       secretBackend: secretBackendSchema.default('local-env').describe('Secret backend'),
       harness: harnessSchema.default('codex').describe('Default harness: codex or claude-code'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
@@ -2831,7 +2962,7 @@ export const app = Cli.create('centaur', {
       state.domain = c.options.domain || prior.domain || 'centaur.example.com'
       state.adminEmail = c.options.adminEmail || prior.adminEmail || 'admin@example.com'
       state.installMode = c.options.installMode || prior.installMode || 'local'
-      state.imageSource = c.options.imageSource || prior.imageSource || 'ghcr'
+      state.imageSource = c.options.imageSource || prior.imageSource || 'local'
       state.secretBackend = c.options.secretBackend || prior.secretBackend || 'local-env'
       state.harness = c.options.harness || prior.harness || 'codex'
       state.authMode = c.options.authMode || prior.authMode || 'api_key'
@@ -2848,6 +2979,7 @@ export const app = Cli.create('centaur', {
         harness: state.harness,
         authMode: state.authMode,
         secretBackend: state.secretBackend,
+        installMode: state.installMode,
       })
       writeSlackManifest(manifestPath, state.assistantName, state.domain, state.installMode === 'local')
       for (const step of ['local-state', 'overlay', 'slack-manifest', 'secrets-plan', 'deployment-plan']) {
@@ -2978,7 +3110,7 @@ export const app = Cli.create('centaur', {
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
       secretBackend: secretBackendSchema.default('local-env').describe('Secret backend for repair CTAs'),
       installMode: installModeSchema.default('local').describe('Install mode for repair CTAs'),
-      imageSource: imageSourceSchema.default('ghcr').describe('Container image source used by deploy'),
+      imageSource: imageSourceSchema.default('local').describe('Container image source used by deploy'),
       localEnvPath: z.string().optional().describe('local-env source file for deep checks'),
     }),
     run(c) {

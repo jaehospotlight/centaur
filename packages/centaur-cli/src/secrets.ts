@@ -75,32 +75,30 @@ function tempSecretFile(secrets: SecretMap, format: 'dotenv' | 'kubernetes-env' 
   return { dir, path }
 }
 
-function onePasswordTemplate(title: string, value: string, existing?: unknown) {
+export function onePasswordTemplate(title: string, value: string, existing?: unknown) {
   const item: Record<string, unknown> =
     existing && typeof existing === 'object'
       ? { ...(existing as Record<string, unknown>), title }
-      : { title, category: 'PASSWORD' }
-  const fields = Array.isArray(item.fields) ? [...item.fields] : []
-  const passwordFieldIndex = fields.findIndex(field => {
+      : { title, category: 'API_CREDENTIAL' }
+  const isSecretValueField = (field: unknown) => {
     if (!field || typeof field !== 'object') return false
     const candidate = field as Record<string, unknown>
-    return candidate.purpose === 'PASSWORD' || candidate.id === 'password' || candidate.label === 'password'
-  })
-  const passwordField = {
-    id: 'password',
+    return (
+      candidate.purpose === 'PASSWORD' ||
+      candidate.id === 'password' ||
+      candidate.label === 'password' ||
+      candidate.id === 'credential' ||
+      candidate.label === 'credential'
+    )
+  }
+  const fields = Array.isArray(item.fields) ? item.fields.filter(field => !isSecretValueField(field)) : []
+  const credentialField = {
+    id: 'credential',
     type: 'CONCEALED',
-    purpose: 'PASSWORD',
-    label: 'password',
+    label: 'credential',
     value,
   }
-  if (passwordFieldIndex >= 0) {
-    fields[passwordFieldIndex] = {
-      ...(fields[passwordFieldIndex] as Record<string, unknown>),
-      ...passwordField,
-    }
-  } else {
-    fields.push(passwordField)
-  }
+  fields.push(credentialField)
   return { ...item, fields }
 }
 
@@ -172,13 +170,16 @@ export function writeSecrets(
   if (backend === 'onepassword' || backend === 'onepassword-connect') {
     const vault = options.onePasswordVault || process.env.OP_VAULT
     if (!vault) throw new Error('OP_VAULT or onePasswordVault is required for 1Password backends')
+    const overwriteExisting = /^(1|true|yes)$/i.test(process.env.CENTAUR_OP_OVERWRITE || '')
     const temp = mkdtempSync(join(tmpdir(), 'centaur-op-'))
     try {
-      for (const [key, value] of Object.entries(secrets)) {
+      for (const key of keys) {
+        const value = secrets[key]!
         const existing = spawnSync('op', ['item', 'get', key, '--vault', vault, '--format', 'json'], {
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore'],
         })
+        if (existing.status === 0 && !overwriteExisting) continue
         const existingItem = existing.status === 0 ? JSON.parse(existing.stdout) : undefined
         const template = writeOnePasswordTemplate(temp, key, value, existingItem)
         if (existing.status === 0) {
@@ -194,7 +195,7 @@ export function writeSecrets(
       backend,
       target: `1Password vault ${vault}`,
       writtenKeys: keys,
-      command: `op item create/edit <SECRET_NAME> --vault ${shellQuote(vault)} --template <temp-json-file>`,
+      command: `op item create <SECRET_NAME> --vault ${shellQuote(vault)} --template <temp-json-file>`,
     }
   }
 

@@ -130,7 +130,7 @@ centaur setup --org acme --assistant-name centaur --domain centaur.example.com -
 
 The returned commands create the overlay, copy the Slack manifest to your
 clipboard, collect masked secrets, deploy to the current k3s-compatible
-Kubernetes context with published GHCR images, run `centaur run --local`
+Kubernetes context with local image names, run `centaur run --local`
 through the API pod in JSONL mode, and run `centaur slackbot smoke` through the
 Slackbot pod.
 

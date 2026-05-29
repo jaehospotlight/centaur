@@ -6,6 +6,7 @@ import {
   CODEX_ACCESS_TOKEN_SECRETS,
   type AuthMode,
   type Harness,
+  type InstallMode,
   type SecretBackend,
 } from './constants.js'
 import { expandPath } from './state.js'
@@ -32,6 +33,7 @@ export type OverlayOptions = {
   harness: Harness
   authMode: AuthMode
   secretBackend?: SecretBackend
+  installMode?: InstallMode
 }
 
 function publicBaseUrl(domain: string) {
@@ -263,6 +265,8 @@ api:
   defaultHarness: ${options.harness}
   executionWorkerEnabled: true
   warmPoolEnabled: true
+  egressDiscovery:
+    enabled: ${options.installMode === 'k8s' ? 'true' : 'false'}
 ${selectedApiExtraEnv(options.harness, options.authMode)}
 
 sandbox:

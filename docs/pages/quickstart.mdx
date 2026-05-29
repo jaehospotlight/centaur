@@ -27,11 +27,11 @@ command or pause for the Slack app creation step:
 curl -fsSL https://centaur.run/install.sh | bash
 centaur --llms
 centaur setup --org acme --assistant-name centaur --domain centaur.example.com --backend local-env --install-mode local --harness codex --auth-mode api_key --json
-centaur init --org acme --assistant-name centaur --domain centaur.example.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json
-centaur integrations slack-manifest --domain centaur.example.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json
-centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json
-centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr --json
-centaur deploy k3s --apply --image-source ghcr --wait --timeout 10m --secrets-file org/secrets.local.env --json
+centaur init --org acme --assistant-name centaur --domain centaur.example.com --install-mode local --image-source local --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json
+centaur integrations slack-manifest --domain centaur.example.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source local --harness codex --auth-mode api_key --overlay-path org --json
+centaur secrets collect --backend local-env --install-mode local --image-source local --harness codex --auth-mode api_key --overlay-path org --json
+centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source local --json
+centaur deploy k3s --apply --image-source local --wait --timeout 10m --secrets-file org/secrets.local.env --json
 centaur run "Reply with exactly PONG and nothing else." --local --harness codex --expect PONG --release-thread --format jsonl
 centaur slackbot smoke --json
 ```
@@ -45,10 +45,10 @@ secret values with masked input before writing them to the selected backend; if
 it cannot prompt, the JSON response includes a `secret_inputs` step with the
 exact fields to collect before retrying.
 `centaur deploy ... --apply` creates the Kubernetes Secret from the local
-secrets file when needed and runs Helm with published
-`ghcr.io/paradigmxyz/centaur/*` images, so fresh installs do not need a local
-Docker build. The deploy step waits for Kubernetes readiness before the next
-command runs. `centaur run --local` verifies a real durable agent turn through
+secrets file when needed and runs Helm with local image names for k3s-compatible
+development clusters. Use `--image-source ghcr` when the target cluster can
+pull the published images. The deploy step waits for Kubernetes readiness
+before the next command runs. `centaur run --local` verifies a real durable agent turn through
 the API pod without requiring a port-forward or external API key.
 `centaur slackbot smoke` then sends a signed synthetic Slack mention through
 the deployed Slackbot pod and waits for the resulting Slack workflow execution

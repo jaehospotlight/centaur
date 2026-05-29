@@ -21,7 +21,7 @@ import {
 import { binaryChecks, envChecks } from '../src/checks.js'
 import { CentaurClient, parseSse } from '../src/client.js'
 import { runAgent } from '../src/run.js'
-import { kubernetesEnvFile, writeSecrets } from '../src/secrets.js'
+import { kubernetesEnvFile, onePasswordTemplate, writeSecrets } from '../src/secrets.js'
 import { harnessAuthPlan, slackManifest, writeOverlay, writeSlackManifest } from '../src/templates.js'
 
 async function runCli(args: string[]) {
@@ -240,7 +240,7 @@ describe('overlay scaffolding', () => {
     expect(ctaCommands[2]).toContain('--harness codex')
     expect(ctaCommands[2]).toContain('--auth-mode access_token')
     expect(ctaCommands[3]).toContain('centaur deploy k3s --apply')
-    expect(ctaCommands[3]).toContain('--image-source ghcr')
+    expect(ctaCommands[3]).toContain('--image-source local')
     expect(ctaCommands[4]).toContain("centaur run 'Reply with exactly PONG and nothing else.' --local --harness codex --expect PONG --release-thread")
     expect(ctaCommands[5]).toContain('centaur slackbot smoke')
 
@@ -248,7 +248,7 @@ describe('overlay scaffolding', () => {
     expect(state.org).toBe('acme')
     expect(state.harness).toBe('codex')
     expect(state.authMode).toBe('access_token')
-    expect(state.imageSource).toBe('ghcr')
+    expect(state.imageSource).toBe('local')
     expect(state.completedSteps).toContain('slack-manifest')
     expect(readFileSync(join(overlayPath, 'values.centaur.yaml'), 'utf8')).toContain(
       'CODEX_AUTH_MODE: access_token',
@@ -258,6 +258,9 @@ describe('overlay scaffolding', () => {
     )
     expect(readFileSync(join(overlayPath, 'values.centaur.yaml'), 'utf8')).toContain(
       'tokenBroker:\n  enabled: true',
+    )
+    expect(readFileSync(join(overlayPath, 'values.centaur.yaml'), 'utf8')).toContain(
+      'egressDiscovery:\n    enabled: false',
     )
   })
 
@@ -291,7 +294,7 @@ describe('overlay scaffolding', () => {
     const output = JSON.parse(stdout)
     expect(output.copied).toBe(false)
     expect(output.nextCommand).toContain('centaur secrets collect --backend kubernetes')
-    expect(output.nextCommand).toContain('--image-source ghcr')
+    expect(output.nextCommand).toContain('--image-source local')
     expect(output.nextCommand).toContain('--harness claude-code')
     expect(output.nextCommand).toContain('--auth-mode access_token')
     expect(output.cta.commands[0].command).toContain('centaur secrets collect --backend kubernetes')
@@ -364,11 +367,11 @@ describe('overlay scaffolding', () => {
 
     const output = JSON.parse(stdout)
     expect(output.commands).toEqual([
-      'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json',
-      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json',
-      'centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json',
-      'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr --json',
-      'centaur deploy k3s --apply --image-source ghcr --wait --timeout 10m --secrets-file org/secrets.local.env --json',
+      'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source local --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json',
+      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source local --harness codex --auth-mode api_key --overlay-path org --json',
+      'centaur secrets collect --backend local-env --install-mode local --image-source local --harness codex --auth-mode api_key --overlay-path org --json',
+      'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source local --json',
+      'centaur deploy k3s --apply --image-source local --wait --timeout 10m --secrets-file org/secrets.local.env --json',
       "centaur run 'Reply with exactly PONG and nothing else.' --local --harness codex --expect PONG --release-thread --format jsonl",
       'centaur slackbot smoke --json',
     ])
@@ -460,7 +463,7 @@ describe('overlay scaffolding', () => {
     expect(deploy).toContain("--secrets-file '/tmp/acme overlay/secrets.local.env'")
   })
 
-  it('doctor warns without blocking local subscription bootstrap on read-only backends', async () => {
+  it('doctor blocks subscription auth on backends without writable broker storage', async () => {
     const root = mkdtempSync(join(tmpdir(), 'centaur-cli-doctor-'))
     const overlayPath = join(root, 'org')
     const localEnvPath = join(root, 'secrets.local.env')
@@ -486,7 +489,7 @@ describe('overlay scaffolding', () => {
       { localEnvPath },
     )
 
-    const { stdout } = await runCliWithExit([
+    const { stdout, exitCode } = await runCliWithExit([
       'secrets',
       'doctor',
       '--backend',
@@ -503,12 +506,14 @@ describe('overlay scaffolding', () => {
     ])
 
     const output = JSON.parse(stdout)
-    expect(output.ok).toBe(true)
+    expect(exitCode).toBe(1)
+    expect(output.ok).toBe(false)
     const backendCheck = output.results.find(
       (result: { name: string }) => result.name === 'backend:brokered-token-store',
     )
-    expect(backendCheck.ok).toBe(true)
-    expect(backendCheck.detail).toContain('production refresh-token rotation needs onepassword')
+    expect(backendCheck.ok).toBe(false)
+    expect(backendCheck.detail).toContain('writable refresh-token store')
+    expect(backendCheck.repair).toContain('onepassword')
   })
 })
 
@@ -600,22 +605,22 @@ describe('deploy plans', () => {
       '-f',
       'org/values.centaur.yaml',
       '--set',
-      'api.image.repository=ghcr.io/paradigmxyz/centaur/centaur-api',
+      'api.image.pullPolicy=IfNotPresent',
       '--set',
-      'ironProxy.image.repository=ghcr.io/paradigmxyz/centaur/centaur-iron-proxy',
+      'ironProxy.image.pullPolicy=IfNotPresent',
       '--set',
-      'slackbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-slackbot',
+      'slackbot.image.pullPolicy=IfNotPresent',
       '--set',
-      'sandbox.image.repository=ghcr.io/paradigmxyz/centaur/centaur-agent',
+      'sandbox.image.pullPolicy=IfNotPresent',
       '--wait',
       '--timeout',
       '10m',
     ])
   })
 
-  it('supports local image names without forcing image pulls', () => {
+  it('supports published GHCR image names when requested', () => {
     const commands = k3sDeploymentCommands('centaur', 'centaur', 'org/values.centaur.yaml', {
-      imageSource: 'local',
+      imageSource: 'ghcr',
     })
 
     expect(commands.at(-1)?.slice(5)).toEqual([
@@ -624,13 +629,13 @@ describe('deploy plans', () => {
       '-f',
       'org/values.centaur.yaml',
       '--set',
-      'api.image.pullPolicy=IfNotPresent',
+      'api.image.repository=ghcr.io/paradigmxyz/centaur/centaur-api',
       '--set',
-      'ironProxy.image.pullPolicy=IfNotPresent',
+      'ironProxy.image.repository=ghcr.io/paradigmxyz/centaur/centaur-iron-proxy',
       '--set',
-      'slackbot.image.pullPolicy=IfNotPresent',
+      'slackbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-slackbot',
       '--set',
-      'sandbox.image.pullPolicy=IfNotPresent',
+      'sandbox.image.repository=ghcr.io/paradigmxyz/centaur/centaur-agent',
       '--wait',
       '--timeout',
       '10m',
@@ -670,7 +675,7 @@ describe('deploy plans', () => {
       secretsFile: 'org/secrets.local.env',
     })
 
-    expect(commands[3]).toEqual([
+    expect(commands).toContainEqual([
       'kubectl',
       'create',
       'secret',
@@ -697,6 +702,12 @@ describe('deploy plans', () => {
     expect(output.commands).toContain(
       'kubectl create secret generic centaur-infra-env -n centaur --from-env-file org/secrets.local.env --dry-run=client -o yaml | kubectl apply -f -',
     )
+    expect(output.commands).toContain(
+      'kubectl create namespace centaur-egress --dry-run=client -o yaml | kubectl apply -f -',
+    )
+    expect(output.commands.some((command: string) =>
+      command.includes('centaur-firewall-ca') && command.includes('centaur-firewall-ca-key'),
+    )).toBe(true)
   })
 
   it('returns deploy and verification CTAs using the selected values harness', async () => {
@@ -1143,6 +1154,24 @@ describe('component logs', () => {
 })
 
 describe('secret backends', () => {
+  it('upserts one 1Password credential field before editing an item', () => {
+    const template = onePasswordTemplate('OPENAI_CODEX_BLOB', 'new-secret', {
+      title: 'OPENAI_CODEX_BLOB',
+      category: 'API_CREDENTIAL',
+      fields: [
+        { id: 'password', type: 'CONCEALED', purpose: 'PASSWORD', label: 'password', value: 'old-a' },
+        { id: 'other', type: 'STRING', label: 'note', value: 'keep-me' },
+        { id: 'credential', type: 'CONCEALED', label: 'credential', value: 'old-b' },
+      ],
+    })
+    const fields = template.fields as Array<Record<string, unknown>>
+
+    expect(fields.filter(field => field.label === 'password')).toHaveLength(0)
+    expect(fields.filter(field => field.label === 'credential')).toHaveLength(1)
+    expect(fields.find(field => field.label === 'credential')?.value).toBe('new-secret')
+    expect(fields.find(field => field.id === 'other')?.value).toBe('keep-me')
+  })
+
   it('can build Codex subscription secrets for from-env mode from local auth sources', () => {
     expect(
       codexSubscriptionSecretsFromSources(
@@ -1216,8 +1245,11 @@ describe('secret backends', () => {
       const deploy = output.cta.commands.find((command: { command: string }) =>
         command.command.startsWith('centaur deploy k3s '),
       )
+      const written = readFileSync(localEnvPath, 'utf8')
       expect(deploy.command).toContain(`--secrets-file ${localEnvPath}`)
       expect(deploy.command).not.toContain(join(overlayPath, 'secrets.local.env'))
+      expect(output.writtenKeys).toContain('IRON_BROKER_TOKEN')
+      expect(written).toContain('IRON_BROKER_TOKEN=')
       expect(output.steps.map((step: { type: string }) => step.type)).toEqual([
         'command',
         'command',

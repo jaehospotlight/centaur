@@ -37,11 +37,11 @@ returned CTA includes a short description for the next command. The expanded
 local happy path is:
 
 ```bash
-centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json
-centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json
-centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json
-centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr --json
-centaur deploy k3s --apply --image-source ghcr --wait --timeout 10m --secrets-file org/secrets.local.env --json
+centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source local --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json
+centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source local --harness codex --auth-mode api_key --overlay-path org --json
+centaur secrets collect --backend local-env --install-mode local --image-source local --harness codex --auth-mode api_key --overlay-path org --json
+centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source local --json
+centaur deploy k3s --apply --image-source local --wait --timeout 10m --secrets-file org/secrets.local.env --json
 centaur run "Reply with exactly PONG and nothing else." --local --harness codex --expect PONG --release-thread --format jsonl
 centaur slackbot smoke --json
 ```
@@ -76,11 +76,11 @@ event-by-event output. Set `CENTAUR_API_URL` and `CENTAUR_API_KEY`, or pass
 `--local` to run through the API pod without a port-forward or external API
 key.
 
-`centaur deploy ...` uses published `ghcr.io/paradigmxyz/centaur/*` images by
-default so fresh installs do not need to build local Docker images. Use
-`--image-source local` only when you have built `centaur-api`, `centaur-agent`,
-`centaur-slackbot`, and `centaur-iron-proxy` locally. Deploy waits for
-Kubernetes readiness by default before the next setup command runs.
+`centaur deploy k3s ...` uses local image names by default because local
+OrbStack/k3s development often runs on ARM and can reuse the images built by
+the checkout. Use `--image-source ghcr` when the target cluster can pull the
+published images. Deploy waits for Kubernetes readiness by default before the
+next setup command runs.
 Deploy JSON output also includes executable `steps` for applying a printed plan
 or continuing to local and Slackbot verification.
 
