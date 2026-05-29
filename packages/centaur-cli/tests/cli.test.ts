@@ -229,6 +229,7 @@ describe('overlay scaffolding', () => {
 
     const output = JSON.parse(stdout)
     const ctaCommands = output.cta.commands.map((command: { command: string }) => command.command)
+    expect(output.steps.map((step: { command: string }) => step.command)).toEqual(ctaCommands)
     expect(ctaCommands[0]).toContain('centaur integrations slack-manifest')
     expect(ctaCommands[0]).toContain('--copy')
     expect(ctaCommands[0]).toContain('--socket-mode')
