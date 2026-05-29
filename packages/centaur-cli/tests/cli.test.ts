@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -611,6 +611,32 @@ describe('deploy plans', () => {
     expect(output.commands).toContain(
       'kubectl create secret generic centaur-infra-env -n centaur --from-env-file org/secrets.local.env --dry-run=client -o yaml | kubectl apply -f -',
     )
+  })
+
+  it('returns deploy and verification CTAs using the selected values harness', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'centaur-cli-deploy-'))
+    const values = join(root, 'values.yaml')
+    writeFileSync(values, 'api:\n  defaultHarness: claude-code\n')
+
+    const stdout = await runCli([
+      'deploy',
+      'k3s',
+      '--values',
+      values,
+      '--namespace',
+      'custom',
+      '--release',
+      'pony',
+      '--json',
+    ])
+    const output = JSON.parse(stdout)
+    const ctaCommands = output.cta.commands.map((command: { command: string }) => command.command)
+
+    expect(ctaCommands[0]).toContain(`centaur deploy k3s --apply --namespace custom --release pony --values ${values}`)
+    expect(ctaCommands[1]).toBe(
+      "centaur run 'Reply with exactly PONG and nothing else.' --local --harness claude-code --expect PONG --release-thread --namespace custom --release pony",
+    )
+    expect(ctaCommands[2]).toBe('centaur slackbot smoke --namespace custom --release pony')
   })
 })
 

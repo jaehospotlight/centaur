@@ -522,8 +522,11 @@ function deploymentCommandForInstallMode(
   return commandLine(deployCommandPartsForInstallMode(installMode, options))
 }
 
-function localRunVerificationCommand(harness: Harness) {
-  return commandLine([
+function localRunVerificationCommand(
+  harness: Harness,
+  options: { namespace?: string; release?: string } = {},
+) {
+  const parts = [
     'run',
     DEFAULT_SMOKE_PROMPT,
     '--local',
@@ -532,7 +535,27 @@ function localRunVerificationCommand(harness: Harness) {
     '--expect',
     DEFAULT_SMOKE_EXPECT,
     '--release-thread',
-  ])
+  ]
+  if (options.namespace && options.namespace !== 'centaur') parts.push('--namespace', options.namespace)
+  if (options.release && options.release !== 'centaur') parts.push('--release', options.release)
+  return commandLine(parts)
+}
+
+function slackbotSmokeCommand(options: { namespace?: string; release?: string } = {}) {
+  const parts = ['slackbot', 'smoke']
+  if (options.namespace && options.namespace !== 'centaur') parts.push('--namespace', options.namespace)
+  if (options.release && options.release !== 'centaur') parts.push('--release', options.release)
+  return commandLine(parts)
+}
+
+function harnessFromValuesFile(path: string): Harness {
+  try {
+    const match = /^\s*defaultHarness:\s*([A-Za-z0-9-]+)/m.exec(readFileSync(expandPath(path), 'utf8'))
+    const harness = match?.[1]
+    return HARNESSES.includes(harness as Harness) ? harness as Harness : 'codex'
+  } catch {
+    return 'codex'
+  }
 }
 
 function deploySecretsFileForBackend(secretBackend: string, overlayPath: string) {
@@ -661,6 +684,79 @@ function setupPlanCta(plan: ReturnType<typeof setupPlan>, bin?: string) {
   return {
     description: 'Run these setup commands in order:',
     commands: plan.commands.map(command => ({ command })),
+  }
+}
+
+function deployApplyCommandParts(
+  subcommand: 'k3s' | 'k8s' | 'kind',
+  options: {
+    clusterName?: string
+    namespace: string
+    release: string
+    values: string
+    imageSource: ImageSource
+    secretsFile?: string
+    secretName: string
+    wait: boolean
+    timeout: string
+    updateDependencies: boolean
+  },
+) {
+  const parts = ['deploy', subcommand]
+  if (subcommand === 'kind' && options.clusterName && options.clusterName !== 'centaur') {
+    parts.push('--cluster-name', options.clusterName)
+  }
+  parts.push(
+    '--apply',
+    '--namespace',
+    options.namespace,
+    '--release',
+    options.release,
+    '--values',
+    options.values,
+    '--image-source',
+    options.imageSource,
+  )
+  if (options.secretsFile) {
+    parts.push('--secrets-file', options.secretsFile)
+    if (options.secretName !== 'centaur-infra-env') parts.push('--secret-name', options.secretName)
+  }
+  if (options.updateDependencies) parts.push('--update-dependencies')
+  if (options.wait) parts.push('--wait', '--timeout', options.timeout)
+  else parts.push('--no-wait')
+  return parts
+}
+
+function deployCta(
+  subcommand: 'k3s' | 'k8s' | 'kind',
+  options: Parameters<typeof deployApplyCommandParts>[1] & { applied: boolean },
+) {
+  const harness = harnessFromValuesFile(options.values)
+  const verificationCommands = [
+    {
+      command: localRunVerificationCommand(harness, options),
+      description: 'run one verified Centaur turn through the local API pod',
+    },
+    {
+      command: slackbotSmokeCommand(options),
+      description: 'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
+    },
+  ]
+  if (options.applied) {
+    return {
+      description: 'Next verification commands:',
+      commands: verificationCommands,
+    }
+  }
+  return {
+    description: 'Next deployment commands:',
+    commands: [
+      {
+        command: commandLine(deployApplyCommandParts(subcommand, options)),
+        description: 'apply this deployment plan',
+      },
+      ...verificationCommands,
+    ],
   }
 }
 
@@ -1977,10 +2073,15 @@ const deploy = Cli.create('deploy', {
         updateDependencies: c.options.updateDependencies,
       })
       if (c.options.apply) runDeploymentCommands(commands)
-      return {
-        applied: c.options.apply,
-        commands: formatDeploymentCommands(commands),
-      }
+      return c.ok(
+        {
+          applied: c.options.apply,
+          commands: formatDeploymentCommands(commands),
+        },
+        {
+          cta: deployCta('k8s', { ...c.options, applied: c.options.apply }),
+        },
+      )
     },
   })
   .command('k3s', {
@@ -2007,10 +2108,15 @@ const deploy = Cli.create('deploy', {
         updateDependencies: c.options.updateDependencies,
       })
       if (c.options.apply) runDeploymentCommands(commands)
-      return {
-        applied: c.options.apply,
-        commands: formatDeploymentCommands(commands),
-      }
+      return c.ok(
+        {
+          applied: c.options.apply,
+          commands: formatDeploymentCommands(commands),
+        },
+        {
+          cta: deployCta('k3s', { ...c.options, applied: c.options.apply }),
+        },
+      )
     },
   })
   .command('kind', {
@@ -2038,10 +2144,15 @@ const deploy = Cli.create('deploy', {
         updateDependencies: c.options.updateDependencies,
       })
       if (c.options.apply) runDeploymentCommands(commands)
-      return {
-        applied: c.options.apply,
-        commands: formatDeploymentCommands(commands),
-      }
+      return c.ok(
+        {
+          applied: c.options.apply,
+          commands: formatDeploymentCommands(commands),
+        },
+        {
+          cta: deployCta('kind', { ...c.options, applied: c.options.apply }),
+        },
+      )
     },
   })
   .command('ssh', {
