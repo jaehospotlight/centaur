@@ -1,5 +1,5 @@
 import { createElement, Fragment } from 'react'
-import { defineConfig, McpSource } from 'vocs/config'
+import { defineConfig } from 'vocs/config'
 
 import { sidebar } from './sidebar.js'
 
@@ -9,18 +9,18 @@ const siteUrl = process.env.VOCS_SITE_URL || 'https://centaur.run'
 function canonicalHref(path: string) {
   const root = siteUrl.replace(/\/+$/, '')
   if (path === '/') return `${root}/`
-  return `${root}${path.replace(/\/+$/, '')}`
+  return `${root}${path.replace(/\/+$/, '')}/`
 }
 
 export default defineConfig({
   rootDir: '.',
   srcDir: '.',
+  colorScheme: 'dark',
   renderStrategy: 'full-static',
   // The dead-link checker doesn't know about static assets shipped via
   // public/ (like our zip and brand SVGs), so downgrade to a warning rather
   // than failing the build.
   checkDeadlinks: 'warn',
-  baseUrl: siteUrl,
   title: 'Centaur',
   titleTemplate: '%s - Centaur',
   description: 'The production control plane for shared AI agents, tools, workflows, and sandboxes.',
@@ -37,16 +37,6 @@ export default defineConfig({
   logoUrl: {
     light: '/brand/lockup-black.svg',
     dark: '/brand/lockup-white.svg',
-  },
-  mcp: {
-    enabled: true,
-    sources: [
-      McpSource.github({
-        name: 'centaur',
-        repo: 'paradigmxyz/centaur',
-        paths: ['docs', 'services', 'centaur_sdk', 'packages', 'tools', 'workflows'],
-      }),
-    ],
   },
   // Body copy uses Amp's PolySans via the pages/_root.css override. Docs headings
   // use Perfectly Nineties, while the landing hero uses Sagittaire Display.
@@ -115,11 +105,6 @@ export default defineConfig({
   },
   topNav: [
     {
-      text: 'Docs',
-      link: '/what-is-centaur',
-      match: '/what-is-centaur',
-    },
-    {
       text: 'GitHub',
       link: 'https://github.com/paradigmxyz/centaur',
     },
@@ -143,11 +128,11 @@ export default defineConfig({
   },
   sidebar,
   theme: {
+    // Keep in sync with --centaur-accent in docs/pages/_root.css.
     accentColor: {
-      light: '#00E100',
-      dark: '#00E100',
+      light: '#28c26a',
+      dark: '#28c26a',
     },
-    colorScheme: 'dark',
     variables: {
       color: {
         background: {

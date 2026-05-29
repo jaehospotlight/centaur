@@ -6,6 +6,7 @@ export const sidebar = [
     items: [
       { text: 'What is Centaur?', link: '/what-is-centaur' },
       { text: 'Quickstart', link: '/quickstart' },
+      { text: 'Mac Mini-style setup', link: '/mac-mini-setup' },
       { text: 'Deploying in Production', link: '/deploying-in-production' },
       { text: 'Architecture', link: '/architecture' },
     ],
@@ -39,10 +40,21 @@ export const sidebar = [
     ],
   },
   {
+    text: 'Reference',
+    items: [
+      { text: 'Configuration', link: '/reference/configuration' },
+      { text: 'Tool Directory', link: '/reference/tool-directory' },
+    ],
+  },
+  {
     text: 'Resources',
     items: [
       { text: 'Brand', link: '/brand' },
       { text: 'Contact', link: '/contact' },
+      {
+        text: 'MIT License',
+        link: 'https://github.com/paradigmxyz/centaur/blob/main/LICENSE',
+      },
     ],
   },
 ] satisfies Config['sidebar']
