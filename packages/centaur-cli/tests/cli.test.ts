@@ -12,7 +12,7 @@ import {
   runSlackbotSmoke,
   serveCentaur,
 } from '../src/app.js'
-import { envChecks } from '../src/checks.js'
+import { binaryChecks, envChecks } from '../src/checks.js'
 import { CentaurClient, parseSse } from '../src/client.js'
 import { runAgent } from '../src/run.js'
 import { kubernetesEnvFile, writeSecrets } from '../src/secrets.js'
@@ -386,6 +386,16 @@ describe('overlay scaffolding', () => {
 })
 
 describe('environment checks', () => {
+  it('does not block CLI setup on legacy shell helpers the happy path does not use', () => {
+    const results = binaryChecks()
+
+    for (const name of ['binary:git', 'binary:jq', 'binary:openssl']) {
+      const result = results.find(item => item.name === name)
+      expect(result?.ok).toBe(true)
+      expect(result?.repair).toBeUndefined()
+    }
+  })
+
   it('validates only the selected default harness', () => {
     const results = envChecks(
       {

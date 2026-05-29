@@ -17,7 +17,7 @@ export type CheckResult = {
   repair?: string
 }
 
-const REQUIRED_BINARIES = ['git', 'jq', 'openssl']
+const BASE_BINARIES = ['git', 'jq', 'openssl']
 const DEPLOY_BINARIES = ['kubectl', 'helm']
 const OPTIONAL_BINARIES = ['gh', 'docker', 'kind', 'ssh', 'op', 'sops', 'age', 'argocd']
 
@@ -28,12 +28,11 @@ function commandPath(name: string) {
 
 export function binaryChecks(options: { includeDeploy?: boolean; includeSsh?: boolean } = {}) {
   const names = Array.from(
-    new Set([...REQUIRED_BINARIES, ...OPTIONAL_BINARIES, ...(options.includeDeploy ? DEPLOY_BINARIES : [])]),
+    new Set([...BASE_BINARIES, ...OPTIONAL_BINARIES, ...(options.includeDeploy ? DEPLOY_BINARIES : [])]),
   )
   return names.map((name): CheckResult => {
     const path = commandPath(name)
     const required =
-      REQUIRED_BINARIES.includes(name) ||
       (options.includeDeploy === true && DEPLOY_BINARIES.includes(name)) ||
       (options.includeSsh === true && name === 'ssh')
     return {
