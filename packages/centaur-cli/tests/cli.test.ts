@@ -304,9 +304,10 @@ describe('overlay scaffolding', () => {
     ])
   })
 
-  it('doctor rejects read-only secret backends for subscription auth', async () => {
+  it('doctor warns without blocking local subscription bootstrap on read-only backends', async () => {
     const root = mkdtempSync(join(tmpdir(), 'centaur-cli-doctor-'))
     const overlayPath = join(root, 'org')
+    const localEnvPath = join(root, 'secrets.local.env')
     writeOverlay({
       path: overlayPath,
       org: 'acme',
@@ -317,6 +318,17 @@ describe('overlay scaffolding', () => {
       secretBackend: 'local-env',
     })
     writeSlackManifest(join(overlayPath, 'slack-app-manifest.json'), 'centaur', 'centaur.acme.com', false)
+    writeSecrets(
+      'local-env',
+      {
+        SLACK_BOT_TOKEN: 'xoxb-test',
+        SLACK_SIGNING_SECRET: 'signing-test',
+        OPENAI_CODEX_CLIENT_ID: 'client-test',
+        OPENAI_CODEX_BLOB: '{"refresh_token":"test"}',
+        OPENAI_CODEX_ACCOUNT_ID: 'acct-test',
+      },
+      { localEnvPath },
+    )
 
     const { stdout } = await runCliWithExit([
       'secrets',
@@ -329,16 +341,18 @@ describe('overlay scaffolding', () => {
       'access_token',
       '--overlay-path',
       overlayPath,
+      '--local-env-path',
+      localEnvPath,
       '--json',
     ])
 
     const output = JSON.parse(stdout)
-    expect(output.ok).toBe(false)
+    expect(output.ok).toBe(true)
     const backendCheck = output.results.find(
       (result: { name: string }) => result.name === 'backend:brokered-token-store',
     )
-    expect(backendCheck.ok).toBe(false)
-    expect(backendCheck.repair).toContain('--secret-backend onepassword')
+    expect(backendCheck.ok).toBe(true)
+    expect(backendCheck.detail).toContain('production refresh-token rotation needs onepassword')
   })
 })
 

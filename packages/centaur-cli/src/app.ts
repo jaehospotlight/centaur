@@ -558,10 +558,8 @@ function brokeredTokenBackendCheck(secretBackend: string, authMode: string) {
   return [
     {
       name: 'backend:brokered-token-store',
-      ok: false,
-      detail: `${secretBackend} cannot store rotated subscription refresh tokens`,
-      repair:
-        'Use --secret-backend onepassword or --secret-backend onepassword-connect for access_token auth, or switch to --auth-mode api_key.',
+      ok: true,
+      detail: `${secretBackend} can bootstrap access_token auth, but production refresh-token rotation needs onepassword or onepassword-connect`,
     },
   ]
 }
