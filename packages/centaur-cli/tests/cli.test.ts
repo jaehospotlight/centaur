@@ -722,6 +722,7 @@ describe('deploy plans', () => {
       "centaur run 'Reply with exactly PONG and nothing else.' --local --harness claude-code --expect PONG --release-thread --namespace custom --release pony --format jsonl",
     )
     expect(ctaCommands[2]).toBe('centaur slackbot smoke --namespace custom --release pony --json')
+    expect(output.steps.map((step: { command: string }) => step.command)).toEqual(ctaCommands)
   })
 
   it('returns recovery CTAs when an applied deploy command fails', async () => {
@@ -1124,6 +1125,14 @@ describe('secret backends', () => {
       )
       expect(deploy.command).toContain(`--secrets-file ${localEnvPath}`)
       expect(deploy.command).not.toContain(join(overlayPath, 'secrets.local.env'))
+      expect(output.steps.map((step: { type: string }) => step.type)).toEqual([
+        'command',
+        'command',
+        'command',
+        'command',
+      ])
+      expect(output.steps[0].command).toContain('centaur doctor --deep')
+      expect(output.steps[1].command).toBe(deploy.command)
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[key]

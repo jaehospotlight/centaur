@@ -740,6 +740,18 @@ function slackManifestSteps(userAction: ReturnType<typeof slackManifestUserActio
   ]
 }
 
+function executableCentaurCommand(command: string) {
+  return command.startsWith('centaur ') ? command : `centaur ${command}`
+}
+
+function commandSteps(commands: Array<{ command: string; description: string }>) {
+  return commands.map(command => ({
+    type: 'command',
+    command: executableCentaurCommand(command.command),
+    description: command.description,
+  }))
+}
+
 function secretInputUserAction(missing: MissingSecretInput[], description: string) {
   return {
     type: 'secret_inputs',
@@ -755,11 +767,7 @@ function secretInputSteps(
 ) {
   return [
     userAction,
-    ...commands.map(command => ({
-      type: 'command',
-      ...command,
-      command: `centaur ${command.command}`,
-    })),
+    ...commandSteps(commands),
   ]
 }
 
@@ -2292,34 +2300,36 @@ const secrets = Cli.create('secrets', {
       doctorCommand.push('--local-env-path', backendOptions.localEnvPath!)
     }
     doctorCommand.push('--json')
+    const nextCommands = [
+      {
+        command: commandLine(doctorCommand),
+        description: 'verify prerequisites and generated setup files',
+      },
+      {
+        command: nextDeployCommand,
+        description: 'apply local secrets when needed and deploy Centaur with Helm',
+      },
+      {
+        command: localRunVerificationCommand(c.options.harness, { jsonl: true }),
+        description: 'run one verified Centaur turn through the local API pod',
+      },
+      {
+        command: slackbotSmokeCommand({ json: true }),
+        description: 'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
+      },
+    ]
     return c.ok(
       {
         backend: result.backend,
         target: result.target,
         writtenKeys: result.writtenKeys,
         command: result.command,
+        steps: commandSteps(nextCommands),
       },
       {
         cta: {
           description: 'Next validation commands:',
-          commands: [
-            {
-              command: commandLine(doctorCommand),
-              description: 'verify prerequisites and generated setup files',
-            },
-            {
-              command: nextDeployCommand,
-              description: 'apply local secrets when needed and deploy Centaur with Helm',
-            },
-            {
-              command: localRunVerificationCommand(c.options.harness, { jsonl: true }),
-              description: 'run one verified Centaur turn through the local API pod',
-            },
-            {
-              command: slackbotSmokeCommand({ json: true }),
-              description: 'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
-            },
-          ],
+          commands: nextCommands,
         },
       },
     )
@@ -2365,13 +2375,15 @@ const deploy = Cli.create('deploy', {
           })
         }
       }
+      const cta = deployCta('k8s', { ...deployOptions, applied: c.options.apply })
       return c.ok(
         {
           applied: c.options.apply,
           commands: formatDeploymentCommands(commands),
+          steps: commandSteps(cta.commands),
         },
         {
-          cta: deployCta('k8s', { ...deployOptions, applied: c.options.apply }),
+          cta,
         },
       )
     },
@@ -2412,13 +2424,15 @@ const deploy = Cli.create('deploy', {
           })
         }
       }
+      const cta = deployCta('k3s', { ...deployOptions, applied: c.options.apply })
       return c.ok(
         {
           applied: c.options.apply,
           commands: formatDeploymentCommands(commands),
+          steps: commandSteps(cta.commands),
         },
         {
-          cta: deployCta('k3s', { ...deployOptions, applied: c.options.apply }),
+          cta,
         },
       )
     },
@@ -2460,13 +2474,15 @@ const deploy = Cli.create('deploy', {
           })
         }
       }
+      const cta = deployCta('kind', { ...deployOptions, applied: c.options.apply })
       return c.ok(
         {
           applied: c.options.apply,
           commands: formatDeploymentCommands(commands),
+          steps: commandSteps(cta.commands),
         },
         {
-          cta: deployCta('kind', { ...deployOptions, applied: c.options.apply }),
+          cta,
         },
       )
     },

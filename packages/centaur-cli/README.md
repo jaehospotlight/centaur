@@ -60,7 +60,8 @@ collect` prompts for required values with masked input, runs the selected Codex
 or Claude Code login command when subscription auth is selected, and writes the
 collected values into the chosen secret backend. If masked prompts are not
 available, the JSON response includes a `secret_inputs` step with the exact
-fields to request from the user before retrying.
+fields to request from the user before retrying. On success, `secrets collect`
+returns executable `steps` for doctor, deploy, local run, and Slackbot smoke.
 For non-interactive runs, `secrets collect --from-env --auth-mode access_token`
 can also build the broker blob from `OPENAI_CODEX_REFRESH_TOKEN` or
 `CLAUDE_CODE_REFRESH_TOKEN`, plus local Codex/Claude login metadata when
@@ -80,6 +81,8 @@ default so fresh installs do not need to build local Docker images. Use
 `--image-source local` only when you have built `centaur-api`, `centaur-agent`,
 `centaur-slackbot`, and `centaur-iron-proxy` locally. Deploy waits for
 Kubernetes readiness by default before the next setup command runs.
+Deploy JSON output also includes executable `steps` for applying a printed plan
+or continuing to local and Slackbot verification.
 
 `centaur smoke` remains available as a focused PONG verifier for freshly
 deployed local clusters.
