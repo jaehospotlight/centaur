@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { app, k3sDeploymentCommands } from '../src/app.js'
+import { app, k3sDeploymentCommands, runClusterSmoke } from '../src/app.js'
 import { envChecks } from '../src/checks.js'
 import { CentaurClient, parseSse } from '../src/client.js'
 import { runAgent } from '../src/run.js'
@@ -177,6 +177,8 @@ describe('overlay scaffolding', () => {
     expect(ctaCommands[2]).toContain('centaur doctor --deep')
     expect(ctaCommands[2]).toContain('--harness codex')
     expect(ctaCommands[2]).toContain('--auth-mode access_token')
+    expect(ctaCommands[3]).toContain('centaur deploy k3s --apply')
+    expect(ctaCommands[4]).toContain('centaur smoke --harness codex')
 
     const state = JSON.parse(readFileSync(join(home, 'onboarding-state.json'), 'utf8'))
     expect(state.org).toBe('acme')
@@ -227,6 +229,39 @@ describe('overlay scaffolding', () => {
     expect(output.nextCommand).toContain('--harness claude-code')
     expect(output.nextCommand).toContain('--auth-mode access_token')
     expect(output.cta.commands[0].command).toContain('centaur secrets collect --backend kubernetes')
+  })
+
+  it('top-level setup returns the full agent command chain through smoke', async () => {
+    const stdout = await runCli([
+      'setup',
+      '--org',
+      'acme',
+      '--assistant-name',
+      'centaur',
+      '--domain',
+      'centaur.acme.com',
+      '--backend',
+      'local-env',
+      '--install-mode',
+      'local',
+      '--harness',
+      'codex',
+      '--auth-mode',
+      'api_key',
+      '--overlay-path',
+      'org',
+      '--json',
+    ])
+
+    const output = JSON.parse(stdout)
+    expect(output.commands).toEqual([
+      'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org',
+      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org',
+      'centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org',
+      'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local',
+      'centaur deploy k3s --apply --secrets-file org/secrets.local.env',
+      'centaur smoke --harness codex',
+    ])
   })
 
   it('doctor rejects read-only secret backends for subscription auth', async () => {
@@ -281,6 +316,22 @@ describe('environment checks', () => {
     expect(results.some(result => result.name === 'env:codex-auth')).toBe(false)
     expect(results.find(result => result.name === 'env:claude-code-auth')?.ok).toBe(true)
   })
+
+  it('requires SLACK_APP_TOKEN for local socket-mode setup checks', () => {
+    const results = envChecks(
+      {
+        SLACK_BOT_TOKEN: 'xoxb-test',
+        SLACK_SIGNING_SECRET: 'signing-test',
+        OPENAI_API_KEY: 'sk-test',
+        GITHUB_TOKEN: 'gh-test',
+      },
+      { harness: 'codex', authMode: 'api_key', installMode: 'local' },
+    )
+
+    const slack = results.find(result => result.name === 'env:slack')
+    expect(slack?.ok).toBe(false)
+    expect(slack?.detail).toContain('SLACK_APP_TOKEN')
+  })
 })
 
 describe('deploy plans', () => {
@@ -291,6 +342,94 @@ describe('deploy plans', () => {
     expect(commands.at(-1)?.slice(0, 4)).toEqual(['helm', 'upgrade', '--install', 'centaur'])
     expect(commands.at(-1)?.[4]).toMatch(/contrib\/chart$/)
     expect(commands.at(-1)?.slice(5)).toEqual(['-n', 'centaur', '-f', 'org/values.centaur.yaml'])
+  })
+
+  it('can include a local env secret apply before Helm', async () => {
+    const commands = k3sDeploymentCommands('centaur', 'centaur', 'org/values.centaur.yaml', {
+      secretsFile: 'org/secrets.local.env',
+    })
+
+    expect(commands[3]).toEqual([
+      'kubectl',
+      'create',
+      'secret',
+      'generic',
+      'centaur-infra-env',
+      '-n',
+      'centaur',
+      '--from-env-file',
+      'org/secrets.local.env',
+      '--dry-run=client',
+      '-o',
+      'yaml',
+    ])
+
+    const stdout = await runCli([
+      'deploy',
+      'k3s',
+      '--secrets-file',
+      'org/secrets.local.env',
+      '--json',
+    ])
+    const output = JSON.parse(stdout)
+    expect(output.applied).toBe(false)
+    expect(output.commands).toContain(
+      'kubectl create secret generic centaur-infra-env -n centaur --from-env-file org/secrets.local.env --dry-run=client -o yaml | kubectl apply -f -',
+    )
+  })
+})
+
+describe('cluster smoke', () => {
+  it('runs spawn/message/execute through the API deployment and releases the thread', () => {
+    const calls: string[][] = []
+    const runner = (command: string[]) => {
+      calls.push(command)
+      const joined = command.join(' ')
+      if (joined.includes('/agent/spawn')) {
+        return JSON.stringify({ runtime_id: 'rtm-1', assignment_generation: 3 })
+      }
+      if (joined.includes('/agent/message')) {
+        return JSON.stringify({ ok: true, message_id: 'msg-1' })
+      }
+      if (joined.includes('/agent/execute')) {
+        return JSON.stringify({ execution_id: 'exe-1', status: 'queued' })
+      }
+      if (joined.includes('/agent/executions/exe-1')) {
+        return JSON.stringify({ status: 'completed', result_text: 'PONG' })
+      }
+      if (joined.includes('/agent/threads/cli%3Atest/release')) {
+        return JSON.stringify({ ok: true, released: true })
+      }
+      throw new Error(`unexpected command ${joined}`)
+    }
+
+    const result = runClusterSmoke({
+      namespace: 'centaur',
+      release: 'centaur',
+      harness: 'codex',
+      prompt: 'Reply PONG',
+      expectText: 'PONG',
+      threadKey: 'cli:test',
+      pollMs: 1,
+    }, runner)
+
+    expect(result.ok).toBe(true)
+    expect(result.status).toBe('completed')
+    expect(result.resultText).toBe('PONG')
+    expect(calls[0]?.slice(0, 8)).toEqual([
+      'kubectl',
+      'exec',
+      '-n',
+      'centaur',
+      'deploy/centaur-centaur-api',
+      '--',
+      'sh',
+      '-lc',
+    ])
+    expect(calls[0]?.[8]).toContain('SLACKBOT_API_KEY')
+    expect(calls[0]?.[8]).toContain('http://localhost:8000/agent/spawn')
+    expect(calls[0]?.[8]).toContain(JSON.stringify({ thread_key: 'cli:test', harness: 'codex' }))
+    expect(calls[0]?.[8]).not.toContain('aiv2_')
   })
 })
 

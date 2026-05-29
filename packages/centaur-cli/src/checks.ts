@@ -88,21 +88,26 @@ function selectedHarnessSecrets(harness: Harness, authMode: AuthMode) {
 
 export function envChecks(
   env: NodeJS.ProcessEnv = process.env,
-  options: { harness?: Harness; authMode?: AuthMode } = {},
+  options: { harness?: Harness; authMode?: AuthMode; installMode?: string } = {},
 ) {
   const harness = options.harness || 'codex'
   const authMode = options.authMode || 'api_key'
   const harnessSecrets = selectedHarnessSecrets(harness, authMode)
   const missingHarnessSecrets = harnessSecrets.filter(name => !has(env, name))
+  const slackSecrets = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET']
+  if (options.installMode === 'local') slackSecrets.push('SLACK_APP_TOKEN')
+  const missingSlackSecrets = slackSecrets.filter(name => !has(env, name))
   const results: CheckResult[] = [
     {
       name: 'env:slack',
-      ok: has(env, 'SLACK_BOT_TOKEN') && has(env, 'SLACK_SIGNING_SECRET'),
+      ok: missingSlackSecrets.length === 0,
       detail:
-        has(env, 'SLACK_BOT_TOKEN') && has(env, 'SLACK_SIGNING_SECRET')
-          ? 'SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET set'
-          : 'missing Slack bot token or signing secret',
-      repair: 'Create the Slack app, install it, and store SLACK_BOT_TOKEN plus SLACK_SIGNING_SECRET.',
+        missingSlackSecrets.length === 0
+          ? `${slackSecrets.join(', ')} set`
+          : `missing ${missingSlackSecrets.join(', ')}`,
+      repair: options.installMode === 'local'
+        ? 'Create the Slack app, enable Socket Mode, install it, and store SLACK_BOT_TOKEN, SLACK_SIGNING_SECRET, and SLACK_APP_TOKEN.'
+        : 'Create the Slack app, install it, and store SLACK_BOT_TOKEN plus SLACK_SIGNING_SECRET.',
     },
     {
       name: `env:${harness}-auth`,

@@ -259,31 +259,200 @@ function readClaudeSubscriptionAuth() {
   return refreshToken || readClaudeRefreshTokenFromKeychain()
 }
 
-export function kindDeploymentCommands(clusterName: string, namespace: string, release: string, values: string) {
+type DeploymentCommandOptions = {
+  secretsFile?: string
+  secretName?: string
+}
+
+function secretApplyCommands(namespace: string, options: DeploymentCommandOptions = {}) {
+  if (!options.secretsFile) return []
+  return [
+    [
+      'kubectl',
+      'create',
+      'secret',
+      'generic',
+      options.secretName || 'centaur-infra-env',
+      '-n',
+      namespace,
+      '--from-env-file',
+      options.secretsFile,
+      '--dry-run=client',
+      '-o',
+      'yaml',
+    ],
+    ['kubectl', 'apply', '-f', '-'],
+  ]
+}
+
+export function kindDeploymentCommands(
+  clusterName: string,
+  namespace: string,
+  release: string,
+  values: string,
+  options: DeploymentCommandOptions = {},
+) {
   const chartPath = resolveChartPath()
   return [
     ['kind', 'create', 'cluster', '--name', clusterName],
     ['kubectl', 'cluster-info', '--context', `kind-${clusterName}`],
     ['kubectl', 'create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml'],
     ['kubectl', 'apply', '-f', '-'],
+    ...secretApplyCommands(namespace, options),
     ['helm', 'dependency', 'update', chartPath],
     ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values],
   ]
 }
 
-export function k3sDeploymentCommands(namespace: string, release: string, values: string) {
+export function k3sDeploymentCommands(
+  namespace: string,
+  release: string,
+  values: string,
+  options: DeploymentCommandOptions = {},
+) {
   const chartPath = resolveChartPath()
   return [
     ['kubectl', 'config', 'current-context'],
     ['kubectl', 'create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml'],
     ['kubectl', 'apply', '-f', '-'],
+    ...secretApplyCommands(namespace, options),
     ['helm', 'dependency', 'update', chartPath],
     ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values],
   ]
 }
 
-function deploymentCommandForInstallMode(installMode: string) {
-  return installMode === 'local' || installMode === 'k3s' ? 'deploy k3s' : 'deploy k8s'
+export function k8sDeploymentCommands(
+  namespace: string,
+  release: string,
+  values: string,
+  options: DeploymentCommandOptions = {},
+) {
+  const chartPath = resolveChartPath()
+  return [
+    ['kubectl', 'create', 'namespace', namespace, '--dry-run=client', '-o', 'yaml'],
+    ['kubectl', 'apply', '-f', '-'],
+    ...secretApplyCommands(namespace, options),
+    ['helm', 'dependency', 'update', chartPath],
+    ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values],
+  ]
+}
+
+function deployCommandPartsForInstallMode(
+  installMode: string,
+  options: { apply?: boolean; secretsFile?: string } = {},
+) {
+  const parts = ['deploy', installMode === 'local' || installMode === 'k3s' ? 'k3s' : 'k8s']
+  if (options.apply) parts.push('--apply')
+  if (options.secretsFile) parts.push('--secrets-file', options.secretsFile)
+  return parts
+}
+
+function deploymentCommandForInstallMode(
+  installMode: string,
+  options: { apply?: boolean; secretsFile?: string } = {},
+) {
+  return commandLine(deployCommandPartsForInstallMode(installMode, options))
+}
+
+function deploySecretsFileForBackend(secretBackend: string, overlayPath: string) {
+  return secretBackend === 'local-env' ? join(overlayPath, 'secrets.local.env') : undefined
+}
+
+type SetupPlanOptions = {
+  org: string
+  assistantName: string
+  domain: string
+  installMode: string
+  backend: string
+  harness: Harness
+  authMode: string
+  overlayPath: string
+}
+
+function setupPlan(options: SetupPlanOptions) {
+  const manifestPath = join(options.overlayPath, 'slack-app-manifest.json')
+  const deployCommand = deploymentCommandForInstallMode(options.installMode, {
+    apply: true,
+    secretsFile: deploySecretsFileForBackend(options.backend, options.overlayPath),
+  })
+  const centaurCommand = (command: string) => `centaur ${command}`
+  return {
+    commands: [
+      centaurCommand(commandLine([
+        'init',
+        '--org',
+        options.org,
+        '--assistant-name',
+        options.assistantName,
+        '--domain',
+        options.domain,
+        '--install-mode',
+        options.installMode,
+        '--secret-backend',
+        options.backend,
+        '--harness',
+        options.harness,
+        '--auth-mode',
+        options.authMode,
+        '--overlay-path',
+        options.overlayPath,
+      ])),
+      centaurCommand(commandLine([
+        'integrations',
+        'slack-manifest',
+        '--domain',
+        options.domain,
+        '--app-name',
+        options.assistantName,
+        '--output',
+        manifestPath,
+        '--copy',
+        '--backend',
+        options.backend,
+        '--install-mode',
+        options.installMode,
+        '--harness',
+        options.harness,
+        '--auth-mode',
+        options.authMode,
+        '--overlay-path',
+        options.overlayPath,
+      ])),
+      centaurCommand(commandLine([
+        'secrets',
+        'collect',
+        '--backend',
+        options.backend,
+        '--install-mode',
+        options.installMode,
+        '--harness',
+        options.harness,
+        '--auth-mode',
+        options.authMode,
+        '--overlay-path',
+        options.overlayPath,
+      ])),
+      centaurCommand(commandLine([
+        'doctor',
+        '--deep',
+        '--overlay-path',
+        options.overlayPath,
+        '--harness',
+        options.harness,
+        '--auth-mode',
+        options.authMode,
+        '--secret-backend',
+        options.backend,
+        '--install-mode',
+        options.installMode,
+      ])),
+      centaurCommand(deployCommand),
+      centaurCommand(commandLine(['smoke', '--harness', options.harness])),
+    ],
+    harness: options.harness,
+    authMode: options.authMode,
+    note: 'Use exactly one default harness for the deployment: codex or claude-code. The smoke command runs through the API pod and does not need an external API key.',
+  }
 }
 
 function supportsBrokeredTokenStore(secretBackend: string) {
@@ -315,9 +484,212 @@ function runCommand(command: string[], inputBytes?: Buffer) {
   return proc.stdout
 }
 
+function isYamlPipeSource(command: string[]) {
+  return command[0] === 'kubectl' && command.includes('--dry-run=client') && command.at(-2) === '-o' && command.at(-1) === 'yaml'
+}
+
+function isKubectlApplyStdin(command: string[]) {
+  return command[0] === 'kubectl' && command[1] === 'apply' && command[2] === '-f' && command[3] === '-'
+}
+
+function runDeploymentCommands(commands: string[][]) {
+  for (let index = 0; index < commands.length; index += 1) {
+    const command = commands[index]!
+    const next = commands[index + 1]
+    if (next && isYamlPipeSource(command) && isKubectlApplyStdin(next)) {
+      runCommand(next, Buffer.from(runCommand(command)))
+      index += 1
+      continue
+    }
+    runCommand(command)
+  }
+}
+
+function formatDeploymentCommands(commands: string[][]) {
+  const formatted: string[] = []
+  for (let index = 0; index < commands.length; index += 1) {
+    const command = commands[index]!
+    const next = commands[index + 1]
+    if (next && isYamlPipeSource(command) && isKubectlApplyStdin(next)) {
+      formatted.push(`${commandLine(command)} | ${commandLine(next)}`)
+      index += 1
+      continue
+    }
+    formatted.push(commandLine(command))
+  }
+  return formatted
+}
+
 function runInteractive(command: string[]) {
   const proc = spawnSync(command[0]!, command.slice(1), { stdio: 'inherit' })
   return proc.status === 0
+}
+
+type SmokeRunner = (command: string[], inputBytes?: Buffer) => string
+
+type ClusterSmokeOptions = {
+  namespace: string
+  release: string
+  harness: string
+  prompt: string
+  expectText: string
+  threadKey?: string
+  timeoutSeconds?: number
+  pollMs?: number
+  releaseThread?: boolean
+}
+
+function kubectlApiCurlCommand(
+  options: { namespace: string; release: string; method: string; path: string; body?: Record<string, unknown> },
+) {
+  const curl = [
+    'curl',
+    '-fsS',
+    '-X',
+    quotePart(options.method),
+    quotePart(`http://localhost:8000${options.path}`),
+    '-H',
+    '"Authorization: Bearer $API_KEY"',
+    '-H',
+    '"X-Api-Key: $API_KEY"',
+  ]
+  if (options.body !== undefined) {
+    curl.push('-H', quotePart('Content-Type: application/json'), '-d', quotePart(JSON.stringify(options.body)))
+  }
+  const script = [
+    'API_KEY="${SLACKBOT_API_KEY:-${CENTAUR_API_KEY:-}}"',
+    'if [ -z "$API_KEY" ]; then echo "SLACKBOT_API_KEY or CENTAUR_API_KEY is missing in the API pod" >&2; exit 64; fi',
+    curl.join(' '),
+  ].join('; ')
+  return [
+    'kubectl',
+    'exec',
+    '-n',
+    options.namespace,
+    `deploy/${options.release}-centaur-api`,
+    '--',
+    'sh',
+    '-lc',
+    script,
+  ]
+}
+
+function sleepMs(ms: number) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function kubectlApiJson<T>(
+  runner: SmokeRunner,
+  options: { namespace: string; release: string; method: string; path: string; body?: Record<string, unknown> },
+) {
+  return JSON.parse(runner(kubectlApiCurlCommand(options))) as T
+}
+
+export function runClusterSmoke(
+  options: ClusterSmokeOptions,
+  runner: SmokeRunner = runCommand,
+) {
+  const threadKey = options.threadKey || `cli:smoke:${Date.now()}`
+  const phases: Record<string, unknown>[] = []
+  const base = { namespace: options.namespace, release: options.release }
+  const push = (phase: Record<string, unknown>) => {
+    phases.push(phase)
+    return phase
+  }
+
+  const spawn = kubectlApiJson<Record<string, unknown>>(runner, {
+    ...base,
+    method: 'POST',
+    path: '/agent/spawn',
+    body: { thread_key: threadKey, harness: options.harness },
+  })
+  const assignmentGeneration = Number(spawn.assignment_generation)
+  push({
+    phase: 'spawned',
+    threadKey,
+    assignmentGeneration,
+    runtimeId: spawn.runtime_id,
+  })
+
+  const message = kubectlApiJson<Record<string, unknown>>(runner, {
+    ...base,
+    method: 'POST',
+    path: '/agent/message',
+    body: {
+      thread_key: threadKey,
+      assignment_generation: assignmentGeneration,
+      role: 'user',
+      parts: [{ type: 'text', text: options.prompt }],
+      metadata: { platform: 'cli-smoke' },
+    },
+  })
+  push({ phase: 'message_persisted', messageId: message.message_id })
+
+  const execute = kubectlApiJson<Record<string, unknown>>(runner, {
+    ...base,
+    method: 'POST',
+    path: '/agent/execute',
+    body: {
+      thread_key: threadKey,
+      assignment_generation: assignmentGeneration,
+      harness: options.harness,
+      delivery: { platform: 'cli-smoke' },
+      metadata: { platform: 'cli-smoke' },
+    },
+  })
+  const executionId = String(execute.execution_id)
+  push({ phase: 'execution_queued', executionId, status: execute.status })
+
+  const deadline = Date.now() + (options.timeoutSeconds || 300) * 1000
+  const pollMs = options.pollMs || 1000
+  let finalState: Record<string, unknown> = {}
+  for (;;) {
+    finalState = kubectlApiJson<Record<string, unknown>>(runner, {
+      ...base,
+      method: 'GET',
+      path: `/agent/executions/${encodeURIComponent(executionId)}`,
+    })
+    const status = String(finalState.status || '')
+    push({
+      phase: 'execution_state',
+      executionId,
+      status,
+      resultText: finalState.result_text,
+    })
+    if (['completed', 'failed', 'cancelled', 'timed_out'].includes(status)) break
+    if (Date.now() >= deadline) {
+      finalState = { ...finalState, status: status || 'timeout', error: 'timed out waiting for execution' }
+      break
+    }
+    sleepMs(pollMs)
+  }
+
+  let release: Record<string, unknown> | undefined
+  if (options.releaseThread !== false) {
+    release = kubectlApiJson<Record<string, unknown>>(runner, {
+      ...base,
+      method: 'POST',
+      path: `/agent/threads/${encodeURIComponent(threadKey)}/release`,
+      body: { cancel_inflight: false },
+    })
+    push({ phase: 'thread_released', released: release.released })
+  }
+
+  const status = String(finalState.status || '')
+  const resultText = String(finalState.result_text || '')
+  const ok = status === 'completed' && resultText.includes(options.expectText)
+  return {
+    ok,
+    threadKey,
+    assignmentGeneration,
+    executionId,
+    status,
+    resultText,
+    expectedText: options.expectText,
+    finalState,
+    release,
+    phases,
+  }
 }
 
 async function collectCodexSubscriptionSecrets(promptUser: boolean): Promise<SecretMap> {
@@ -675,84 +1047,7 @@ const integrations = Cli.create('integrations', {
       overlayPath: z.string().default('org').describe('Overlay directory'),
     }),
     run(c) {
-      const manifestPath = join(c.options.overlayPath, 'slack-app-manifest.json')
-      const deployCommand = deploymentCommandForInstallMode(c.options.installMode)
-      return {
-        commands: [
-          commandLine([
-            'init',
-            '--org',
-            c.options.org,
-            '--assistant-name',
-            c.options.assistantName,
-            '--domain',
-            c.options.domain,
-            '--install-mode',
-            c.options.installMode,
-            '--secret-backend',
-            c.options.backend,
-            '--harness',
-            c.options.harness,
-            '--auth-mode',
-            c.options.authMode,
-            '--overlay-path',
-            c.options.overlayPath,
-          ]),
-          commandLine([
-            'integrations',
-            'slack-manifest',
-            '--domain',
-            c.options.domain,
-            '--app-name',
-            c.options.assistantName,
-            '--output',
-            manifestPath,
-            '--copy',
-            '--backend',
-            c.options.backend,
-            '--install-mode',
-            c.options.installMode,
-            '--harness',
-            c.options.harness,
-            '--auth-mode',
-            c.options.authMode,
-            '--overlay-path',
-            c.options.overlayPath,
-          ]),
-          commandLine([
-            'secrets',
-            'collect',
-            '--backend',
-            c.options.backend,
-            '--install-mode',
-            c.options.installMode,
-            '--harness',
-            c.options.harness,
-            '--auth-mode',
-            c.options.authMode,
-            '--overlay-path',
-            c.options.overlayPath,
-          ]),
-          commandLine([
-            'doctor',
-            '--deep',
-            '--overlay-path',
-            c.options.overlayPath,
-            '--harness',
-            c.options.harness,
-            '--auth-mode',
-            c.options.authMode,
-            '--secret-backend',
-            c.options.backend,
-            '--install-mode',
-            c.options.installMode,
-          ]),
-          deployCommand,
-        ],
-        harness: c.options.harness,
-        authMode: c.options.authMode,
-        note: 'Use exactly one default harness for the deployment: codex or claude-code.',
-      }
+      return setupPlan(c.options)
     },
   })
 
@@ -902,7 +1197,10 @@ const secrets = Cli.create('secrets', {
       vaultPath: c.options.vaultPath || promptedBackendOptions.vaultPath,
     }
     const result = writeSecrets(c.options.backend, secrets, backendOptions)
-    const nextDeployCommand = deploymentCommandForInstallMode(c.options.installMode)
+    const nextDeployCommand = deploymentCommandForInstallMode(c.options.installMode, {
+      apply: true,
+      secretsFile: deploySecretsFileForBackend(c.options.backend, c.options.overlayPath),
+    })
     const doctorCommand = [
       'doctor',
       '--deep',
@@ -937,7 +1235,11 @@ const secrets = Cli.create('secrets', {
             },
             {
               command: nextDeployCommand,
-              description: 'print or run the deployment plan',
+              description: 'apply local secrets when needed and deploy Centaur with Helm',
+            },
+            {
+              command: commandLine(['smoke', '--harness', c.options.harness]),
+              description: 'prove the deployed API can complete one agent turn',
             },
           ],
         },
@@ -950,30 +1252,24 @@ const deploy = Cli.create('deploy', {
   description: 'Prepare Centaur deployments',
 })
   .command('k8s', {
-    description: 'Print the existing-cluster deployment command.',
+    description: 'Deploy Centaur into the current Kubernetes context.',
     options: z.object({
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml'),
+      secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
+      secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
+      apply: z.boolean().default(false).describe('Run the commands instead of printing them'),
     }),
     run(c) {
-      const chartPath = resolveChartPath()
+      const commands = k8sDeploymentCommands(c.options.namespace, c.options.release, c.options.values, {
+        secretsFile: c.options.secretsFile,
+        secretName: c.options.secretName,
+      })
+      if (c.options.apply) runDeploymentCommands(commands)
       return {
-        commands: [
-          `kubectl create namespace ${quotePart(c.options.namespace)} --dry-run=client -o yaml | kubectl apply -f -`,
-          commandLine(['helm', 'dependency', 'update', chartPath]),
-          commandLine([
-            'helm',
-            'upgrade',
-            '--install',
-            c.options.release,
-            chartPath,
-            '-n',
-            c.options.namespace,
-            '-f',
-            c.options.values,
-          ]),
-        ],
+        applied: c.options.apply,
+        commands: formatDeploymentCommands(commands),
       }
     },
   })
@@ -983,24 +1279,19 @@ const deploy = Cli.create('deploy', {
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml').describe('Helm values file'),
+      secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
+      secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
       apply: z.boolean().default(false).describe('Run the commands instead of printing them'),
     }),
     run(c) {
-      const commands = k3sDeploymentCommands(c.options.namespace, c.options.release, c.options.values)
-      if (c.options.apply) {
-        runCommand(commands[0]!)
-        const namespaceYaml = Buffer.from(runCommand(commands[1]!))
-        runCommand(commands[2]!, namespaceYaml)
-        for (const command of commands.slice(3)) runCommand(command)
-      }
+      const commands = k3sDeploymentCommands(c.options.namespace, c.options.release, c.options.values, {
+        secretsFile: c.options.secretsFile,
+        secretName: c.options.secretName,
+      })
+      if (c.options.apply) runDeploymentCommands(commands)
       return {
         applied: c.options.apply,
-        commands: [
-          commandLine(commands[0]!),
-          `${commandLine(commands[1]!)} | ${commandLine(commands[2]!)}`,
-          commandLine(commands[3]!),
-          commandLine(commands[4]!),
-        ],
+        commands: formatDeploymentCommands(commands),
       }
     },
   })
@@ -1011,26 +1302,19 @@ const deploy = Cli.create('deploy', {
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml').describe('Helm values file'),
+      secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
+      secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
       apply: z.boolean().default(false).describe('Run the commands instead of printing them'),
     }),
     run(c) {
-      const commands = kindDeploymentCommands(c.options.clusterName, c.options.namespace, c.options.release, c.options.values)
-      if (c.options.apply) {
-        runCommand(commands[0]!)
-        runCommand(commands[1]!)
-        const namespaceYaml = Buffer.from(runCommand(commands[2]!))
-        runCommand(commands[3]!, namespaceYaml)
-        for (const command of commands.slice(4)) runCommand(command)
-      }
+      const commands = kindDeploymentCommands(c.options.clusterName, c.options.namespace, c.options.release, c.options.values, {
+        secretsFile: c.options.secretsFile,
+        secretName: c.options.secretName,
+      })
+      if (c.options.apply) runDeploymentCommands(commands)
       return {
         applied: c.options.apply,
-        commands: [
-          commandLine(commands[0]!),
-          commandLine(commands[1]!),
-          `${commandLine(commands[2]!)} | ${commandLine(commands[3]!)}`,
-          commandLine(commands[4]!),
-          commandLine(commands[5]!),
-        ],
+        commands: formatDeploymentCommands(commands),
       }
     },
   })
@@ -1072,6 +1356,22 @@ export const app = Cli.create('centaur', {
     command: 'centaur --mcp',
   },
 })
+  .command('setup', {
+    description: 'Return the agent-driven setup command chain from install to deployed smoke test.',
+    options: z.object({
+      org: z.string().default('acme').describe('Organization name'),
+      assistantName: z.string().default('centaur').describe('Assistant display name'),
+      domain: z.string().default('centaur.example.com').describe('Public deployment domain'),
+      installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
+      backend: secretBackendSchema.default('local-env').describe('Secret backend'),
+      harness: harnessSchema.default('codex').describe('Selected default harness'),
+      authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
+      overlayPath: z.string().default('org').describe('Overlay directory'),
+    }),
+    run(c) {
+      return setupPlan(c.options)
+    },
+  })
   .command('run', {
     description: 'Run one Centaur agent turn and pipe API events.',
     args: z.object({
@@ -1190,7 +1490,10 @@ export const app = Cli.create('centaur', {
       }
       state.data = { ...state.data, auth }
       const saved = saveState(state, c.options.home)
-      const nextDeployCommand = `centaur ${deploymentCommandForInstallMode(state.installMode)}`
+      const nextDeployCommand = `centaur ${deploymentCommandForInstallMode(state.installMode, {
+        apply: true,
+        secretsFile: deploySecretsFileForBackend(state.secretBackend, state.overlayPath),
+      })}`
 
       return c.ok(
         {
@@ -1269,7 +1572,11 @@ export const app = Cli.create('centaur', {
               },
               {
                 command: nextDeployCommand,
-                description: 'print or run the deployment plan',
+                description: 'apply local secrets when needed and deploy Centaur with Helm',
+              },
+              {
+                command: commandLine(['smoke', '--harness', state.harness]),
+                description: 'prove the deployed API can complete one agent turn',
               },
             ],
           },
@@ -1302,6 +1609,7 @@ export const app = Cli.create('centaur', {
           ...envChecks(env, {
             harness: c.options.harness,
             authMode: c.options.authMode,
+            installMode: c.options.installMode,
           }),
           ...brokeredTokenBackendCheck(c.options.secretBackend, c.options.authMode),
           dockerDaemonCheck(),
@@ -1338,12 +1646,22 @@ export const app = Cli.create('centaur', {
                 description: 'populate missing Slack, harness, and infra secrets',
               },
               {
-                command: 'deploy k3s',
-                description: 'for local development, print the k3s deployment plan',
+                command: commandLine([
+                  'deploy',
+                  'k3s',
+                  '--apply',
+                  '--secrets-file',
+                  deploySecretsFileForBackend('local-env', c.options.overlayPath)!,
+                ]),
+                description: 'for local development, apply local secrets and deploy with Helm',
               },
               {
-                command: 'deploy k8s',
-                description: 'for an existing cluster, print the Helm deployment plan',
+                command: 'deploy k8s --apply',
+                description: 'for an existing cluster, deploy with Helm',
+              },
+              {
+                command: commandLine(['smoke', '--harness', c.options.harness]),
+                description: 'prove the deployed API can complete one agent turn',
               },
             ],
           },
@@ -1360,6 +1678,67 @@ export const app = Cli.create('centaur', {
       return loadState(c.options.home)
     },
   })
+  .command('smoke', {
+    description: 'Run one deployed Centaur agent turn through the API pod, without external API auth.',
+    options: z.object({
+      namespace: z.string().default('centaur'),
+      release: z.string().default('centaur'),
+      harness: harnessSchema.default('codex').describe('Harness to verify'),
+      prompt: z.string().default('Reply with exactly PONG and nothing else.').describe('Smoke-test prompt'),
+      expect: z.string().default('PONG').describe('Text expected in the final result'),
+      thread: z.string().optional().describe('Optional thread key to reuse'),
+      timeoutSeconds: z.number().int().positive().default(300).describe('Maximum wait for the execution'),
+      pollMs: z.number().int().positive().default(1000).describe('Poll interval while waiting'),
+      noRelease: z.boolean().default(false).describe('Leave the runtime assigned after the smoke test'),
+    }),
+    run(c) {
+      const result = runClusterSmoke({
+        namespace: c.options.namespace,
+        release: c.options.release,
+        harness: c.options.harness,
+        prompt: c.options.prompt,
+        expectText: c.options.expect,
+        threadKey: c.options.thread,
+        timeoutSeconds: c.options.timeoutSeconds,
+        pollMs: c.options.pollMs,
+        releaseThread: !c.options.noRelease,
+      })
+      setFailedExit(result.ok)
+      return c.ok({ ...result, slackInstruction: `Mention the Slack app in a test channel: @<bot> ${c.options.prompt}` }, {
+        cta: {
+          description: result.ok ? 'Next Slack verification step:' : 'Smoke failed; inspect these logs:',
+          commands: [
+            ...(result.ok
+              ? []
+              : [{
+                  command: commandLine([
+                    'logs',
+                    '--component',
+                    'api',
+                    '--namespace',
+                    c.options.namespace,
+                    '--release',
+                    c.options.release,
+                  ]),
+                  description: 'inspect API logs',
+                }]),
+            {
+              command: commandLine([
+                'logs',
+                '--component',
+                'slackbot',
+                '--namespace',
+                c.options.namespace,
+                '--release',
+                c.options.release,
+              ]),
+              description: 'watch Slackbot logs while sending the Slack mention',
+            },
+          ],
+        },
+      })
+    },
+  })
   .command('smoke-test', {
     description: 'Print the exact commands for an end-to-end Centaur smoke test.',
     options: z.object({
@@ -1368,7 +1747,13 @@ export const app = Cli.create('centaur', {
     }),
     run(c) {
       return {
-        command: `just namespace=${quotePart(c.options.namespace)} release=${quotePart(c.options.release)} smoke`,
+        command: `centaur ${commandLine([
+          'smoke',
+          '--namespace',
+          c.options.namespace,
+          '--release',
+          c.options.release,
+        ])}`,
       }
     },
   })

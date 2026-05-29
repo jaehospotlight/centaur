@@ -25,11 +25,13 @@ structured output and CTAs so an agent can keep driving the next step:
 ```bash
 curl -fsSL https://centaur.run/install.sh | bash
 centaur --llms
+centaur setup --org acme --assistant-name centaur --domain centaur.example.com --backend local-env --install-mode local --harness codex --auth-mode api_key
 centaur init --harness codex --auth-mode api_key
 centaur integrations slack-manifest --domain centaur.example.com --app-name centaur --output org/slack-app-manifest.json --copy --harness codex --auth-mode api_key
 centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org
 centaur doctor --deep --harness codex --auth-mode api_key --secret-backend local-env --install-mode local
-centaur deploy k3s
+centaur deploy k3s --apply --secrets-file org/secrets.local.env
+centaur smoke --harness codex
 ```
 
 Pick one default harness for the deployment: `codex` or `claude-code`. Use
@@ -37,7 +39,10 @@ Pick one default harness for the deployment: `codex` or `claude-code`. Use
 dedicated ChatGPT or Claude.ai subscription account. The Slack manifest command
 copies JSON to your clipboard for paste-in-place setup, and `secrets collect`
 prompts for secret values with masked input before writing them to the selected
-backend.
+backend. `centaur deploy ... --apply` creates the Kubernetes Secret from the
+local secrets file when needed and runs Helm. `centaur smoke` verifies one
+durable agent turn through the API pod without requiring a port-forward or API
+key.
 
 From the repo root:
 

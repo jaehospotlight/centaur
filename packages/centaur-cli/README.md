@@ -23,13 +23,22 @@ From a local Centaur checkout, run:
 packages/centaur-cli/install.sh
 ```
 
+The quickest agent-readable plan is:
+
+```bash
+centaur setup --org acme --assistant-name centaur --domain centaur.acme.com --backend local-env --install-mode local --harness codex --auth-mode api_key
+```
+
+It returns the exact command chain from overlay creation through a deployed
+smoke test. The expanded local happy path is:
+
 ```bash
 centaur init --org acme --assistant-name centaur --domain centaur.acme.com --harness codex --auth-mode api_key
 centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --harness codex --auth-mode api_key
 centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org
 centaur doctor --deep --harness codex --auth-mode api_key --secret-backend local-env --install-mode local
-centaur deploy k3s
-centaur run "Reply with exactly PONG and nothing else." --thread cli:test --harness codex
+centaur deploy k3s --apply --secrets-file org/secrets.local.env
+centaur smoke --harness codex
 ```
 
 `centaur init` returns CTAs for the next one-off commands, so an agent can keep
@@ -50,3 +59,8 @@ event as a structured chunk, and reads final execution state. It does not
 dedupe or repair stream events; use `--format jsonl` when an agent needs exact
 event-by-event output. Set `CENTAUR_API_URL` and `CENTAUR_API_KEY`, or pass
 `--api-url` and `--api-key`.
+
+`centaur smoke` is for freshly deployed local clusters. It runs the same
+spawn/message/execute path through `kubectl exec` inside the API deployment, so
+it does not need a public API URL, port-forward, or external API key. Once that
+passes, mention the Slack app in a test channel with the same prompt.
