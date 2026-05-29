@@ -889,6 +889,9 @@ esac
       expect(output.ok).toBe(false)
       expect(output.cta.commands[0].command).toBe('centaur smoke --json')
       expect(output.cta.commands[1].command).toBe('centaur logs --component api --namespace centaur --release centaur')
+      expect(output.steps.map((step: { command: string }) => step.command)).toEqual(
+        output.cta.commands.map((command: { command: string }) => command.command),
+      )
     } finally {
       process.env.PATH = previousPath
     }
@@ -994,6 +997,9 @@ esac
       expect(output.ok).toBe(false)
       expect(output.cta.commands[0].command).toBe('centaur slackbot smoke --json')
       expect(output.cta.commands[1].command).toBe('centaur logs --component api --namespace centaur --release centaur')
+      expect(output.steps.map((step: { command: string }) => step.command)).toEqual(
+        output.cta.commands.map((command: { command: string }) => command.command),
+      )
     } finally {
       process.env.PATH = previousPath
     }
@@ -1500,6 +1506,9 @@ describe('agent run client', () => {
       "centaur run hello --local --format jsonl",
       "centaur run hello --api-url http://api.test --api-key '<api-key>' --format jsonl",
     ])
+    expect(output.steps.map((step: { command: string }) => step.command)).toEqual(
+      output.cta.commands.map((command: { command: string }) => command.command),
+    )
   })
 
   it('posts spawn, message, and execute payloads', async () => {

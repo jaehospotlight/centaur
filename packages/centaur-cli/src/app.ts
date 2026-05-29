@@ -2543,52 +2543,53 @@ const slackbot = Cli.create('slackbot', {
       releaseThread: !c.options.noRelease,
     })
     setFailedExit(result.ok)
-    return c.ok(result, {
-      cta: {
-        description: result.ok ? 'Next real Slack verification step:' : 'Slackbot smoke failed; retry or inspect logs:',
-        commands: [
-          ...(result.ok
-            ? []
-            : [{
-                command: slackbotSmokeCommand({
-                  namespace: c.options.namespace,
-                  release: c.options.release,
-                  prompt: c.options.prompt,
-                  expect: c.options.expect,
-                  teamId: c.options.teamId,
-                  channelId: c.options.channelId,
-                  userId: c.options.userId,
-                  botUserId: c.options.botUserId,
-                  timeoutSeconds: Math.max(c.options.timeoutSeconds, 300),
-                  json: true,
-                }),
-                description: 'retry Slackbot smoke with a normal timeout',
-              }, {
-                command: commandLine([
-                  'logs',
-                  '--component',
-                  'api',
-                  '--namespace',
-                  c.options.namespace,
-                  '--release',
-                  c.options.release,
-                ]),
-                description: 'inspect API logs',
-              }]),
-          {
+    const commands = [
+      ...(result.ok
+        ? []
+        : [{
+            command: slackbotSmokeCommand({
+              namespace: c.options.namespace,
+              release: c.options.release,
+              prompt: c.options.prompt,
+              expect: c.options.expect,
+              teamId: c.options.teamId,
+              channelId: c.options.channelId,
+              userId: c.options.userId,
+              botUserId: c.options.botUserId,
+              timeoutSeconds: Math.max(c.options.timeoutSeconds, 300),
+              json: true,
+            }),
+            description: 'retry Slackbot smoke with a normal timeout',
+          }, {
             command: commandLine([
               'logs',
               '--component',
-              'slackbot',
+              'api',
               '--namespace',
               c.options.namespace,
               '--release',
               c.options.release,
-              '--follow',
             ]),
-            description: 'watch Slackbot logs while sending a real Slack mention',
-          },
-        ],
+            description: 'inspect API logs',
+          }]),
+      {
+        command: commandLine([
+          'logs',
+          '--component',
+          'slackbot',
+          '--namespace',
+          c.options.namespace,
+          '--release',
+          c.options.release,
+          '--follow',
+        ]),
+        description: 'watch Slackbot logs while sending a real Slack mention',
+      },
+    ]
+    return c.ok({ ...result, steps: commandSteps(commands) }, {
+      cta: {
+        description: result.ok ? 'Next real Slack verification step:' : 'Slackbot smoke failed; retry or inspect logs:',
+        commands,
       },
     })
   },
@@ -2665,30 +2666,37 @@ export const app = Cli.create('centaur', {
       const apiUrl = c.options.apiUrl || c.env.CENTAUR_API_URL || 'http://127.0.0.1:8000'
 
       if (!useLocal && !apiKey) {
-        return c.error({
+        const commands = [
+          {
+            command: commandLine(['run', c.args.prompt, '--local', '--format', 'jsonl']),
+            description: 'run through the local Kubernetes API pod without a port-forward or external API key',
+          },
+          {
+            command: commandLine([
+              'run',
+              c.args.prompt,
+              '--api-url',
+              apiUrl,
+              '--api-key',
+              '<api-key>',
+              '--format',
+              'jsonl',
+            ]),
+            description: 'retry against the explicit API URL with a Centaur API key',
+          },
+        ]
+        setFailedExit(false)
+        const data: Record<string, unknown> = {
+          ok: false,
           code: 'MISSING_API_KEY',
           message: 'Set CENTAUR_API_KEY, pass --api-key, or use --local for a deployed local cluster.',
           retryable: true,
+          steps: commandSteps(commands),
+        }
+        return c.ok(data, {
           cta: {
-            commands: [
-              {
-                command: commandLine(['run', c.args.prompt, '--local', '--format', 'jsonl']),
-                description: 'run through the local Kubernetes API pod without a port-forward or external API key',
-              },
-              {
-                command: commandLine([
-                  'run',
-                  c.args.prompt,
-                  '--api-url',
-                  apiUrl,
-                  '--api-key',
-                  '<api-key>',
-                  '--format',
-                  'jsonl',
-                ]),
-                description: 'retry against the explicit API URL with a Centaur API key',
-              },
-            ],
+            description: 'Suggested commands:',
+            commands,
           },
         })
       }
@@ -2713,34 +2721,36 @@ export const app = Cli.create('centaur', {
           const expectationMet =
             result.status === 'completed' && (!c.options.expect || result.resultText.includes(c.options.expect))
           setFailedExit(expectationMet)
+          const commands = [
+            {
+              command: commandLine([
+                'run',
+                c.args.prompt,
+                '--local',
+                '--thread',
+                result.threadKey,
+                '--namespace',
+                c.options.namespace,
+                '--release',
+                c.options.release,
+                ...(c.options.harness ? ['--harness', c.options.harness] : []),
+                '--format',
+                'jsonl',
+              ]),
+              description: 'continue this same Centaur thread through the local API pod',
+            },
+          ]
           return c.ok(
             {
               ...result,
               mode: 'local',
               ok: expectationMet,
               expectedText: c.options.expect || undefined,
+              steps: commandSteps(commands),
             },
             {
               cta: {
-                commands: [
-                  {
-                    command: commandLine([
-                      'run',
-                      c.args.prompt,
-                      '--local',
-                      '--thread',
-                      result.threadKey,
-                      '--namespace',
-                      c.options.namespace,
-                      '--release',
-                      c.options.release,
-                      ...(c.options.harness ? ['--harness', c.options.harness] : []),
-                      '--format',
-                      'jsonl',
-                    ]),
-                    description: 'continue this same Centaur thread through the local API pod',
-                  },
-                ],
+                commands,
               },
             },
           )
@@ -2769,14 +2779,15 @@ export const app = Cli.create('centaur', {
         const expectationMet =
           next.value.status === 'completed' && (!c.options.expect || next.value.resultText.includes(c.options.expect))
         setFailedExit(expectationMet)
-        return c.ok({ ...next.value, ok: expectationMet, expectedText: c.options.expect || undefined }, {
+        const commands = [
+          {
+            command: commandLine(['run', c.args.prompt, '--thread', next.value.threadKey, '--format', 'jsonl']),
+            description: 'continue this same Centaur thread',
+          },
+        ]
+        return c.ok({ ...next.value, ok: expectationMet, expectedText: c.options.expect || undefined, steps: commandSteps(commands) }, {
           cta: {
-            commands: [
-              {
-                command: commandLine(['run', c.args.prompt, '--thread', next.value.threadKey, '--format', 'jsonl']),
-                description: 'continue this same Centaur thread',
-              },
-            ],
+            commands,
           },
         })
       })()
@@ -3114,49 +3125,54 @@ export const app = Cli.create('centaur', {
         releaseThread: !c.options.noRelease,
       })
       setFailedExit(result.ok)
-      return c.ok({ ...result, slackInstruction: `Mention the Slack app in a test channel: @<bot> ${c.options.prompt}` }, {
-        cta: {
-          description: result.ok ? 'Next Slack verification step:' : 'Smoke failed; retry or inspect logs:',
-          commands: [
-            ...(result.ok
-              ? []
-              : [{
-                  command: smokeCommand({
-                    namespace: c.options.namespace,
-                    release: c.options.release,
-                    harness: c.options.harness,
-                    prompt: c.options.prompt,
-                    expect: c.options.expect,
-                    timeoutSeconds: Math.max(c.options.timeoutSeconds, 300),
-                    json: true,
-                  }),
-                  description: 'retry local agent smoke with a normal timeout',
-                }, {
-                  command: commandLine([
-                    'logs',
-                    '--component',
-                    'api',
-                    '--namespace',
-                    c.options.namespace,
-                    '--release',
-                    c.options.release,
-                  ]),
-                  description: 'inspect API logs',
-                }]),
-            {
+      const commands = [
+        ...(result.ok
+          ? []
+          : [{
+              command: smokeCommand({
+                namespace: c.options.namespace,
+                release: c.options.release,
+                harness: c.options.harness,
+                prompt: c.options.prompt,
+                expect: c.options.expect,
+                timeoutSeconds: Math.max(c.options.timeoutSeconds, 300),
+                json: true,
+              }),
+              description: 'retry local agent smoke with a normal timeout',
+            }, {
               command: commandLine([
                 'logs',
                 '--component',
-                'slackbot',
+                'api',
                 '--namespace',
                 c.options.namespace,
                 '--release',
                 c.options.release,
-                '--follow',
               ]),
-              description: 'watch Slackbot logs while sending the Slack mention',
-            },
-          ],
+              description: 'inspect API logs',
+            }]),
+        {
+          command: commandLine([
+            'logs',
+            '--component',
+            'slackbot',
+            '--namespace',
+            c.options.namespace,
+            '--release',
+            c.options.release,
+            '--follow',
+          ]),
+          description: 'watch Slackbot logs while sending the Slack mention',
+        },
+      ]
+      return c.ok({
+        ...result,
+        slackInstruction: `Mention the Slack app in a test channel: @<bot> ${c.options.prompt}`,
+        steps: commandSteps(commands),
+      }, {
+        cta: {
+          description: result.ok ? 'Next Slack verification step:' : 'Smoke failed; retry or inspect logs:',
+          commands,
         },
       })
     },
