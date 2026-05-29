@@ -139,12 +139,20 @@ function commandLine(parts: string[]) {
 }
 
 function repoRoot() {
-  return resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+  return resolve(dirname(realpathSync(fileURLToPath(import.meta.url))), '../../..')
 }
 
 export function resolveChartPath(path = 'contrib/chart') {
   if (path.startsWith('/')) return path
   if (existsSync(resolve(process.cwd(), path))) return path
+  let current = dirname(realpathSync(fileURLToPath(import.meta.url)))
+  while (true) {
+    const candidate = resolve(current, path)
+    if (existsSync(candidate)) return candidate
+    const parent = dirname(current)
+    if (parent === current) break
+    current = parent
+  }
   const fromRepoRoot = resolve(repoRoot(), path)
   return existsSync(fromRepoRoot) ? fromRepoRoot : path
 }

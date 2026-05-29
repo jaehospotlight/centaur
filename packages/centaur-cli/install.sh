@@ -106,6 +106,17 @@ JSON
   chmod +x dist/index.js
 )
 
+CHART_SOURCE="$SOURCE_DIR/contrib/chart"
+[[ -d "$CHART_SOURCE" ]] || die "missing Helm chart at $CHART_SOURCE"
+CHART_TARGET="$INSTALL_DIR/contrib/chart"
+chart_source_abs="$(cd "$CHART_SOURCE" && pwd)"
+mkdir -p "$(dirname "$CHART_TARGET")"
+chart_target_abs="$(cd "$(dirname "$CHART_TARGET")" && pwd)/$(basename "$CHART_TARGET")"
+if [[ "$chart_source_abs" != "$chart_target_abs" ]]; then
+  rm -rf "$CHART_TARGET"
+  cp -R "$CHART_SOURCE" "$CHART_TARGET"
+fi
+
 rm -rf "$RUNTIME_DIR"
 mkdir -p "$RUNTIME_DIR"
 cp -R "$BUILD_DIR/dist" "$RUNTIME_DIR/dist"
