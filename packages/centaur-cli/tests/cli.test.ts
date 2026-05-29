@@ -348,13 +348,13 @@ describe('overlay scaffolding', () => {
 
     const output = JSON.parse(stdout)
     expect(output.commands).toEqual([
-      'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org',
-      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org',
-      'centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org',
-      'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr',
-      'centaur deploy k3s --apply --image-source ghcr --wait --timeout 10m --secrets-file org/secrets.local.env',
-      "centaur run 'Reply with exactly PONG and nothing else.' --local --harness codex --expect PONG --release-thread",
-      'centaur slackbot smoke',
+      'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json',
+      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json',
+      'centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org --json',
+      'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr --json',
+      'centaur deploy k3s --apply --image-source ghcr --wait --timeout 10m --secrets-file org/secrets.local.env --json',
+      "centaur run 'Reply with exactly PONG and nothing else.' --local --harness codex --expect PONG --release-thread --format jsonl",
+      'centaur slackbot smoke --json',
     ])
     expect(output.cta.description).toBe('Run these setup commands in order:')
     expect(output.cta.commands.map((command: { command: string }) => command.command)).toEqual(output.commands)
@@ -678,9 +678,9 @@ describe('deploy plans', () => {
 
     expect(ctaCommands[0]).toContain(`centaur deploy k3s --apply --namespace custom --release pony --values ${values}`)
     expect(ctaCommands[1]).toBe(
-      "centaur run 'Reply with exactly PONG and nothing else.' --local --harness claude-code --expect PONG --release-thread --namespace custom --release pony",
+      "centaur run 'Reply with exactly PONG and nothing else.' --local --harness claude-code --expect PONG --release-thread --namespace custom --release pony --format jsonl",
     )
-    expect(ctaCommands[2]).toBe('centaur slackbot smoke --namespace custom --release pony')
+    expect(ctaCommands[2]).toBe('centaur slackbot smoke --namespace custom --release pony --json')
   })
 
   it('returns recovery CTAs when an applied deploy command fails', async () => {
@@ -845,7 +845,7 @@ esac
 
       expect(exitCode).toBe(1)
       expect(output.ok).toBe(false)
-      expect(output.cta.commands[0].command).toBe('centaur smoke')
+      expect(output.cta.commands[0].command).toBe('centaur smoke --json')
       expect(output.cta.commands[1].command).toBe('centaur logs --component api --namespace centaur --release centaur')
     } finally {
       process.env.PATH = previousPath
@@ -950,7 +950,7 @@ esac
 
       expect(exitCode).toBe(1)
       expect(output.ok).toBe(false)
-      expect(output.cta.commands[0].command).toBe('centaur slackbot smoke')
+      expect(output.cta.commands[0].command).toBe('centaur slackbot smoke --json')
       expect(output.cta.commands[1].command).toBe('centaur logs --component api --namespace centaur --release centaur')
     } finally {
       process.env.PATH = previousPath
@@ -1408,8 +1408,8 @@ describe('agent run client', () => {
     expect(output.code).toBe('MISSING_API_KEY')
     expect(output.retryable).toBe(true)
     expect(output.cta.commands.map((command: { command: string }) => command.command)).toEqual([
-      "centaur run hello --local",
-      "centaur run hello --api-url http://api.test --api-key '<api-key>'",
+      "centaur run hello --local --format jsonl",
+      "centaur run hello --api-url http://api.test --api-key '<api-key>' --format jsonl",
     ])
   })
 

@@ -500,6 +500,7 @@ function deployCommandPartsForInstallMode(
     values?: string
     wait?: boolean
     timeout?: string
+    json?: boolean
   } = {},
 ) {
   const parts = ['deploy', installMode === 'local' || installMode === 'k3s' ? 'k3s' : 'k8s']
@@ -508,6 +509,7 @@ function deployCommandPartsForInstallMode(
   if (options.values && options.values !== 'org/values.centaur.yaml') parts.push('--values', options.values)
   if (options.wait !== false) parts.push('--wait', '--timeout', options.timeout || '10m')
   if (options.secretsFile) parts.push('--secrets-file', options.secretsFile)
+  if (options.json) parts.push('--json')
   return parts
 }
 
@@ -520,6 +522,7 @@ function deploymentCommandForInstallMode(
     values?: string
     wait?: boolean
     timeout?: string
+    json?: boolean
   } = {},
 ) {
   return commandLine(deployCommandPartsForInstallMode(installMode, options))
@@ -527,7 +530,7 @@ function deploymentCommandForInstallMode(
 
 function localRunVerificationCommand(
   harness: Harness,
-  options: { namespace?: string; release?: string } = {},
+  options: { namespace?: string; release?: string; jsonl?: boolean } = {},
 ) {
   const parts = [
     'run',
@@ -541,6 +544,7 @@ function localRunVerificationCommand(
   ]
   if (options.namespace && options.namespace !== 'centaur') parts.push('--namespace', options.namespace)
   if (options.release && options.release !== 'centaur') parts.push('--release', options.release)
+  if (options.jsonl) parts.push('--format', 'jsonl')
   return commandLine(parts)
 }
 
@@ -551,6 +555,7 @@ function smokeCommand(options: {
   prompt?: string
   expect?: string
   timeoutSeconds?: number
+  json?: boolean
 } = {}) {
   const parts = ['smoke']
   if (options.namespace && options.namespace !== 'centaur') parts.push('--namespace', options.namespace)
@@ -561,6 +566,7 @@ function smokeCommand(options: {
   if (options.timeoutSeconds && options.timeoutSeconds !== 300) {
     parts.push('--timeout-seconds', String(options.timeoutSeconds))
   }
+  if (options.json) parts.push('--json')
   return commandLine(parts)
 }
 
@@ -574,6 +580,7 @@ function slackbotSmokeCommand(options: {
   userId?: string
   botUserId?: string
   timeoutSeconds?: number
+  json?: boolean
 } = {}) {
   const parts = ['slackbot', 'smoke']
   if (options.namespace && options.namespace !== 'centaur') parts.push('--namespace', options.namespace)
@@ -587,6 +594,7 @@ function slackbotSmokeCommand(options: {
   if (options.timeoutSeconds && options.timeoutSeconds !== 300) {
     parts.push('--timeout-seconds', String(options.timeoutSeconds))
   }
+  if (options.json) parts.push('--json')
   return commandLine(parts)
 }
 
@@ -674,6 +682,7 @@ function setupPlan(options: SetupPlanOptions) {
     imageSource: options.imageSource,
     values: join(options.overlayPath, 'values.centaur.yaml'),
     secretsFile: deploySecretsFileForBackend(options.backend, options.overlayPath),
+    json: true,
   })
   const centaurCommand = (command: string) => `${quotePart(options.bin || 'centaur')} ${command}`
   return {
@@ -698,6 +707,7 @@ function setupPlan(options: SetupPlanOptions) {
         options.authMode,
         '--overlay-path',
         options.overlayPath,
+        '--json',
       ])),
       centaurCommand(commandLine([
         'integrations',
@@ -722,6 +732,7 @@ function setupPlan(options: SetupPlanOptions) {
         options.authMode,
         '--overlay-path',
         options.overlayPath,
+        '--json',
       ])),
       centaurCommand(commandLine([
         'secrets',
@@ -738,6 +749,7 @@ function setupPlan(options: SetupPlanOptions) {
         options.authMode,
         '--overlay-path',
         options.overlayPath,
+        '--json',
       ])),
       centaurCommand(commandLine([
         'doctor',
@@ -754,10 +766,11 @@ function setupPlan(options: SetupPlanOptions) {
         options.installMode,
         '--image-source',
         options.imageSource,
+        '--json',
       ])),
       centaurCommand(deployCommand),
-      centaurCommand(localRunVerificationCommand(options.harness)),
-      centaurCommand(commandLine(['slackbot', 'smoke'])),
+      centaurCommand(localRunVerificationCommand(options.harness, { jsonl: true })),
+      centaurCommand(slackbotSmokeCommand({ json: true })),
     ],
     harness: options.harness,
     authMode: options.authMode,
@@ -792,6 +805,7 @@ function deployApplyCommandParts(
     wait: boolean
     timeout: string
     updateDependencies: boolean
+    json?: boolean
   },
 ) {
   const parts = ['deploy', subcommand]
@@ -816,6 +830,7 @@ function deployApplyCommandParts(
   if (options.updateDependencies) parts.push('--update-dependencies')
   if (options.wait) parts.push('--wait', '--timeout', options.timeout)
   else parts.push('--no-wait')
+  if (options.json) parts.push('--json')
   return parts
 }
 
@@ -826,11 +841,11 @@ function deployCta(
   const harness = harnessFromValuesFile(options.values)
   const verificationCommands = [
     {
-      command: localRunVerificationCommand(harness, options),
+      command: localRunVerificationCommand(harness, { ...options, jsonl: true }),
       description: 'run one verified Centaur turn through the local API pod',
     },
     {
-      command: slackbotSmokeCommand(options),
+      command: slackbotSmokeCommand({ ...options, json: true }),
       description: 'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
     },
   ]
@@ -844,7 +859,7 @@ function deployCta(
     description: 'Next deployment commands:',
     commands: [
       {
-        command: commandLine(deployApplyCommandParts(subcommand, options)),
+        command: commandLine(deployApplyCommandParts(subcommand, { ...options, json: true })),
         description: 'apply this deployment plan',
       },
       ...verificationCommands,
@@ -869,6 +884,7 @@ function deployFailureCta(
           subcommand === 'k8s' ? 'k8s' : 'local',
           '--image-source',
           options.imageSource,
+          '--json',
         ]),
         description: 'recheck local tools, cluster access, and generated setup files',
       },
@@ -885,7 +901,7 @@ function deployFailureCta(
         description: 'inspect API logs if the release partially started',
       },
       {
-        command: commandLine(deployApplyCommandParts(subcommand, options)),
+        command: commandLine(deployApplyCommandParts(subcommand, { ...options, json: true })),
         description: 'retry the same deploy command after fixing the error',
       },
     ],
@@ -1584,6 +1600,7 @@ function secretsCollectCommandParts(options: {
   onePasswordVault?: string
   sopsPath?: string
   vaultPath?: string
+  json?: boolean
 }) {
   const parts = [
     'secrets',
@@ -1608,6 +1625,7 @@ function secretsCollectCommandParts(options: {
   if (options.onePasswordVault) parts.push('--one-password-vault', options.onePasswordVault)
   if (options.sopsPath) parts.push('--sops-path', options.sopsPath)
   if (options.vaultPath) parts.push('--vault-path', options.vaultPath)
+  if (options.json) parts.push('--json')
   return parts
 }
 
@@ -1944,14 +1962,14 @@ const integrations = Cli.create('integrations', {
             : socketMode
               ? 'Open https://api.slack.com/apps, paste the manifest JSON or output file contents, then generate an app-level token for Socket Mode.'
               : 'Open https://api.slack.com/apps and paste the returned manifest JSON or the output file contents.',
-          nextCommand: `centaur ${commandLine(secretsCollectCommandParts(c.options))}`,
+          nextCommand: `centaur ${commandLine(secretsCollectCommandParts({ ...c.options, json: true }))}`,
         },
         {
           cta: {
             description: 'After installing the Slack app:',
             commands: [
               {
-                command: commandLine(secretsCollectCommandParts(c.options)),
+                command: commandLine(secretsCollectCommandParts({ ...c.options, json: true })),
                 description: 'prompt for Slack, harness, and infra secrets and write them to the backend',
               },
             ],
@@ -2064,11 +2082,11 @@ const secrets = Cli.create('secrets', {
           description: 'Provide the missing values, then run one of these:',
           commands: [
             {
-              command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true })),
+              command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true, json: true })),
               description: 'retry non-interactively from environment variables and local harness auth state',
             },
             {
-              command: commandLine(secretsCollectCommandParts(collectCommandOptions)),
+              command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, json: true })),
               description: 'run in a real terminal and type secrets into masked prompts',
             },
           ],
@@ -2090,11 +2108,11 @@ const secrets = Cli.create('secrets', {
             description: 'Set the missing values or login with the selected harness CLI, then retry:',
             commands: [
               {
-                command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true })),
+                command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true, json: true })),
                 description: 'retry non-interactively from environment variables and local harness auth state',
               },
               {
-                command: commandLine(secretsCollectCommandParts(collectCommandOptions)),
+                command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, json: true })),
                 description: 'run interactive masked prompts and let the CLI drive harness login when needed',
               },
             ],
@@ -2133,6 +2151,7 @@ const secrets = Cli.create('secrets', {
       imageSource: c.options.imageSource,
       values: join(c.options.overlayPath, 'values.centaur.yaml'),
       secretsFile: deploySecretsFile,
+      json: true,
     })
     const doctorCommand = [
       'doctor',
@@ -2153,6 +2172,7 @@ const secrets = Cli.create('secrets', {
     if (c.options.backend === 'local-env') {
       doctorCommand.push('--local-env-path', backendOptions.localEnvPath!)
     }
+    doctorCommand.push('--json')
     return c.ok(
       {
         backend: result.backend,
@@ -2173,11 +2193,11 @@ const secrets = Cli.create('secrets', {
               description: 'apply local secrets when needed and deploy Centaur with Helm',
             },
             {
-              command: localRunVerificationCommand(c.options.harness),
+              command: localRunVerificationCommand(c.options.harness, { jsonl: true }),
               description: 'run one verified Centaur turn through the local API pod',
             },
             {
-              command: commandLine(['slackbot', 'smoke']),
+              command: slackbotSmokeCommand({ json: true }),
               description: 'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
             },
           ],
@@ -2405,6 +2425,7 @@ const slackbot = Cli.create('slackbot', {
                   userId: c.options.userId,
                   botUserId: c.options.botUserId,
                   timeoutSeconds: Math.max(c.options.timeoutSeconds, 300),
+                  json: true,
                 }),
                 description: 'retry Slackbot smoke with a normal timeout',
               }, {
@@ -2516,11 +2537,20 @@ export const app = Cli.create('centaur', {
           cta: {
             commands: [
               {
-                command: commandLine(['run', c.args.prompt, '--local']),
+                command: commandLine(['run', c.args.prompt, '--local', '--format', 'jsonl']),
                 description: 'run through the local Kubernetes API pod without a port-forward or external API key',
               },
               {
-                command: commandLine(['run', c.args.prompt, '--api-url', apiUrl, '--api-key', '<api-key>']),
+                command: commandLine([
+                  'run',
+                  c.args.prompt,
+                  '--api-url',
+                  apiUrl,
+                  '--api-key',
+                  '<api-key>',
+                  '--format',
+                  'jsonl',
+                ]),
                 description: 'retry against the explicit API URL with a Centaur API key',
               },
             ],
@@ -2570,6 +2600,8 @@ export const app = Cli.create('centaur', {
                       '--release',
                       c.options.release,
                       ...(c.options.harness ? ['--harness', c.options.harness] : []),
+                      '--format',
+                      'jsonl',
                     ]),
                     description: 'continue this same Centaur thread through the local API pod',
                   },
@@ -2606,7 +2638,7 @@ export const app = Cli.create('centaur', {
           cta: {
             commands: [
               {
-                command: commandLine(['run', c.args.prompt, '--thread', next.value.threadKey]),
+                command: commandLine(['run', c.args.prompt, '--thread', next.value.threadKey, '--format', 'jsonl']),
                 description: 'continue this same Centaur thread',
               },
             ],
@@ -2669,6 +2701,7 @@ export const app = Cli.create('centaur', {
         imageSource: state.imageSource,
         values: join(state.overlayPath, 'values.centaur.yaml'),
         secretsFile: deploySecretsFileForBackend(state.secretBackend, state.overlayPath),
+        json: true,
       })}`
 
       return c.ok(
@@ -2713,6 +2746,7 @@ export const app = Cli.create('centaur', {
                   state.authMode,
                   '--overlay-path',
                   state.overlayPath,
+                  '--json',
                 ]),
                 description: 'copy the Slack app manifest JSON to the clipboard',
               },
@@ -2732,6 +2766,7 @@ export const app = Cli.create('centaur', {
                   state.authMode,
                   '--overlay-path',
                   state.overlayPath,
+                  '--json',
                 ]),
                 description: 'prompt for needed secrets and populate the selected backend',
               },
@@ -2751,6 +2786,7 @@ export const app = Cli.create('centaur', {
                   state.installMode,
                   '--image-source',
                   state.imageSource,
+                  '--json',
                 ]),
                 description: 'verify local tools and generated files after secrets are populated',
               },
@@ -2759,11 +2795,11 @@ export const app = Cli.create('centaur', {
                 description: 'apply local secrets when needed and deploy Centaur with Helm',
               },
               {
-                command: localRunVerificationCommand(state.harness),
+                command: localRunVerificationCommand(state.harness, { jsonl: true }),
                 description: 'run one verified Centaur turn through the local API pod',
               },
               {
-                command: commandLine(['slackbot', 'smoke']),
+                command: slackbotSmokeCommand({ json: true }),
                 description: 'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
               },
             ],
@@ -2819,6 +2855,7 @@ export const app = Cli.create('centaur', {
           c.options.overlayPath,
           c.options.localEnvPath,
         ),
+        json: true,
       })
       const secretsCommand = {
         command: commandLine(secretsCollectCommandParts({
@@ -2829,6 +2866,7 @@ export const app = Cli.create('centaur', {
           authMode: c.options.authMode,
           overlayPath: c.options.overlayPath,
           localEnvPath: c.options.localEnvPath,
+          json: true,
         })),
         description: 'populate missing Slack, harness, and infra secrets',
       }
@@ -2849,6 +2887,7 @@ export const app = Cli.create('centaur', {
         c.options.imageSource,
       ]
       if (c.options.localEnvPath) retryDoctorParts.push('--local-env-path', c.options.localEnvPath)
+      retryDoctorParts.push('--json')
       const failedResults = results.filter(result => !result.ok)
       const overlayMissing = failedResults.some(result => result.name.startsWith('overlay:'))
       const ctaCommands = ok
@@ -2858,11 +2897,11 @@ export const app = Cli.create('centaur', {
               description: 'deploy with Helm using the selected install mode and secret backend',
             },
             {
-              command: localRunVerificationCommand(c.options.harness),
+              command: localRunVerificationCommand(c.options.harness, { jsonl: true }),
               description: 'run one verified Centaur turn through the local API pod',
             },
             {
-              command: slackbotSmokeCommand(),
+              command: slackbotSmokeCommand({ json: true }),
               description: 'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
             },
           ]
@@ -2883,6 +2922,7 @@ export const app = Cli.create('centaur', {
                     c.options.authMode,
                     '--overlay-path',
                     c.options.overlayPath,
+                    '--json',
                   ]),
                   description: 'scaffold missing overlay files before continuing setup',
                 }]
@@ -2953,6 +2993,7 @@ export const app = Cli.create('centaur', {
                     prompt: c.options.prompt,
                     expect: c.options.expect,
                     timeoutSeconds: Math.max(c.options.timeoutSeconds, 300),
+                    json: true,
                   }),
                   description: 'retry local agent smoke with a normal timeout',
                 }, {
