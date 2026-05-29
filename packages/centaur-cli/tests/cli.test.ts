@@ -178,6 +178,7 @@ describe('overlay scaffolding', () => {
     expect(ctaCommands[2]).toContain('--harness codex')
     expect(ctaCommands[2]).toContain('--auth-mode access_token')
     expect(ctaCommands[3]).toContain('centaur deploy k3s --apply')
+    expect(ctaCommands[3]).toContain('--image-source ghcr')
     expect(ctaCommands[4]).toContain("centaur run 'Reply with exactly PONG and nothing else.' --local --harness codex --expect PONG --release-thread")
     expect(ctaCommands[5]).toContain('centaur slackbot smoke')
 
@@ -185,6 +186,7 @@ describe('overlay scaffolding', () => {
     expect(state.org).toBe('acme')
     expect(state.harness).toBe('codex')
     expect(state.authMode).toBe('access_token')
+    expect(state.imageSource).toBe('ghcr')
     expect(state.completedSteps).toContain('slack-manifest')
     expect(readFileSync(join(overlayPath, 'values.centaur.yaml'), 'utf8')).toContain(
       'CODEX_AUTH_MODE: access_token',
@@ -227,6 +229,7 @@ describe('overlay scaffolding', () => {
     const output = JSON.parse(stdout)
     expect(output.copied).toBe(false)
     expect(output.nextCommand).toContain('secrets collect --backend kubernetes')
+    expect(output.nextCommand).toContain('--image-source ghcr')
     expect(output.nextCommand).toContain('--harness claude-code')
     expect(output.nextCommand).toContain('--auth-mode access_token')
     expect(output.cta.commands[0].command).toContain('centaur secrets collect --backend kubernetes')
@@ -256,11 +259,11 @@ describe('overlay scaffolding', () => {
 
     const output = JSON.parse(stdout)
     expect(output.commands).toEqual([
-      'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org',
-      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org',
-      'centaur secrets collect --backend local-env --install-mode local --harness codex --auth-mode api_key --overlay-path org',
-      'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local',
-      'centaur deploy k3s --apply --secrets-file org/secrets.local.env',
+      'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org',
+      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org',
+      'centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org',
+      'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr',
+      'centaur deploy k3s --apply --image-source ghcr --secrets-file org/secrets.local.env',
       "centaur run 'Reply with exactly PONG and nothing else.' --local --harness codex --expect PONG --release-thread",
       'centaur slackbot smoke',
     ])
@@ -343,7 +346,41 @@ describe('deploy plans', () => {
     expect(commands[0]).toEqual(['kubectl', 'config', 'current-context'])
     expect(commands.at(-1)?.slice(0, 4)).toEqual(['helm', 'upgrade', '--install', 'centaur'])
     expect(commands.at(-1)?.[4]).toMatch(/contrib\/chart$/)
-    expect(commands.at(-1)?.slice(5)).toEqual(['-n', 'centaur', '-f', 'org/values.centaur.yaml'])
+    expect(commands.at(-1)?.slice(5)).toEqual([
+      '-n',
+      'centaur',
+      '-f',
+      'org/values.centaur.yaml',
+      '--set',
+      'api.image.repository=ghcr.io/paradigmxyz/centaur/centaur-api',
+      '--set',
+      'ironProxy.image.repository=ghcr.io/paradigmxyz/centaur/centaur-iron-proxy',
+      '--set',
+      'slackbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-slackbot',
+      '--set',
+      'sandbox.image.repository=ghcr.io/paradigmxyz/centaur/centaur-agent',
+    ])
+  })
+
+  it('supports local image names without forcing image pulls', () => {
+    const commands = k3sDeploymentCommands('centaur', 'centaur', 'org/values.centaur.yaml', {
+      imageSource: 'local',
+    })
+
+    expect(commands.at(-1)?.slice(5)).toEqual([
+      '-n',
+      'centaur',
+      '-f',
+      'org/values.centaur.yaml',
+      '--set',
+      'api.image.pullPolicy=IfNotPresent',
+      '--set',
+      'ironProxy.image.pullPolicy=IfNotPresent',
+      '--set',
+      'slackbot.image.pullPolicy=IfNotPresent',
+      '--set',
+      'sandbox.image.pullPolicy=IfNotPresent',
+    ])
   })
 
   it('can include a local env secret apply before Helm', async () => {

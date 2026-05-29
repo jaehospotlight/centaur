@@ -11,10 +11,12 @@ import { Cli, z } from 'incur'
 import {
   AUTH_MODES,
   HARNESSES,
+  IMAGE_SOURCES,
   INSTALL_MODES,
   SECRET_BACKENDS,
   VERSION,
   type Harness,
+  type ImageSource,
 } from './constants.js'
 import {
   binaryChecks,
@@ -42,6 +44,7 @@ import { runAgent } from './run.js'
 
 const authModeSchema = z.enum(AUTH_MODES)
 const harnessSchema = z.enum(HARNESSES)
+const imageSourceSchema = z.enum(IMAGE_SOURCES)
 const installModeSchema = z.enum(INSTALL_MODES)
 const secretBackendSchema = z.enum(SECRET_BACKENDS)
 
@@ -264,6 +267,7 @@ function readClaudeSubscriptionAuth() {
 type DeploymentCommandOptions = {
   secretsFile?: string
   secretName?: string
+  imageSource?: ImageSource
 }
 
 function secretApplyCommands(namespace: string, options: DeploymentCommandOptions = {}) {
@@ -287,6 +291,31 @@ function secretApplyCommands(namespace: string, options: DeploymentCommandOption
   ]
 }
 
+function imageSourceHelmArgs(imageSource: ImageSource = 'ghcr') {
+  if (imageSource === 'local') {
+    return [
+      '--set',
+      'api.image.pullPolicy=IfNotPresent',
+      '--set',
+      'ironProxy.image.pullPolicy=IfNotPresent',
+      '--set',
+      'slackbot.image.pullPolicy=IfNotPresent',
+      '--set',
+      'sandbox.image.pullPolicy=IfNotPresent',
+    ]
+  }
+  return [
+    '--set',
+    'api.image.repository=ghcr.io/paradigmxyz/centaur/centaur-api',
+    '--set',
+    'ironProxy.image.repository=ghcr.io/paradigmxyz/centaur/centaur-iron-proxy',
+    '--set',
+    'slackbot.image.repository=ghcr.io/paradigmxyz/centaur/centaur-slackbot',
+    '--set',
+    'sandbox.image.repository=ghcr.io/paradigmxyz/centaur/centaur-agent',
+  ]
+}
+
 export function kindDeploymentCommands(
   clusterName: string,
   namespace: string,
@@ -302,7 +331,7 @@ export function kindDeploymentCommands(
     ['kubectl', 'apply', '-f', '-'],
     ...secretApplyCommands(namespace, options),
     ['helm', 'dependency', 'update', chartPath],
-    ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values],
+    ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values, ...imageSourceHelmArgs(options.imageSource)],
   ]
 }
 
@@ -319,7 +348,7 @@ export function k3sDeploymentCommands(
     ['kubectl', 'apply', '-f', '-'],
     ...secretApplyCommands(namespace, options),
     ['helm', 'dependency', 'update', chartPath],
-    ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values],
+    ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values, ...imageSourceHelmArgs(options.imageSource)],
   ]
 }
 
@@ -335,23 +364,24 @@ export function k8sDeploymentCommands(
     ['kubectl', 'apply', '-f', '-'],
     ...secretApplyCommands(namespace, options),
     ['helm', 'dependency', 'update', chartPath],
-    ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values],
+    ['helm', 'upgrade', '--install', release, chartPath, '-n', namespace, '-f', values, ...imageSourceHelmArgs(options.imageSource)],
   ]
 }
 
 function deployCommandPartsForInstallMode(
   installMode: string,
-  options: { apply?: boolean; secretsFile?: string } = {},
+  options: { apply?: boolean; secretsFile?: string; imageSource?: ImageSource } = {},
 ) {
   const parts = ['deploy', installMode === 'local' || installMode === 'k3s' ? 'k3s' : 'k8s']
   if (options.apply) parts.push('--apply')
+  if (options.imageSource) parts.push('--image-source', options.imageSource)
   if (options.secretsFile) parts.push('--secrets-file', options.secretsFile)
   return parts
 }
 
 function deploymentCommandForInstallMode(
   installMode: string,
-  options: { apply?: boolean; secretsFile?: string } = {},
+  options: { apply?: boolean; secretsFile?: string; imageSource?: ImageSource } = {},
 ) {
   return commandLine(deployCommandPartsForInstallMode(installMode, options))
 }
@@ -378,6 +408,7 @@ type SetupPlanOptions = {
   assistantName: string
   domain: string
   installMode: string
+  imageSource: ImageSource
   backend: string
   harness: Harness
   authMode: string
@@ -388,6 +419,7 @@ function setupPlan(options: SetupPlanOptions) {
   const manifestPath = join(options.overlayPath, 'slack-app-manifest.json')
   const deployCommand = deploymentCommandForInstallMode(options.installMode, {
     apply: true,
+    imageSource: options.imageSource,
     secretsFile: deploySecretsFileForBackend(options.backend, options.overlayPath),
   })
   const centaurCommand = (command: string) => `centaur ${command}`
@@ -403,6 +435,8 @@ function setupPlan(options: SetupPlanOptions) {
         options.domain,
         '--install-mode',
         options.installMode,
+        '--image-source',
+        options.imageSource,
         '--secret-backend',
         options.backend,
         '--harness',
@@ -426,6 +460,8 @@ function setupPlan(options: SetupPlanOptions) {
         options.backend,
         '--install-mode',
         options.installMode,
+        '--image-source',
+        options.imageSource,
         '--harness',
         options.harness,
         '--auth-mode',
@@ -440,6 +476,8 @@ function setupPlan(options: SetupPlanOptions) {
         options.backend,
         '--install-mode',
         options.installMode,
+        '--image-source',
+        options.imageSource,
         '--harness',
         options.harness,
         '--auth-mode',
@@ -460,6 +498,8 @@ function setupPlan(options: SetupPlanOptions) {
         options.backend,
         '--install-mode',
         options.installMode,
+        '--image-source',
+        options.imageSource,
       ])),
       centaurCommand(deployCommand),
       centaurCommand(localRunVerificationCommand(options.harness)),
@@ -1223,6 +1263,7 @@ const integrations = Cli.create('integrations', {
       copy: z.boolean().default(false).describe('Copy manifest JSON to the system clipboard'),
       backend: secretBackendSchema.default('local-env').describe('Secret backend for the next secrets step'),
       installMode: installModeSchema.default('local').describe('Install mode for the next secrets step'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Container image source for the next deploy step'),
       harness: harnessSchema.default('codex').describe('Selected default harness'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
       overlayPath: z.string().default('org').describe('Overlay path for the next secrets step'),
@@ -1253,6 +1294,8 @@ const integrations = Cli.create('integrations', {
             c.options.backend,
             '--install-mode',
             c.options.installMode,
+            '--image-source',
+            c.options.imageSource,
             '--harness',
             c.options.harness,
             '--auth-mode',
@@ -1273,6 +1316,8 @@ const integrations = Cli.create('integrations', {
                   c.options.backend,
                   '--install-mode',
                   c.options.installMode,
+                  '--image-source',
+                  c.options.imageSource,
                   '--harness',
                   c.options.harness,
                   '--auth-mode',
@@ -1305,6 +1350,7 @@ const integrations = Cli.create('integrations', {
       assistantName: z.string().default('centaur').describe('Assistant display name'),
       domain: z.string().default('centaur.example.com').describe('Public deployment domain'),
       installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Container image source for deploy commands'),
       backend: secretBackendSchema.default('local-env').describe('Secret backend'),
       harness: harnessSchema.default('codex').describe('Selected default harness'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
@@ -1374,6 +1420,7 @@ const secrets = Cli.create('secrets', {
   options: z.object({
     backend: secretBackendSchema.default('local-env').describe('Secret backend to populate'),
     installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
+    imageSource: imageSourceSchema.default('ghcr').describe('Container image source for the next deploy command'),
     harness: harnessSchema.default('codex').describe('Selected default harness'),
     authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
     overlayPath: z.string().default('org').describe('Overlay path for local generated files'),
@@ -1408,6 +1455,8 @@ const secrets = Cli.create('secrets', {
                 c.options.backend,
                 '--install-mode',
                 c.options.installMode,
+                '--image-source',
+                c.options.imageSource,
                 '--harness',
                 c.options.harness,
                 '--auth-mode',
@@ -1425,6 +1474,8 @@ const secrets = Cli.create('secrets', {
                 c.options.backend,
                 '--install-mode',
                 c.options.installMode,
+                '--image-source',
+                c.options.imageSource,
                 '--harness',
                 c.options.harness,
                 '--auth-mode',
@@ -1463,6 +1514,7 @@ const secrets = Cli.create('secrets', {
     const result = writeSecrets(c.options.backend, secrets, backendOptions)
     const nextDeployCommand = deploymentCommandForInstallMode(c.options.installMode, {
       apply: true,
+      imageSource: c.options.imageSource,
       secretsFile: deploySecretsFileForBackend(c.options.backend, c.options.overlayPath),
     })
     const doctorCommand = [
@@ -1478,6 +1530,8 @@ const secrets = Cli.create('secrets', {
       c.options.backend,
       '--install-mode',
       c.options.installMode,
+      '--image-source',
+      c.options.imageSource,
     ]
     if (c.options.backend === 'local-env') {
       doctorCommand.push('--local-env-path', backendOptions.localEnvPath!)
@@ -1525,12 +1579,14 @@ const deploy = Cli.create('deploy', {
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Use published GHCR images or local image names'),
       secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
       secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
       apply: z.boolean().default(false).describe('Run the commands instead of printing them'),
     }),
     run(c) {
       const commands = k8sDeploymentCommands(c.options.namespace, c.options.release, c.options.values, {
+        imageSource: c.options.imageSource,
         secretsFile: c.options.secretsFile,
         secretName: c.options.secretName,
       })
@@ -1547,12 +1603,14 @@ const deploy = Cli.create('deploy', {
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml').describe('Helm values file'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Use published GHCR images or local image names'),
       secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
       secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
       apply: z.boolean().default(false).describe('Run the commands instead of printing them'),
     }),
     run(c) {
       const commands = k3sDeploymentCommands(c.options.namespace, c.options.release, c.options.values, {
+        imageSource: c.options.imageSource,
         secretsFile: c.options.secretsFile,
         secretName: c.options.secretName,
       })
@@ -1570,12 +1628,14 @@ const deploy = Cli.create('deploy', {
       namespace: z.string().default('centaur'),
       release: z.string().default('centaur'),
       values: z.string().default('org/values.centaur.yaml').describe('Helm values file'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Use published GHCR images or local image names'),
       secretsFile: z.string().optional().describe('Optional dotenv file to apply as the infra Kubernetes Secret'),
       secretName: z.string().default('centaur-infra-env').describe('Kubernetes Secret name for --secrets-file'),
       apply: z.boolean().default(false).describe('Run the commands instead of printing them'),
     }),
     run(c) {
       const commands = kindDeploymentCommands(c.options.clusterName, c.options.namespace, c.options.release, c.options.values, {
+        imageSource: c.options.imageSource,
         secretsFile: c.options.secretsFile,
         secretName: c.options.secretName,
       })
@@ -1701,6 +1761,7 @@ export const app = Cli.create('centaur', {
       assistantName: z.string().default('centaur').describe('Assistant display name'),
       domain: z.string().default('centaur.example.com').describe('Public deployment domain'),
       installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Container image source for deploy commands'),
       backend: secretBackendSchema.default('local-env').describe('Secret backend'),
       harness: harnessSchema.default('codex').describe('Selected default harness'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
@@ -1856,6 +1917,7 @@ export const app = Cli.create('centaur', {
       domain: z.string().default('centaur.example.com').describe('Public deployment domain'),
       adminEmail: z.string().default('admin@example.com').describe('Admin email'),
       installMode: installModeSchema.default('local').describe('local, k3s, k8s, or ssh'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Use published GHCR images or local image names'),
       secretBackend: secretBackendSchema.default('local-env').describe('Secret backend'),
       harness: harnessSchema.default('codex').describe('Default harness: codex or claude-code'),
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
@@ -1872,6 +1934,7 @@ export const app = Cli.create('centaur', {
       state.domain = c.options.domain || prior.domain || 'centaur.example.com'
       state.adminEmail = c.options.adminEmail || prior.adminEmail || 'admin@example.com'
       state.installMode = c.options.installMode || prior.installMode || 'local'
+      state.imageSource = c.options.imageSource || prior.imageSource || 'ghcr'
       state.secretBackend = c.options.secretBackend || prior.secretBackend || 'local-env'
       state.harness = c.options.harness || prior.harness || 'codex'
       state.authMode = c.options.authMode || prior.authMode || 'api_key'
@@ -1897,6 +1960,7 @@ export const app = Cli.create('centaur', {
       const saved = saveState(state, c.options.home)
       const nextDeployCommand = `centaur ${deploymentCommandForInstallMode(state.installMode, {
         apply: true,
+        imageSource: state.imageSource,
         secretsFile: deploySecretsFileForBackend(state.secretBackend, state.overlayPath),
       })}`
 
@@ -1910,6 +1974,7 @@ export const app = Cli.create('centaur', {
           authMode: state.authMode,
           secretBackend: state.secretBackend,
           installMode: state.installMode,
+          imageSource: state.imageSource,
           created: manifestExisted ? written : [...written, manifestPath],
           auth,
         },
@@ -1932,6 +1997,8 @@ export const app = Cli.create('centaur', {
                   state.secretBackend,
                   '--install-mode',
                   state.installMode,
+                  '--image-source',
+                  state.imageSource,
                   '--harness',
                   state.harness,
                   '--auth-mode',
@@ -1949,6 +2016,8 @@ export const app = Cli.create('centaur', {
                   state.secretBackend,
                   '--install-mode',
                   state.installMode,
+                  '--image-source',
+                  state.imageSource,
                   '--harness',
                   state.harness,
                   '--auth-mode',
@@ -1972,6 +2041,8 @@ export const app = Cli.create('centaur', {
                   state.secretBackend,
                   '--install-mode',
                   state.installMode,
+                  '--image-source',
+                  state.imageSource,
                 ]),
                 description: 'verify local tools and generated files after secrets are populated',
               },
@@ -2002,6 +2073,7 @@ export const app = Cli.create('centaur', {
       authMode: authModeSchema.default('api_key').describe('Auth mode for the selected harness'),
       secretBackend: secretBackendSchema.default('local-env').describe('Secret backend for repair CTAs'),
       installMode: installModeSchema.default('local').describe('Install mode for repair CTAs'),
+      imageSource: imageSourceSchema.default('ghcr').describe('Container image source used by deploy'),
       localEnvPath: z.string().optional().describe('local-env source file for deep checks'),
     }),
     run(c) {
@@ -2021,8 +2093,10 @@ export const app = Cli.create('centaur', {
             installMode: c.options.installMode,
           }),
           ...brokeredTokenBackendCheck(c.options.secretBackend, c.options.authMode),
-          dockerDaemonCheck(),
         )
+        if (c.options.imageSource === 'local') {
+          results.push(dockerDaemonCheck())
+        }
         if (results.some(result => result.name === 'binary:kubectl' && result.ok)) {
           results.push(commandCheck('kubectl:cluster', ['kubectl', 'cluster-info'], 'Select a working Kubernetes context or use centaur deploy k3s.'))
         }
@@ -2059,13 +2133,15 @@ export const app = Cli.create('centaur', {
                   'deploy',
                   'k3s',
                   '--apply',
+                  '--image-source',
+                  c.options.imageSource,
                   '--secrets-file',
                   deploySecretsFileForBackend('local-env', c.options.overlayPath)!,
                 ]),
                 description: 'for local development, apply local secrets and deploy with Helm',
               },
               {
-                command: 'deploy k8s --apply',
+                command: commandLine(['deploy', 'k8s', '--apply', '--image-source', c.options.imageSource]),
                 description: 'for an existing cluster, deploy with Helm',
               },
               {

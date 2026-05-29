@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 
-import type { AuthMode, Harness, InstallMode, SecretBackend } from './constants.js'
+import type { AuthMode, Harness, ImageSource, InstallMode, SecretBackend } from './constants.js'
 
 export const DEFAULT_HOME = join(homedir(), '.centaur')
 
@@ -12,6 +12,7 @@ export type OnboardingState = {
   domain: string
   adminEmail: string
   installMode: InstallMode
+  imageSource: ImageSource
   secretBackend: SecretBackend
   overlayPath: string
   harness: Harness
@@ -27,6 +28,7 @@ export function emptyState(): OnboardingState {
     domain: '',
     adminEmail: '',
     installMode: 'local',
+    imageSource: 'ghcr',
     secretBackend: 'local-env',
     overlayPath: '',
     harness: 'codex',

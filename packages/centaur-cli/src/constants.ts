@@ -9,6 +9,9 @@ export type Harness = (typeof HARNESSES)[number]
 export const INSTALL_MODES = ['local', 'k3s', 'k8s', 'ssh'] as const
 export type InstallMode = (typeof INSTALL_MODES)[number]
 
+export const IMAGE_SOURCES = ['ghcr', 'local'] as const
+export type ImageSource = (typeof IMAGE_SOURCES)[number]
+
 export const SECRET_BACKENDS = [
   'local-env',
   'onepassword',
