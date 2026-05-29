@@ -206,6 +206,7 @@ describe('overlay scaffolding', () => {
     const ctaCommands = output.cta.commands.map((command: { command: string }) => command.command)
     expect(ctaCommands[0]).toContain('centaur integrations slack-manifest')
     expect(ctaCommands[0]).toContain('--copy')
+    expect(ctaCommands[0]).toContain('--socket-mode')
     expect(ctaCommands[0]).toContain('--harness codex')
     expect(ctaCommands[1]).toContain('centaur secrets collect')
     expect(ctaCommands[1]).toContain('--auth-mode access_token')
@@ -270,6 +271,33 @@ describe('overlay scaffolding', () => {
     expect(output.cta.commands[0].command).toContain('centaur secrets collect --backend kubernetes')
   })
 
+  it('slack-manifest defaults local install mode to Socket Mode', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'centaur-cli-local-slack-'))
+    const outputPath = join(root, 'slack-app-manifest.json')
+
+    const stdout = await runCli([
+      'integrations',
+      'slack-manifest',
+      '--domain',
+      'centaur.local.test',
+      '--app-name',
+      'centaur',
+      '--output',
+      outputPath,
+      '--install-mode',
+      'local',
+      '--json',
+    ])
+
+    const output = JSON.parse(stdout)
+    const manifest = JSON.parse(readFileSync(outputPath, 'utf8'))
+    expect(output.manifest.settings.socket_mode_enabled).toBe(true)
+    expect(manifest.settings.socket_mode_enabled).toBe(true)
+    expect('request_url' in manifest.settings.event_subscriptions).toBe(false)
+    expect(output.requiredSecrets).toContain('SLACK_APP_TOKEN')
+    expect(output.optionalSecrets).not.toContain('SLACK_APP_TOKEN')
+  })
+
   it('top-level setup returns the full agent command chain through local run and Slackbot smoke', async () => {
     const stdout = await runCli([
       'setup',
@@ -295,7 +323,7 @@ describe('overlay scaffolding', () => {
     const output = JSON.parse(stdout)
     expect(output.commands).toEqual([
       'centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org',
-      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org',
+      'centaur integrations slack-manifest --domain centaur.acme.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org',
       'centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org',
       'centaur doctor --deep --overlay-path org --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr',
       'centaur deploy k3s --apply --image-source ghcr --wait --timeout 10m --secrets-file org/secrets.local.env',

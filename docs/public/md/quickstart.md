@@ -27,7 +27,7 @@ curl -fsSL https://centaur.run/install.sh | bash
 centaur --llms
 centaur setup --org acme --assistant-name centaur --domain centaur.example.com --backend local-env --install-mode local --harness codex --auth-mode api_key
 centaur init --install-mode local --image-source ghcr --harness codex --auth-mode api_key
-centaur integrations slack-manifest --domain centaur.example.com --app-name centaur --output org/slack-app-manifest.json --copy --install-mode local --image-source ghcr --harness codex --auth-mode api_key
+centaur integrations slack-manifest --domain centaur.example.com --app-name centaur --output org/slack-app-manifest.json --copy --socket-mode --install-mode local --image-source ghcr --harness codex --auth-mode api_key
 centaur secrets collect --backend local-env --install-mode local --image-source ghcr --harness codex --auth-mode api_key --overlay-path org
 centaur doctor --deep --harness codex --auth-mode api_key --secret-backend local-env --install-mode local --image-source ghcr
 centaur deploy k3s --apply --image-source ghcr --wait --timeout 10m --secrets-file org/secrets.local.env

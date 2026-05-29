@@ -455,6 +455,7 @@ type SetupPlanOptions = {
 
 function setupPlan(options: SetupPlanOptions) {
   const manifestPath = join(options.overlayPath, 'slack-app-manifest.json')
+  const localSocketMode = options.installMode === 'local'
   const deployCommand = deploymentCommandForInstallMode(options.installMode, {
     apply: true,
     imageSource: options.imageSource,
@@ -494,6 +495,7 @@ function setupPlan(options: SetupPlanOptions) {
         '--output',
         manifestPath,
         '--copy',
+        ...(localSocketMode ? ['--socket-mode'] : []),
         '--backend',
         options.backend,
         '--install-mode',
@@ -1305,9 +1307,10 @@ const integrations = Cli.create('integrations', {
       overlayPath: z.string().default('org').describe('Overlay path for the next secrets step'),
     }),
     run(c) {
-      const manifest = slackManifest(c.options.appName, c.options.domain, c.options.socketMode)
+      const socketMode = c.options.socketMode || c.options.installMode === 'local'
+      const manifest = slackManifest(c.options.appName, c.options.domain, socketMode)
       const outputPath = c.options.output
-        ? writeSlackManifest(c.options.output, c.options.appName, c.options.domain, c.options.socketMode)
+        ? writeSlackManifest(c.options.output, c.options.appName, c.options.domain, socketMode)
         : undefined
       const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`
       const clipboard = c.options.copy ? copyToClipboard(manifestJson) : undefined
@@ -1318,11 +1321,17 @@ const integrations = Cli.create('integrations', {
           copied: clipboard?.ok ?? false,
           clipboardCommand: clipboard?.command || undefined,
           requiredBotScopes: [...SLACK_SCOPES],
-          requiredSecrets: ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'],
-          optionalSecrets: ['SLACK_APP_TOKEN'],
+          requiredSecrets: socketMode
+            ? ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN']
+            : ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'],
+          optionalSecrets: socketMode ? [] : ['SLACK_APP_TOKEN'],
           userStep: clipboard?.ok
-            ? 'Open https://api.slack.com/apps, create an app from manifest, alt-tab, and paste.'
-            : 'Open https://api.slack.com/apps and paste the returned manifest JSON or the output file contents.',
+            ? socketMode
+              ? 'Open https://api.slack.com/apps, create an app from manifest, alt-tab, paste, then generate an app-level token for Socket Mode.'
+              : 'Open https://api.slack.com/apps, create an app from manifest, alt-tab, and paste.'
+            : socketMode
+              ? 'Open https://api.slack.com/apps, paste the manifest JSON or output file contents, then generate an app-level token for Socket Mode.'
+              : 'Open https://api.slack.com/apps and paste the returned manifest JSON or the output file contents.',
           nextCommand: commandLine([
             'secrets',
             'collect',
@@ -2041,6 +2050,7 @@ export const app = Cli.create('centaur', {
                   '--output',
                   manifestPath,
                   '--copy',
+                  ...(state.installMode === 'local' ? ['--socket-mode'] : []),
                   '--backend',
                   state.secretBackend,
                   '--install-mode',
