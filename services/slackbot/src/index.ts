@@ -5,6 +5,8 @@ import { createMemoryState } from '@chat-adapter/state-memory'
 import {
   Chat,
   type ActionEvent,
+  type AssistantContextChangedEvent,
+  type AssistantThreadStartedEvent,
   type Message,
   type ModalResponse,
   type ModalSubmitEvent,
@@ -53,6 +55,8 @@ const chat = new Chat({
 
 chat.onNewMention(handleSlackTurn)
 chat.onDirectMessage(handleSlackTurn)
+chat.onAssistantThreadStarted(handleAssistantThreadStarted)
+chat.onAssistantContextChanged(handleAssistantContextChanged)
 chat.onSlashCommand(config.SLACK_FEEDBACK_COMMANDS, handleFeedbackCommand)
 chat.onAction(handleSlackAction)
 chat.onModalSubmit(handleSlackModalSubmit)
@@ -155,7 +159,7 @@ async function handleSlackTurn(thread: Thread, message: Message): Promise<void> 
         return
       }
 
-      void startThreadTyping(thread)
+      await thread.startTyping('Working...')
 
       const { event: normalized, result } = await handoff.emitChatMessage({
         thread,
@@ -201,25 +205,52 @@ async function handleSlackTurn(thread: Thread, message: Message): Promise<void> 
       await renderWorkflowRunWithChatSdk({
         runId,
         config,
-        adapter: slackAdapter,
-        fallbackThreadId: `slack:${normalized.channel_id}:${normalized.thread_ts}`,
-        fallbackRecipientUserId: normalized.user_id,
-        fallbackRecipientTeamId: normalized.recipient_team_id ?? normalized.team_id,
-        skipInitialTyping: true
+        adapter: slackAdapter
       })
     }
   )
 }
 
-async function startThreadTyping(thread: Thread): Promise<void> {
-  try {
-    await thread.startTyping('Working...')
-  } catch (error) {
-    logWarn('slack_start_typing_failed', {
-      thread_id: thread.id,
-      error: error instanceof Error ? error.message : String(error)
+async function handleAssistantThreadStarted(event: AssistantThreadStartedEvent): Promise<void> {
+  await configureAssistantPrompts(event, 'Start with a prompt')
+}
+
+async function handleAssistantContextChanged(event: AssistantContextChangedEvent): Promise<void> {
+  await configureAssistantPrompts(event, 'Use this context')
+}
+
+async function configureAssistantPrompts(
+  event: AssistantThreadStartedEvent | AssistantContextChangedEvent,
+  title: string
+): Promise<void> {
+  const prompts = assistantPrompts(event.context.channelId)
+  await slackAdapter.setSuggestedPrompts(event.channelId, event.threadTs, prompts, title)
+  logInfo('slack_assistant_prompts_set', {
+    channel_id: event.channelId,
+    thread_ts: event.threadTs,
+    context_channel_id: event.context.channelId,
+    prompt_count: prompts.length
+  })
+}
+
+function assistantPrompts(contextChannelId?: string): Array<{ title: string; message: string }> {
+  const prompts = [
+    {
+      title: 'Start a task',
+      message: 'Help me work through the current task.'
+    },
+    {
+      title: 'Debug something',
+      message: 'Help me debug an issue using the available Centaur context.'
+    }
+  ]
+  if (contextChannelId) {
+    prompts.unshift({
+      title: 'Summarize context',
+      message: 'Summarize the current Slack context and call out anything that needs action.'
     })
   }
+  return prompts
 }
 
 async function handleFeedbackCommand(event: SlashCommandEvent): Promise<void> {

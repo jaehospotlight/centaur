@@ -9,6 +9,7 @@ const PROMPT_SELECTOR_RE = /(^|\s)`?--[a-z][a-z0-9-]*(?=\s|`|$)/i
 const INTERRUPTIBLE_EXECUTION_STATUSES = new Set(['running'])
 const REPLACEABLE_EXECUTION_STATUSES = new Set(['queued', 'retry_wait'])
 const STEER_ACCEPTED_STATUSES = new Set(['running', 'steered'])
+const CHANNEL_ROUTING_CACHE_TTL_MS = 10 * 60 * 1000
 
 export type NormalizedTextPart = {
   type: 'text'
@@ -52,6 +53,10 @@ export type NormalizedSlackEvent = {
     event_ts?: string
     message_ts: string
     enterprise_id?: string
+    event_team_id?: string
+    context_team_id?: string
+    conversation_host_id?: string
+    is_shared_channel?: boolean
     user_team?: string
     source_team?: string
     bot_id?: string
@@ -81,12 +86,26 @@ type WorkflowRunRequestBody = {
   }
 }
 
+type SlackChannelRouting = {
+  thread_team_id: string
+  recipient_team_id: string
+  context_team_id?: string
+  conversation_host_id?: string
+  is_shared_channel?: boolean
+}
+
+type CachedSlackChannelRouting = {
+  expires_at: number
+  routing: SlackChannelRouting
+}
+
 export type CentaurHandoffResult =
   | { ok: true; status: number; body: unknown }
   | { ok: false; status: number; body: unknown }
 
 export class CentaurHandoff {
   readonly config: AppConfig
+  private readonly channelRoutingCache = new Map<string, CachedSlackChannelRouting>()
 
   constructor(config: AppConfig) {
     this.config = config
@@ -246,9 +265,93 @@ export class CentaurHandoff {
     event: NormalizedSlackEvent
     result: CentaurHandoffResult
   }> {
-    const event = await slackEventFromChatMessage(input)
+    const routing = await this.resolveChannelRouting(input)
+    const event = await slackEventFromChatMessage(input, routing ?? undefined)
     const result = await this.emit(event)
     return { event, result }
+  }
+
+  private async resolveChannelRouting(
+    input: ChatSdkSlackMessageInput
+  ): Promise<SlackChannelRouting | null> {
+    const raw = recordValue(input.message.raw)
+    const decoded = decodeSlackThreadId(input.thread.id)
+    const channelId = stringField(raw.channel) ?? decoded.channel
+    if (!channelId) return null
+
+    const fallbackTeamId = slackEventTeamId(raw)
+    const cacheKey = channelId
+    const cached = this.channelRoutingCache.get(cacheKey)
+    if (cached && cached.expires_at > Date.now()) return cached.routing
+
+    const token = this.config.SLACK_BOT_TOKEN
+    if (!token) return null
+
+    try {
+      const response = await fetch(slackApiUrl(this.config, 'conversations.info'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          channel: channelId,
+          include_locale: 'false'
+        })
+      })
+      const body = recordValue(await readResponseBody(response))
+      if (!response.ok || body.ok !== true) {
+        logWarn('slack_channel_routing_lookup_failed', {
+          channel_id: channelId,
+          status: response.status,
+          error: stringField(body.error)
+        })
+        return null
+      }
+
+      const channel = recordValue(body.channel)
+      const contextTeamId = stringField(channel.context_team_id)
+      const conversationHostId = stringField(channel.conversation_host_id)
+      const internalTeamId = stringArray(channel.internal_team_ids)[0]
+      const threadTeamId = contextTeamId ?? internalTeamId ?? fallbackTeamId
+      if (!threadTeamId) return null
+
+      const isSharedChannel =
+        channel.is_ext_shared === true ||
+        channel.is_shared === true ||
+        channel.is_org_shared === true
+      const recipientTeamId = conversationHostId ?? contextTeamId ?? threadTeamId
+      const routing: SlackChannelRouting = {
+        thread_team_id: threadTeamId,
+        recipient_team_id: recipientTeamId,
+        ...(contextTeamId ? { context_team_id: contextTeamId } : {}),
+        ...(conversationHostId ? { conversation_host_id: conversationHostId } : {}),
+        ...(isSharedChannel ? { is_shared_channel: true } : {})
+      }
+      this.channelRoutingCache.set(cacheKey, {
+        expires_at: Date.now() + CHANNEL_ROUTING_CACHE_TTL_MS,
+        routing
+      })
+      if (
+        fallbackTeamId &&
+        (threadTeamId !== fallbackTeamId || recipientTeamId !== fallbackTeamId)
+      ) {
+        logInfo('slack_channel_routing_resolved', {
+          channel_id: channelId,
+          event_team_id: fallbackTeamId,
+          thread_team_id: threadTeamId,
+          recipient_team_id: recipientTeamId,
+          is_shared_channel: isSharedChannel
+        })
+      }
+      return routing
+    } catch (error) {
+      logWarn('slack_channel_routing_lookup_error', {
+        channel_id: channelId,
+        error: error instanceof Error ? error.message : String(error)
+      })
+      return null
+    }
   }
 }
 
@@ -268,6 +371,10 @@ function workflowRunRequestBody(event: NormalizedSlackEvent): WorkflowRunRequest
         slack: {
           message_ts: event.slack.message_ts,
           enterprise_id: event.slack.enterprise_id,
+          event_team_id: event.slack.event_team_id,
+          context_team_id: event.slack.context_team_id,
+          conversation_host_id: event.slack.conversation_host_id,
+          is_shared_channel: event.slack.is_shared_channel,
           user_team: event.slack.user_team,
           source_team: event.slack.source_team,
           bot_id: event.slack.bot_id,
@@ -295,32 +402,38 @@ function authHeaders(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}` }
 }
 
+function slackApiUrl(config: AppConfig, method: string): URL {
+  const base = config.SLACK_API_URL ?? 'https://slack.com/api/'
+  return new URL(method, base.endsWith('/') ? base : `${base}/`)
+}
+
 export async function slackEventFromChatMessage(
-  input: ChatSdkSlackMessageInput
+  input: ChatSdkSlackMessageInput,
+  routing?: SlackChannelRouting
 ): Promise<NormalizedSlackEvent> {
   const raw = recordValue(input.message.raw)
   const decoded = decodeSlackThreadId(input.thread.id)
   const channelId = stringField(raw.channel) ?? decoded.channel
   const messageTs = stringField(raw.ts) ?? input.message.id
   const threadTs = stringField(raw.thread_ts) ?? decoded.threadTs ?? messageTs
-  const teamId =
-    stringField(raw.team_id) ??
-    stringField(raw.team) ??
-    stringField(raw.user_team) ??
-    stringField(raw.source_team) ??
-    'unknown'
+  const eventTeamId = slackEventTeamId(raw)
+  const teamId = routing?.thread_team_id ?? eventTeamId ?? 'unknown'
   const userId =
     stringField(raw.user) ??
     stringField(recordValue(raw.bot_profile).user_id) ??
     input.message.author.userId
   const parts = await partsFromMessage(input.message, input.botUserId)
-  const historyMessages = await historyFromThread(input)
+  const historyMessages = await historyFromThread(input, routing)
 
   return {
     thread_key: `slack:${teamId}:${channelId}:${threadTs}`,
     message_id: `slack:${teamId}:${channelId}:${messageTs}`,
     team_id: teamId,
-    recipient_team_id: stringField(raw.user_team) ?? stringField(raw.source_team) ?? teamId,
+    recipient_team_id:
+      routing?.recipient_team_id ??
+      stringField(raw.user_team) ??
+      stringField(raw.source_team) ??
+      teamId,
     user_id: userId,
     channel_id: channelId,
     thread_ts: threadTs,
@@ -331,6 +444,10 @@ export async function slackEventFromChatMessage(
       event_ts: stringField(raw.event_ts),
       message_ts: messageTs,
       enterprise_id: stringField(raw.enterprise_id),
+      event_team_id: eventTeamId,
+      context_team_id: routing?.context_team_id,
+      conversation_host_id: routing?.conversation_host_id,
+      is_shared_channel: routing?.is_shared_channel,
       user_team: stringField(raw.user_team),
       source_team: stringField(raw.source_team),
       bot_id: stringField(raw.bot_id),
@@ -340,8 +457,18 @@ export async function slackEventFromChatMessage(
   }
 }
 
+function slackEventTeamId(raw: Record<string, unknown>): string | undefined {
+  return (
+    stringField(raw.team_id) ??
+    stringField(raw.team) ??
+    stringField(raw.user_team) ??
+    stringField(raw.source_team)
+  )
+}
+
 async function historyFromThread(
-  input: ChatSdkSlackMessageInput
+  input: ChatSdkSlackMessageInput,
+  routing?: SlackChannelRouting
 ): Promise<NonNullable<NormalizedSlackEvent['history_messages']>> {
   const decoded = decodeSlackThreadId(input.thread.id)
   if (!decoded.threadTs) return []
@@ -370,12 +497,7 @@ async function historyFromThread(
         if (!parts.length) continue
 
         const raw = recordValue(message.raw)
-        const teamId =
-          stringField(raw.team_id) ??
-          stringField(raw.team) ??
-          stringField(raw.user_team) ??
-          stringField(raw.source_team) ??
-          'unknown'
+        const teamId = routing?.thread_team_id ?? slackEventTeamId(raw) ?? 'unknown'
         const channelId = stringField(raw.channel) ?? decoded.channel
         const userId =
           stringField(raw.user) ??
@@ -559,6 +681,11 @@ function recordValue(value: unknown): Record<string, unknown> {
 
 function stringField(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
 }
 
 function uniqueNonEmpty(values: string[]): string[] {

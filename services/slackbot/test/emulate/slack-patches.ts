@@ -18,6 +18,7 @@ type StreamState = {
   text: string
 }
 
+const EMULATE_TEAM_ID = 'T000000001'
 const STREAMS = new Map<string, StreamState>()
 
 export async function createPatchedSlackApi(emulator: Emulator): Promise<PatchedSlack> {
@@ -38,6 +39,24 @@ export async function createPatchedSlackApi(emulator: Emulator): Promise<Patched
         // Emulate 0.5.0 does not implement Slack assistant.threads.setTitle.
         // Remove this patch when https://emulate.dev/docs/slack lists the endpoint.
         return slackOk()
+      }
+      if (pathname === '/api/conversations.info') {
+        // Emulate 0.5.0 does not include Slack Connect routing fields.
+        const body = await slackBody(request)
+        requests.push({ path: '/api/conversations.info', body })
+        return jsonResponse({
+          ok: true,
+          channel: {
+            id: stringField(body.channel),
+            context_team_id: EMULATE_TEAM_ID,
+            conversation_host_id: EMULATE_TEAM_ID,
+            internal_team_ids: [EMULATE_TEAM_ID],
+            shared_team_ids: [EMULATE_TEAM_ID],
+            is_ext_shared: false,
+            is_shared: false,
+            is_org_shared: false
+          }
+        })
       }
       if (pathname === '/api/chat.startStream') {
         // Emulate 0.5.0 does not implement Slack chat.startStream.

@@ -177,6 +177,80 @@ describe('CentaurHandoff', () => {
     }
   })
 
+  it('resolves Slack Connect channel routing from Slack channel metadata', async () => {
+    const originalFetch = globalThis.fetch
+    let capturedInit: RequestInit | undefined
+    const fetchMock = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.hostname === 'slack.test') {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            channel: {
+              id: 'C123',
+              is_ext_shared: true,
+              is_shared: true,
+              context_team_id: 'TLOCAL',
+              conversation_host_id: 'EHOST',
+              internal_team_ids: ['TLOCAL'],
+              shared_team_ids: ['TREMOTE', 'TLOCAL']
+            }
+          }),
+          { status: 200 }
+        )
+      }
+      capturedInit = init
+      return new Response(JSON.stringify({ ok: true, run_id: 'wfr-123' }), { status: 200 })
+    })
+    globalThis.fetch = fetchMock as any
+    try {
+      const handoff = new CentaurHandoff({
+        ...config,
+        SLACK_BOT_TOKEN: 'xoxb-test',
+        SLACK_API_URL: 'http://slack.test/api/'
+      })
+      const thread: any = {
+        id: 'slack:C123:1778883099.579529',
+        isDM: false,
+        adapter: { fetchMessages: mock(async () => ({ messages: [], nextCursor: undefined })) }
+      }
+      const message = slackMessage('1778883099.579529', '<@UBOT> hello', 'U123', false, {
+        team_id: 'TREMOTE',
+        user_team: 'TREMOTE'
+      })
+
+      const { event } = await handoff.emitChatMessage({
+        thread,
+        message,
+        botUserId: 'UBOT'
+      } as any)
+
+      expect(event.thread_key).toBe('slack:TLOCAL:C123:1778883099.579529')
+      expect(event.message_id).toBe('slack:TLOCAL:C123:1778883099.579529')
+      expect(event.team_id).toBe('TLOCAL')
+      expect(event.recipient_team_id).toBe('EHOST')
+      expect(event.slack).toMatchObject({
+        event_team_id: 'TREMOTE',
+        context_team_id: 'TLOCAL',
+        conversation_host_id: 'EHOST',
+        is_shared_channel: true
+      })
+
+      const bodyText = capturedInit?.body
+      expect(typeof bodyText).toBe('string')
+      if (typeof bodyText !== 'string') throw new Error('expected JSON request body')
+      const body = JSON.parse(bodyText) as {
+        trigger_key: string
+        input: { thread_key: string; delivery: { recipient_team_id: string } }
+      }
+      expect(body.trigger_key).toBe('slack:TLOCAL:C123:1778883099.579529')
+      expect(body.input.thread_key).toBe('slack:TLOCAL:C123:1778883099.579529')
+      expect(body.input.delivery.recipient_team_id).toBe('EHOST')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it('steers a running execution instead of starting a queued workflow run', async () => {
     const originalFetch = globalThis.fetch
     const calls: Array<{ path: string; init?: RequestInit; body?: unknown }> = []
@@ -284,12 +358,7 @@ describe('CentaurHandoff', () => {
       event.history_messages?.map(item =>
         item.parts[0]?.type === 'text' ? item.parts[0].text : undefined
       )
-    ).toEqual([
-      'Original request',
-      'Assistant context',
-      'Passive context',
-      'Prior clarification'
-    ])
+    ).toEqual(['Original request', 'Assistant context', 'Passive context', 'Prior clarification'])
   })
 
   it('returns Slack history oldest-first and marks mention messages', async () => {
@@ -332,7 +401,13 @@ describe('CentaurHandoff', () => {
   })
 })
 
-function slackMessage(ts: string, text: string, user: string, isMe = false): any {
+function slackMessage(
+  ts: string,
+  text: string,
+  user: string,
+  isMe = false,
+  rawOverrides: Record<string, unknown> = {}
+): any {
   return {
     id: ts,
     text,
@@ -343,7 +418,8 @@ function slackMessage(ts: string, text: string, user: string, isMe = false): any
       ts,
       thread_ts: '1778883099.579529',
       text,
-      user
+      user,
+      ...rawOverrides
     },
     author: {
       userId: user,
