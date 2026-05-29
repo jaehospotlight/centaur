@@ -17,9 +17,7 @@ import {
 import { buildFinalFallbackText, sanitizeFinalMessagePayload } from './final-message'
 import {
   markdownToStreamChunks,
-  renderMarkdownBlocks,
-  shouldShowThinkingBlock,
-  thinkingContextBlock
+  renderMarkdownBlocks
 } from './render'
 import { clipLines } from './streaming'
 
@@ -42,6 +40,9 @@ type Segment = {
   closed: boolean
 }
 
+type BlocksChunk = { type: 'blocks'; blocks: AnyBlock[] }
+type SlackStreamChunk = AnyChunk | BlocksChunk
+
 type AgentSessionState = {
   id: string
   channel: string
@@ -50,7 +51,6 @@ type AgentSessionState = {
   recipientUserId: string
   title: string
   header?: string
-  finalCommentaryMarkdown?: string
   finalAnswerMarkdown?: string
   finalMetricsFooter?: string
   done: boolean
@@ -67,7 +67,7 @@ export type OpenAgentSessionInput = {
   title?: string
   /**
    * Italic one-line identifier rendered at the top of every assistant message (e.g. "base ·
-   * claude-opus-4-7", "legal · codex-gpt-5").
+   * claude-opus-4-8", "legal · codex-gpt-5").
    */
   header?: string
 }
@@ -101,7 +101,6 @@ export type SessionMetrics = {
 
 export type DoneOptions = {
   streamFinalUpdates?: boolean
-  commentaryMarkdown?: string
   answerMarkdown?: string
   metrics?: SessionMetrics
 }
@@ -127,6 +126,7 @@ const FINAL_PLAN_TITLE_CHARS = slackReplyLimits.finalPlan.taskTitleChars
 const FINAL_PLAN_DETAILS_LINES = slackReplyLimits.finalPlan.taskDetailsCodeBlockLines
 const FINAL_PLAN_OUTPUT_LINES = slackReplyLimits.finalPlan.taskOutputCodeBlockLines
 const MAX_LIVE_TEXT_CHARS = slackReplyLimits.stream.maxLiveTextChars
+const DURABLE_STREAMED_ANSWER_TASK_THRESHOLD = 10
 
 export class AgentSessionRenderer {
   constructor(private readonly client: WebClient) {}
@@ -224,7 +224,6 @@ export class AgentSessionRenderer {
   async done(sessionId: string, opts: DoneOptions = {}): Promise<{ streamedTextChars: number }> {
     const state = requireSession(sessionId)
     state.done = true
-    state.finalCommentaryMarkdown = opts.commentaryMarkdown
     state.finalAnswerMarkdown = opts.answerMarkdown
     state.finalMetricsFooter = formatMetricsFooter(opts.metrics)
     const streamFinalUpdates = opts.streamFinalUpdates ?? true
@@ -296,9 +295,7 @@ export class AgentSessionRenderer {
   private async closeTextStream(state: AgentSessionState, segment: Segment): Promise<void> {
     raiseStreamError(segment)
     if (segment.closed) return
-    const hasFinalText = Boolean(
-      state.finalCommentaryMarkdown?.trim() || state.finalAnswerMarkdown?.trim()
-    )
+    const hasFinalText = Boolean(state.finalAnswerMarkdown?.trim())
     if (!segment.streamTs && !segment.textParts.length && !segment.tasks.size && !hasFinalText) {
       return
     }
@@ -306,15 +303,13 @@ export class AgentSessionRenderer {
     if (!segment.streamTs) return
     const originalTasks = finalTaskSnapshot(segment)
     const tasks = compactFinalTasks(originalTasks)
-    const commentaryMarkdown = state.finalCommentaryMarkdown?.trim() ?? ''
     const answerSource =
       state.finalAnswerMarkdown?.trim() || segment.streamedText.trim() || segment.textParts.join('')
-    const answerMarkdown = finalMarkdownForBlocks(answerSource)
+    const answerMarkdown = finalMarkdownForFinalBlocks(answerSource, segment, {
+      includeStreamedText: originalTasks.length >= DURABLE_STREAMED_ANSWER_TASK_THRESHOLD
+    })
     const streamedTextLive =
       Boolean(segment.streamedText.trim()) && segment.streamedText.length < MAX_LIVE_TEXT_CHARS
-    const showThinking =
-      !streamedTextLive && shouldShowThinkingBlock(commentaryMarkdown, answerMarkdown)
-    const thinkingBlock = showThinking ? thinkingContextBlock(commentaryMarkdown) : null
     // Slack accumulates appendStream chunks; stopStream blocks are the composed final layout.
     // Only add blocks for content that was not streamed live; live task_update chunks carry
     // fenced details/output, and the header has already been streamed as the first chunk.
@@ -323,19 +318,19 @@ export class AgentSessionRenderer {
       ...(tasks.length && !segment.planStarted
         ? [planBlock(planTitle(state.title, originalTasks), tasks, EXECUTION_PLAN_ID)]
         : []),
-      ...(thinkingBlock ? [thinkingBlock] : []),
       ...(!streamedTextLive && answerMarkdown ? renderMarkdownBlocks(answerMarkdown) : []),
       ...(footerBlock ? [footerBlock] : [])
     ] as AnyBlock[])
     const fallbackText = buildFinalFallbackText({
       title: state.title,
-      commentaryMarkdown: showThinking ? commentaryMarkdown : '',
       answerMarkdown
     })
+    const chunks =
+      blocks.length || streamedTextLive ? undefined : markdownToStreamChunks(fallbackText)
     const stopResponse = await this.client.chat.stopStream({
       channel: state.channel,
       ts: segment.streamTs,
-      chunks: markdownToStreamChunks(blocks.length || streamedTextLive ? ' ' : fallbackText),
+      ...(chunks ? { chunks } : {}),
       ...(blocks.length ? { blocks } : {})
     })
     if (!stopResponse.ok) throw new Error(stopResponse.error ?? 'chat.stopStream failed')
@@ -345,7 +340,7 @@ export class AgentSessionRenderer {
   private async streamChunks(
     state: AgentSessionState,
     segment: Segment,
-    chunks: AnyChunk[]
+    chunks: SlackStreamChunk[]
   ): Promise<void> {
     raiseStreamError(segment)
     if (!chunks.length || segment.closed) return
@@ -358,7 +353,7 @@ export class AgentSessionRenderer {
     const response = await this.client.chat.appendStream({
       channel: state.channel,
       ts: segment.streamTs,
-      chunks: effectiveChunks
+      chunks: effectiveChunks as AnyChunk[]
     })
     if (!response.ok) throw new Error(response.error ?? 'chat.appendStream failed')
     await this.clearStatusAfterVisibleOutput(state, effectiveChunks)
@@ -480,7 +475,7 @@ export class AgentSessionRenderer {
   private async ensureStream(
     state: AgentSessionState,
     segment: Segment,
-    initialChunks: AnyChunk[]
+    initialChunks: SlackStreamChunk[]
   ): Promise<boolean> {
     if (segment.streamTs) return false
     if (segment.streamStartPromise) {
@@ -496,7 +491,7 @@ export class AgentSessionRenderer {
         recipient_team_id: state.recipientTeamId,
         recipient_user_id: state.recipientUserId,
         task_display_mode: 'plan',
-        chunks
+        chunks: chunks as AnyChunk[]
       })
       if (!response.ok || !response.ts) throw new Error(response.error ?? 'chat.startStream failed')
       segment.streamTs = response.ts
@@ -513,7 +508,7 @@ export class AgentSessionRenderer {
 
   private async clearStatusAfterVisibleOutput(
     state: AgentSessionState,
-    chunks: AnyChunk[]
+    chunks: SlackStreamChunk[]
   ): Promise<void> {
     if (state.statusCleared || !hasVisibleStreamChunks(chunks)) return
     state.statusCleared = await this.setStatus(state.id, '')
@@ -531,8 +526,8 @@ export class AgentSessionRenderer {
   private withHeaderPrefix(
     state: AgentSessionState,
     segment: Segment,
-    chunks: AnyChunk[]
-  ): AnyChunk[] {
+    chunks: SlackStreamChunk[]
+  ): SlackStreamChunk[] {
     const header = state.header?.trim()
     if (!header || segment.headerEmitted) return chunks
     segment.headerEmitted = true
@@ -711,8 +706,40 @@ function compactTaskBody(body: StreamTask['details'], maxLines: number): StreamT
   return richText([preformatted(clipLines(text, maxLines), language)])
 }
 
-function finalMarkdownForBlocks(markdown: string): string {
-  return clipText(markdown, slackReplyLimits.mixedBodyAndPlan.maxVisibleChars)
+function finalMarkdownForFinalBlocks(
+  markdown: string,
+  segment: Segment,
+  opts: { includeStreamedText?: boolean } = {}
+): string {
+  const trimmed = markdown.trim()
+  if (!trimmed) return ''
+  if (opts.includeStreamedText || !segment.streamedText.trim()) {
+    return clipText(trimmed, slackReplyLimits.mixedBodyAndPlan.maxVisibleChars)
+  }
+  const streamedPrefix = unstreamedMarkdownAfterLivePrefix(markdown, segment.streamedText)
+  if (streamedPrefix !== null) {
+    return clipText(streamedPrefix, slackReplyLimits.mixedBodyAndPlan.maxVisibleChars)
+  }
+  const unstreamed = markdown.slice(segment.streamedTextSourceChars).trim()
+  if (!unstreamed) return ''
+  return clipText(unstreamed, slackReplyLimits.mixedBodyAndPlan.maxVisibleChars)
+}
+
+function unstreamedMarkdownAfterLivePrefix(markdown: string, streamedText: string): string | null {
+  if (!streamedText.trim()) return null
+  if (markdown.startsWith(streamedText)) return markdown.slice(streamedText.length).trim()
+
+  const normalizedMarkdown = normalizeFinalMarkdownPrefix(markdown)
+  const normalizedStreamed = normalizeFinalMarkdownPrefix(streamedText)
+  if (!normalizedMarkdown.startsWith(normalizedStreamed)) return null
+  return normalizedMarkdown.slice(normalizedStreamed.length).trim()
+}
+
+function normalizeFinalMarkdownPrefix(markdown: string): string {
+  return markdown
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+$/gm, '')
+    .trim()
 }
 
 function clipText(value: string, maxChars: number): string {
@@ -755,7 +782,7 @@ function raiseStreamError(segment: Segment): void {
   if (segment.streamError) throw segment.streamError
 }
 
-function hasVisibleStreamChunks(chunks: AnyChunk[]): boolean {
+function hasVisibleStreamChunks(chunks: SlackStreamChunk[]): boolean {
   return chunks.some(chunk => {
     if (chunk.type === 'markdown_text') return Boolean(chunk.text?.trim())
     if (chunk.type === 'task_update') return Boolean(chunk.title?.trim())
