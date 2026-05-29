@@ -58,7 +58,9 @@ a structured `userAction` and ordered `steps` before the next secrets command,
 so an agent can wait while you create and install the Slack app. `secrets
 collect` prompts for required values with masked input, runs the selected Codex
 or Claude Code login command when subscription auth is selected, and writes the
-collected values into the chosen secret backend.
+collected values into the chosen secret backend. If masked prompts are not
+available, the JSON response includes a `secret_inputs` step with the exact
+fields to request from the user before retrying.
 For non-interactive runs, `secrets collect --from-env --auth-mode access_token`
 can also build the broker blob from `OPENAI_CODEX_REFRESH_TOKEN` or
 `CLAUDE_CODE_REFRESH_TOKEN`, plus local Codex/Claude login metadata when

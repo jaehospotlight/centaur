@@ -41,7 +41,9 @@ Pick one default harness for the deployment: `codex` or `claude-code`. Use
 dedicated ChatGPT or Claude.ai subscription account. The Slack manifest command
 copies JSON to your clipboard for paste-in-place setup and returns a structured
 `userAction` before the next secrets command. `secrets collect` prompts for
-secret values with masked input before writing them to the selected backend.
+secret values with masked input before writing them to the selected backend; if
+it cannot prompt, the JSON response includes a `secret_inputs` step with the
+exact fields to collect before retrying.
 `centaur deploy ... --apply` creates the Kubernetes Secret from the local
 secrets file when needed and runs Helm with published
 `ghcr.io/paradigmxyz/centaur/*` images, so fresh installs do not need a local

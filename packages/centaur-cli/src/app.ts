@@ -740,6 +740,29 @@ function slackManifestSteps(userAction: ReturnType<typeof slackManifestUserActio
   ]
 }
 
+function secretInputUserAction(missing: MissingSecretInput[], description: string) {
+  return {
+    type: 'secret_inputs',
+    description,
+    sensitive: true,
+    inputs: missing.map(input => ({ ...input, secret: true })),
+  }
+}
+
+function secretInputSteps(
+  userAction: ReturnType<typeof secretInputUserAction>,
+  commands: Array<{ command: string; description: string }>,
+) {
+  return [
+    userAction,
+    ...commands.map(command => ({
+      type: 'command',
+      ...command,
+      command: `centaur ${command.command}`,
+    })),
+  ]
+}
+
 function setupPlan(options: SetupPlanOptions) {
   const manifestPath = join(options.overlayPath, 'slack-app-manifest.json')
   const localSocketMode = options.installMode === 'local'
@@ -2153,25 +2176,32 @@ const secrets = Cli.create('secrets', {
     const promptUser = !collectFromEnv
     if (promptUser && !hasSecretTty) {
       setFailedExit(false)
+      const commands = [
+        {
+          command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true, json: true })),
+          description: 'retry non-interactively from environment variables and local harness auth state',
+        },
+        {
+          command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, json: true })),
+          description: 'run in a real terminal and type secrets into masked prompts',
+        },
+      ]
+      const userAction = secretInputUserAction(
+        missingFromEnv,
+        'provide the missing secret values through masked input fields or environment variables',
+      )
       return c.ok({
         ok: false,
         code: 'TTY_REQUIRED',
         message: 'secrets collect needs an interactive terminal so secret prompts can be masked',
         retryable: true,
         missing: missingFromEnv,
+        userAction,
+        steps: secretInputSteps(userAction, commands),
       }, {
         cta: {
           description: 'Provide the missing values, then run one of these:',
-          commands: [
-            {
-              command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true, json: true })),
-              description: 'retry non-interactively from environment variables and local harness auth state',
-            },
-            {
-              command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, json: true })),
-              description: 'run in a real terminal and type secrets into masked prompts',
-            },
-          ],
+          commands,
         },
       })
     }
@@ -2179,25 +2209,32 @@ const secrets = Cli.create('secrets', {
       const missing = missingFromEnv
       if (missing.length > 0) {
         setFailedExit(false)
+        const commands = [
+          {
+            command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true, json: true })),
+            description: 'retry non-interactively from environment variables and local harness auth state',
+          },
+          {
+            command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, json: true })),
+            description: 'run interactive masked prompts and let the CLI drive harness login when needed',
+          },
+        ]
+        const userAction = secretInputUserAction(
+          missing,
+          'set the missing secret values as environment variables or provide them through masked prompts',
+        )
         return c.ok({
           ok: false,
           code: 'MISSING_ENV',
           message: `Missing required secret inputs: ${missing.map(item => item.env).join(', ')}`,
           retryable: true,
           missing,
+          userAction,
+          steps: secretInputSteps(userAction, commands),
         }, {
           cta: {
             description: 'Set the missing values or login with the selected harness CLI, then retry:',
-            commands: [
-              {
-                command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, fromEnv: true, json: true })),
-                description: 'retry non-interactively from environment variables and local harness auth state',
-              },
-              {
-                command: commandLine(secretsCollectCommandParts({ ...collectCommandOptions, json: true })),
-                description: 'run interactive masked prompts and let the CLI drive harness login when needed',
-              },
-            ],
+            commands,
           },
         })
       }

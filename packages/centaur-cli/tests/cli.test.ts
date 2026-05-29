@@ -1305,6 +1305,22 @@ describe('secret backends', () => {
       expect(output.cta.commands[0].command).toContain('--from-env')
       expect(output.cta.commands[0].command).toContain(`--local-env-path ${localEnvPath}`)
       expect(output.cta.commands[1].command).not.toContain('--from-env')
+      expect(output.userAction).toMatchObject({
+        type: 'secret_inputs',
+        sensitive: true,
+      })
+      expect(output.userAction.inputs.map((item: { env: string; secret: boolean }) => [item.env, item.secret])).toEqual([
+        ['SLACK_BOT_TOKEN', true],
+        ['SLACK_SIGNING_SECRET', true],
+        ['SLACK_APP_TOKEN', true],
+        ['OPENAI_API_KEY', true],
+      ])
+      expect(output.steps.map((step: { type: string }) => step.type)).toEqual([
+        'secret_inputs',
+        'command',
+        'command',
+      ])
+      expect(output.steps[1].command).toBe(output.cta.commands[0].command)
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[key]
@@ -1353,6 +1369,22 @@ describe('secret backends', () => {
       ])
       expect(output.cta.commands[0].command).toContain('--from-env')
       expect(output.cta.commands[1].command).not.toContain('--from-env')
+      expect(output.userAction).toMatchObject({
+        type: 'secret_inputs',
+        sensitive: true,
+      })
+      expect(output.userAction.inputs.map((item: { env: string; secret: boolean }) => [item.env, item.secret])).toEqual([
+        ['SLACK_BOT_TOKEN', true],
+        ['SLACK_SIGNING_SECRET', true],
+        ['SLACK_APP_TOKEN', true],
+        ['OPENAI_API_KEY', true],
+      ])
+      expect(output.steps.map((step: { type: string }) => step.type)).toEqual([
+        'secret_inputs',
+        'command',
+        'command',
+      ])
+      expect(output.steps[1].command).toBe(output.cta.commands[0].command)
     } finally {
       for (const [key, value] of Object.entries(previous)) {
         if (value === undefined) delete process.env[key]
