@@ -631,6 +631,16 @@ type SetupPlanOptions = {
   bin?: string
 }
 
+const SETUP_COMMAND_DESCRIPTIONS = [
+  'scaffold the overlay and persist resumable setup state',
+  'copy the Slack app manifest JSON to the clipboard for paste-in-place app creation',
+  'prompt for Slack, harness, and infra secrets with masked input and populate the selected backend',
+  'verify prerequisites, generated files, selected harness auth, and secret backend state',
+  'apply local secrets when needed and deploy Centaur with Helm',
+  'prove the selected harness can complete one local Centaur turn through the API pod',
+  'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
+]
+
 function setupSecretInputs(options: Pick<SetupPlanOptions, 'installMode' | 'harness' | 'authMode'>) {
   const inputs: MissingSecretInput[] = [
     { env: 'SLACK_BOT_TOKEN' },
@@ -674,6 +684,28 @@ function setupSecretInputs(options: Pick<SetupPlanOptions, 'installMode' | 'harn
   return inputs
 }
 
+function setupPlanSteps(commands: string[], options: Pick<SetupPlanOptions, 'installMode'>) {
+  const steps: Array<Record<string, unknown>> = commands.map((command, index) => ({
+    type: 'command',
+    index,
+    command,
+    description: SETUP_COMMAND_DESCRIPTIONS[index],
+  }))
+  steps.splice(2, 0, {
+    type: 'user_action',
+    afterCommandIndex: 1,
+    description: options.installMode === 'local'
+      ? 'create the Slack app from the copied manifest, install it, and generate the app-level Socket Mode token before collecting secrets'
+      : 'create the Slack app from the copied manifest and install it before collecting secrets',
+    url: 'https://api.slack.com/apps',
+    clipboard: true,
+    producesSecrets: options.installMode === 'local'
+      ? ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN']
+      : ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET'],
+  })
+  return steps
+}
+
 function setupPlan(options: SetupPlanOptions) {
   const manifestPath = join(options.overlayPath, 'slack-app-manifest.json')
   const localSocketMode = options.installMode === 'local'
@@ -685,93 +717,95 @@ function setupPlan(options: SetupPlanOptions) {
     json: true,
   })
   const centaurCommand = (command: string) => `${quotePart(options.bin || 'centaur')} ${command}`
+  const commands = [
+    centaurCommand(commandLine([
+      'init',
+      '--org',
+      options.org,
+      '--assistant-name',
+      options.assistantName,
+      '--domain',
+      options.domain,
+      '--install-mode',
+      options.installMode,
+      '--image-source',
+      options.imageSource,
+      '--secret-backend',
+      options.backend,
+      '--harness',
+      options.harness,
+      '--auth-mode',
+      options.authMode,
+      '--overlay-path',
+      options.overlayPath,
+      '--json',
+    ])),
+    centaurCommand(commandLine([
+      'integrations',
+      'slack-manifest',
+      '--domain',
+      options.domain,
+      '--app-name',
+      options.assistantName,
+      '--output',
+      manifestPath,
+      '--copy',
+      ...(localSocketMode ? ['--socket-mode'] : []),
+      '--backend',
+      options.backend,
+      '--install-mode',
+      options.installMode,
+      '--image-source',
+      options.imageSource,
+      '--harness',
+      options.harness,
+      '--auth-mode',
+      options.authMode,
+      '--overlay-path',
+      options.overlayPath,
+      '--json',
+    ])),
+    centaurCommand(commandLine([
+      'secrets',
+      'collect',
+      '--backend',
+      options.backend,
+      '--install-mode',
+      options.installMode,
+      '--image-source',
+      options.imageSource,
+      '--harness',
+      options.harness,
+      '--auth-mode',
+      options.authMode,
+      '--overlay-path',
+      options.overlayPath,
+      '--json',
+    ])),
+    centaurCommand(commandLine([
+      'doctor',
+      '--deep',
+      '--overlay-path',
+      options.overlayPath,
+      '--harness',
+      options.harness,
+      '--auth-mode',
+      options.authMode,
+      '--secret-backend',
+      options.backend,
+      '--install-mode',
+      options.installMode,
+      '--image-source',
+      options.imageSource,
+      '--json',
+    ])),
+    centaurCommand(deployCommand),
+    centaurCommand(localRunVerificationCommand(options.harness, { jsonl: true })),
+    centaurCommand(slackbotSmokeCommand({ json: true })),
+  ]
   return {
-    commands: [
-      centaurCommand(commandLine([
-        'init',
-        '--org',
-        options.org,
-        '--assistant-name',
-        options.assistantName,
-        '--domain',
-        options.domain,
-        '--install-mode',
-        options.installMode,
-        '--image-source',
-        options.imageSource,
-        '--secret-backend',
-        options.backend,
-        '--harness',
-        options.harness,
-        '--auth-mode',
-        options.authMode,
-        '--overlay-path',
-        options.overlayPath,
-        '--json',
-      ])),
-      centaurCommand(commandLine([
-        'integrations',
-        'slack-manifest',
-        '--domain',
-        options.domain,
-        '--app-name',
-        options.assistantName,
-        '--output',
-        manifestPath,
-        '--copy',
-        ...(localSocketMode ? ['--socket-mode'] : []),
-        '--backend',
-        options.backend,
-        '--install-mode',
-        options.installMode,
-        '--image-source',
-        options.imageSource,
-        '--harness',
-        options.harness,
-        '--auth-mode',
-        options.authMode,
-        '--overlay-path',
-        options.overlayPath,
-        '--json',
-      ])),
-      centaurCommand(commandLine([
-        'secrets',
-        'collect',
-        '--backend',
-        options.backend,
-        '--install-mode',
-        options.installMode,
-        '--image-source',
-        options.imageSource,
-        '--harness',
-        options.harness,
-        '--auth-mode',
-        options.authMode,
-        '--overlay-path',
-        options.overlayPath,
-        '--json',
-      ])),
-      centaurCommand(commandLine([
-        'doctor',
-        '--deep',
-        '--overlay-path',
-        options.overlayPath,
-        '--harness',
-        options.harness,
-        '--auth-mode',
-        options.authMode,
-        '--secret-backend',
-        options.backend,
-        '--install-mode',
-        options.installMode,
-        '--image-source',
-        options.imageSource,
-        '--json',
-      ])),
-      centaurCommand(deployCommand),
-      centaurCommand(localRunVerificationCommand(options.harness, { jsonl: true })),
-      centaurCommand(slackbotSmokeCommand({ json: true })),
-    ],
+    commands,
+    steps: setupPlanSteps(commands, options),
     harness: options.harness,
     authMode: options.authMode,
     secretInputs: setupSecretInputs(options),
@@ -780,20 +814,11 @@ function setupPlan(options: SetupPlanOptions) {
 }
 
 function setupPlanCta(plan: ReturnType<typeof setupPlan>, bin?: string) {
-  const descriptions = [
-    'scaffold the overlay and persist resumable setup state',
-    'copy the Slack app manifest JSON to the clipboard for paste-in-place app creation',
-    'prompt for Slack, harness, and infra secrets with masked input and populate the selected backend',
-    'verify prerequisites, generated files, selected harness auth, and secret backend state',
-    'apply local secrets when needed and deploy Centaur with Helm',
-    'prove the selected harness can complete one local Centaur turn through the API pod',
-    'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
-  ]
   return {
     description: 'Run these setup commands in order:',
     commands: plan.commands.map((command, index) => ({
       command,
-      description: descriptions[index],
+      description: SETUP_COMMAND_DESCRIPTIONS[index],
     })),
   }
 }

@@ -20,7 +20,8 @@ such as `/md/quickstart.md`.
 ## 1. Install prerequisites
 
 For agent-driven setup, install the onboarding CLI first. The commands return
-structured output and CTAs so an agent can keep driving the next step:
+structured output, ordered setup `steps`, and CTAs so an agent can run the next
+command or pause for the Slack app creation step:
 
 ```bash
 curl -fsSL https://centaur.run/install.sh | bash

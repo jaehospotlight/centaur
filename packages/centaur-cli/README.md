@@ -30,9 +30,11 @@ centaur setup --org acme --assistant-name centaur --domain centaur.acme.com --ba
 ```
 
 It returns the exact command chain from overlay creation through verified local
-CLI and Slackbot runs. Each returned CTA includes a short description so an
-agent can run the next command without guessing. The expanded local happy path
-is:
+CLI and Slackbot runs. The response also includes an ordered `steps` array,
+including the Slack app creation action between manifest copy and secret
+collection, so an agent can pause for the user instead of guessing. Each
+returned CTA includes a short description for the next command. The expanded
+local happy path is:
 
 ```bash
 centaur init --org acme --assistant-name centaur --domain centaur.acme.com --install-mode local --image-source ghcr --secret-backend local-env --harness codex --auth-mode api_key --overlay-path org --json

@@ -367,6 +367,23 @@ describe('overlay scaffolding', () => {
       'prove the selected harness can complete one local Centaur turn through the API pod',
       'prove Slackbot can turn a signed Slack mention into a completed Centaur execution',
     ])
+    expect(output.steps.map((step: { type: string }) => step.type)).toEqual([
+      'command',
+      'command',
+      'user_action',
+      'command',
+      'command',
+      'command',
+      'command',
+      'command',
+    ])
+    expect(output.steps[2]).toMatchObject({
+      type: 'user_action',
+      afterCommandIndex: 1,
+      url: 'https://api.slack.com/apps',
+      clipboard: true,
+      producesSecrets: ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SLACK_APP_TOKEN'],
+    })
     expect(output.secretInputs.map((input: { env: string }) => input.env)).toEqual([
       'SLACK_BOT_TOKEN',
       'SLACK_SIGNING_SECRET',
