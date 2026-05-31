@@ -2,9 +2,9 @@
 
 Two layers:
 
-1. The SQL query functions in ``api.tools_data.{company_context,investmemos}``
-   against a fake connection — covers the SQL shape, row-shaping, grouping, and
-   ranking that used to live in the tool clients.
+1. The SQL query functions in ``api.tools_data.company_context`` against a fake
+   connection — covers the SQL shape and row-shaping that used to live in the
+   tool client.
 2. The router handlers called directly with a fake request — covers server-side
    re-clamping and empty-input handling. (Auth via ``verify_api_key`` /
    ``require_scope`` is exercised in ``test_check_scope`` and the deps tests.)
@@ -27,7 +27,6 @@ from api.api_keys import APIKeyInfo
 from api.deps import require_scope
 from api.routers import tools_data as router_mod
 from api.tools_data import company_context as cc
-from api.tools_data import investmemos as im
 from api.tools_data import slack_capture
 
 
@@ -178,82 +177,6 @@ async def test_cc_read_document_missing():
     assert result == {"status": "error", "error": "document not found: missing"}
 
 
-# ── investmemos query functions ─────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_im_list_memos_shapes_rows():
-    conn = _FakeConnection(
-        rows=[
-            {
-                "external_id": "memo-1",
-                "data": {"memo_name": "Acme", "stage_hint": "seed"},
-                "fetched_at": dt.datetime(2026, 5, 1, tzinfo=dt.UTC),
-            }
-        ]
-    )
-    result = await im.list_memos(conn, query=None, limit=50, source="invest_memo_corpus")
-    assert result["count"] == 1
-    assert result["memos"][0]["memo_name"] == "Acme"
-    assert result["memos"][0]["fetched_at"] == "2026-05-01T00:00:00+00:00"
-
-
-@pytest.mark.asyncio
-async def test_im_search_memos_groups_and_ranks():
-    conn = _FakeConnection(
-        rows=[
-            {
-                "source_id": "memo-1:0",
-                "content": "alpha protocol design",
-                "metadata": {"document_id": "memo-1", "memo_name": "Alpha"},
-                "fts_or_score": 0.5,
-                "fts_and_score": 0.2,
-            },
-            {
-                "source_id": "memo-1:1",
-                "content": "alpha protocol risks",
-                "metadata": {"document_id": "memo-1", "memo_name": "Alpha"},
-                "fts_or_score": 0.4,
-                "fts_and_score": 0.1,
-            },
-        ]
-    )
-    result = await im.search_memos(
-        conn, query="alpha protocol", limit=12, stage=None, company_type=None,
-        source="invest_memo_corpus", kind="invest_memo_chunk",
-    )
-    assert result["count"] == 1
-    doc = result["results"][0]
-    assert doc["document_id"] == "memo-1"
-    assert doc["matched_chunks"] == 2
-    assert len(doc["excerpts"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_im_read_memo_assembles_chunks():
-    conn = _FakeConnection()
-
-    async def fetchrow(query, *args):
-        return {"external_id": "memo-1", "data": {"memo_name": "Alpha"}}
-
-    async def fetch(query, *args):
-        return [
-            {"content": "part one ", "metadata": {}},
-            {"content": "part two", "metadata": {}},
-        ]
-
-    conn.fetchrow = fetchrow  # type: ignore[assignment]
-    conn.fetch = fetch  # type: ignore[assignment]
-
-    result = await im.read_memo(
-        conn, memo="Alpha", max_chars=12000, source="invest_memo_corpus",
-        kind="invest_memo_chunk",
-    )
-    assert result["document_id"] == "memo-1"
-    assert "part one" in result["content"]
-    assert "part two" in result["content"]
-
-
 # ── Router handlers: server-side re-clamping + empty inputs ──────────────────
 
 
@@ -300,23 +223,6 @@ async def test_handler_cc_read_document_clamps_related_children():
     # The related-children fetch is the LIMIT $2 arg on the children query.
     children_call = next(c for c in pool.fetch_calls if "parent_document_id = $1" in c[0])
     assert children_call[1][1] == cc.MAX_RELATED_CHILDREN
-
-
-@pytest.mark.asyncio
-async def test_handler_im_search_clamps_limit():
-    pool = _FakeConnection(rows=[])
-    req = _FakeRequest({"query": "alpha", "limit": 9999}, pool)
-    await router_mod.investmemos_search_memos(req)
-    # chunk_limit = clamped_limit * 12; clamped_limit caps at 50 → 600, then the
-    # SQL re-clamps to 200. Assert the candidate LIMIT arg reflects that.
-    _, args = pool.fetch_calls[0]
-    assert args[-1] == 200
-
-
-@pytest.mark.asyncio
-async def test_handler_im_read_memo_clamps_max_chars_and_rejects_empty():
-    empty = await router_mod.investmemos_read_memo(_FakeRequest({"memo": " "}, _FakeConnection()))
-    assert empty == {"status": "error", "error": "memo cannot be empty"}
 
 
 # ── slack live-send capture ──────────────────────────────────────────────────
@@ -391,7 +297,7 @@ def _request_with_scopes(scopes: list[str]):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["tools:company_context", "tools:investmemos", "tools:slack"])
+@pytest.mark.parametrize("scope", ["tools:company_context", "tools:slack"])
 async def test_require_scope_wildcard_grants_specific_tool(scope):
     check = require_scope(scope)
     # sandbox tokens carry ["agent", "tools:*"]; the broker must accept them.

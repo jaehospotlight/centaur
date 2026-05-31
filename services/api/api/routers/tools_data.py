@@ -1,10 +1,10 @@
 """Brokered DB-tool data router.
 
-The two DB-backed tools (``company_context`` and ``investmemos``) run as local
-CLIs in the sandbox, which has no route to the core DB. They reach their data
-through these typed endpoints instead: the API is the legitimate holder of the
-core DB, runs the SQL in ``api.tools_data`` on its connection pool, and returns
-the same method dicts the tools expose.
+The DB-backed ``company_context`` tool runs as a local CLI in the sandbox, which
+has no route to the core DB. It reaches its data through these typed endpoints
+instead: the API is the legitimate holder of the core DB, runs the SQL in
+``api.tools_data`` on its connection pool, and returns the same method dicts the
+tool exposes.
 
 This mirrors the existing ``/agent/attachments/upload`` broker. Auth is a
 sandbox token (``tools:*`` scope) or a service key with the per-tool scope.
@@ -22,7 +22,6 @@ from fastapi import APIRouter, Depends, Request
 
 from api.deps import get_sandbox_claims, require_scope, verify_api_key
 from api.tools_data import company_context as company_context_query
-from api.tools_data import investmemos as investmemos_query
 from api.tools_data.slack_capture import capture_live_slack_send
 from api.vm_metrics import record_tool_call
 
@@ -117,77 +116,6 @@ async def company_context_read_document(request: Request) -> dict:
         max_chars=max_chars,
         include_related=bool(body.get("include_related")),
         max_related_children=max_related,
-    )
-
-
-# ---------------------------------------------------------------------------
-# investmemos
-# ---------------------------------------------------------------------------
-
-
-@router.post(
-    "/investmemos/list-memos",
-    dependencies=[Depends(require_scope("tools:investmemos"))],
-)
-async def investmemos_list_memos(request: Request) -> dict:
-    """List memo documents from the indexed corpus."""
-    qmod = investmemos_query
-    body = await request.json()
-    limit = max(1, min(_to_int(body.get("limit"), 50), 200))
-    source = _stripped(body.get("source")) or qmod.DEFAULT_MEMO_SOURCE
-    return await qmod.list_memos(
-        request.app.state.db_pool,
-        query=_stripped(body.get("query")),
-        limit=limit,
-        source=source,
-    )
-
-
-@router.post(
-    "/investmemos/search-memos",
-    dependencies=[Depends(require_scope("tools:investmemos"))],
-)
-async def investmemos_search_memos(request: Request) -> dict:
-    """Search indexed memo chunks and aggregate top documents (grouping server-side)."""
-    qmod = investmemos_query
-    body = await request.json()
-    query_text = str(body.get("query") or "")
-    if not query_text.strip():
-        return {"status": "error", "error": "query cannot be empty"}
-    limit = max(1, min(_to_int(body.get("limit"), 12), 50))
-    source = _stripped(body.get("source")) or qmod.DEFAULT_MEMO_SOURCE
-    kind = _stripped(body.get("kind")) or qmod.DEFAULT_MEMO_KIND
-    return await qmod.search_memos(
-        request.app.state.db_pool,
-        query=query_text,
-        limit=limit,
-        stage=body.get("stage"),
-        company_type=body.get("company_type"),
-        source=source,
-        kind=kind,
-    )
-
-
-@router.post(
-    "/investmemos/read-memo",
-    dependencies=[Depends(require_scope("tools:investmemos"))],
-)
-async def investmemos_read_memo(request: Request) -> dict:
-    """Read memo content by document ID or memo name."""
-    qmod = investmemos_query
-    body = await request.json()
-    memo = str(body.get("memo") or "").strip()
-    if not memo:
-        return {"status": "error", "error": "memo cannot be empty"}
-    max_chars = max(1000, min(_to_int(body.get("max_chars"), 12000), 120000))
-    source = _stripped(body.get("source")) or qmod.DEFAULT_MEMO_SOURCE
-    kind = _stripped(body.get("kind")) or qmod.DEFAULT_MEMO_KIND
-    return await qmod.read_memo(
-        request.app.state.db_pool,
-        memo=memo,
-        max_chars=max_chars,
-        source=source,
-        kind=kind,
     )
 
 
