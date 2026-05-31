@@ -33,6 +33,7 @@ from api.sandbox.harness_protocol import (
     extract_thread_id,
     is_turn_done,
     messages_to_content_blocks,
+    terminal_result,
 )
 from api.deps import mint_sandbox_token
 from api.harness_config import default_harness
@@ -1080,45 +1081,6 @@ def _build_session_context(
     return "\n".join(lines)
 
 
-def _terminal_error_from_harness_event(event: dict) -> str | None:
-    """Return terminal error text when an end-of-turn event represents failure."""
-    event_type = event.get("type")
-
-    if event_type == "error":
-        err = event.get("error")
-        if isinstance(err, str) and err.strip():
-            return err.strip()
-        if isinstance(err, dict):
-            message = err.get("message")
-            if isinstance(message, str) and message.strip():
-                return message.strip()
-        message = event.get("message")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-        return "Harness reported an error"
-
-    if event_type == "result":
-        subtype = str(event.get("subtype") or "").strip().lower()
-        is_error = bool(event.get("is_error")) or (subtype not in {"", "success"})
-        if not is_error:
-            return None
-
-        err = event.get("error")
-        if isinstance(err, str) and err.strip():
-            return err.strip()
-        if isinstance(err, dict):
-            message = err.get("message")
-            if isinstance(message, str) and message.strip():
-                return message.strip()
-
-        result = event.get("result")
-        if isinstance(result, str) and result.strip():
-            return result.strip()
-        return "Harness reported an error"
-
-    return None
-
-
 async def _stream_stdout(
     session: SandboxSession,
     backend: Any,
@@ -1192,9 +1154,15 @@ async def _stream_stdout(
                 yield {"data": json.dumps(canonical, separators=(",", ":"))}
 
             if is_turn_done(session.engine, evt):
-                terminal_error = _terminal_error_from_harness_event(evt)
-                terminal_result = result_text or terminal_error or ""
-                rt.last_result = result_text
+                terminal = terminal_result(
+                    session.engine,
+                    evt,
+                    latest_result_text=result_text,
+                )
+                if terminal is None:
+                    continue
+                terminal_text = terminal.result_text or terminal.error_text
+                rt.last_result = terminal.result_text
                 # Persist agent_thread_id for conversation resume
                 if agent_thread_id and session.agent_thread_id != agent_thread_id:
                     try:
@@ -1216,23 +1184,23 @@ async def _stream_stdout(
                 # can't cancel the stream before durable state is committed.
                 await asyncio.gather(
                     _persist_turn_messages(
-                        session.thread_key, "", terminal_result, session.harness
+                        session.thread_key, "", terminal_text, session.harness
                     ),
-                    _db_complete_inflight_turn(session.thread_key, terminal_result),
+                    _db_complete_inflight_turn(session.thread_key, terminal_text),
                 )
                 turn_done_payload: dict[str, Any] = {
                     "type": "turn.done",
                     "turn_id": turn_id,
-                    "result": terminal_result,
+                    "result": terminal_text,
                     "agent_thread_id": agent_thread_id or "",
                 }
                 for key in ("cwd", "repo_owner", "repo_name", "git_ref", "git_commit"):
                     value = evt.get(key)
                     if isinstance(value, str) and value.strip():
                         turn_done_payload[key] = value.strip()
-                if terminal_error:
+                if terminal.is_error:
                     turn_done_payload["is_error"] = True
-                    turn_done_payload["error"] = terminal_error
+                    turn_done_payload["error"] = terminal.error_text
                 yield {"data": json.dumps(turn_done_payload)}
                 log.info(
                     "turn_done",
@@ -1241,7 +1209,7 @@ async def _stream_stdout(
                     harness=session.harness,
                     turn_id=turn_id,
                     duration_s=_elapsed_since(t0),
-                    reason="error" if terminal_error else "completed",
+                    reason=terminal.terminal_reason,
                 )
                 result_text = ""
                 agent_thread_id = None

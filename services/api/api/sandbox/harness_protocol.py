@@ -7,6 +7,26 @@ pure — no I/O, no globals, no imports from other api modules.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class TerminalResult:
+    """Engine-neutral terminal turn result.
+
+    This is the only shape downstream execution code should use when deciding
+    whether a harness turn completed, failed, or should be delivered.
+    """
+
+    status: str
+    terminal_reason: str
+    result_text: str
+    error_text: str
+
+    @property
+    def is_error(self) -> bool:
+        return bool(self.error_text)
+
 
 def _extract_error_message(event: dict) -> str:
     """Extract a human-readable error message from mixed event payload shapes."""
@@ -61,6 +81,94 @@ def is_turn_done(engine: str, event: dict) -> bool:
     if engine == "codex":
         return t in ("turn.completed", "turn.failed")
     return t == "agent_end"  # pi-mono
+
+
+def _amp_like_terminal_is_error(event: dict) -> bool:
+    subtype = str(event.get("subtype") or "").strip().lower()
+    return bool(event.get("is_error")) or (subtype not in {"", "success"})
+
+
+def terminal_result(
+    engine: str,
+    event: dict,
+    *,
+    latest_result_text: str = "",
+) -> TerminalResult | None:
+    """Return a validated terminal result for a raw or canonical harness event."""
+    if not is_turn_done(engine, event) and event.get("type") != "turn.done":
+        return None
+
+    t = event.get("type", "")
+    latest = latest_result_text.strip()
+
+    if t == "turn.done":
+        result = extract_result(engine, event) or latest
+        error = _extract_error_message(event).strip()
+        if bool(event.get("is_error")) or error:
+            combined = (error or result or "harness_error").strip()
+            return TerminalResult(
+                status="failed_permanent",
+                terminal_reason="harness_error",
+                result_text=result,
+                error_text=combined,
+            )
+        return TerminalResult(
+            status="completed",
+            terminal_reason="completed",
+            result_text=result,
+            error_text="",
+        )
+
+    if t == "error":
+        error = (_extract_error_message(event) or "Harness reported an error").strip()
+        return TerminalResult(
+            status="failed_permanent",
+            terminal_reason="harness_error",
+            result_text="",
+            error_text=error,
+        )
+
+    if engine in ("amp", "claude-code"):
+        result = extract_result(engine, event) or latest
+        if t == "result" and _amp_like_terminal_is_error(event):
+            error = (result or _extract_error_message(event) or "harness_error").strip()
+            return TerminalResult(
+                status="failed_permanent",
+                terminal_reason="harness_error",
+                result_text=result,
+                error_text=error,
+            )
+        return TerminalResult(
+            status="completed",
+            terminal_reason="completed",
+            result_text=result,
+            error_text="",
+        )
+
+    if engine == "codex":
+        if t == "turn.failed":
+            error = (_extract_error_message(event) or "Turn failed").strip()
+            return TerminalResult(
+                status="failed_permanent",
+                terminal_reason="harness_error",
+                result_text="",
+                error_text=error,
+            )
+        result = extract_result(engine, event) or latest
+        return TerminalResult(
+            status="completed",
+            terminal_reason="completed",
+            result_text=result,
+            error_text="",
+        )
+
+    result = extract_result(engine, event) or latest
+    return TerminalResult(
+        status="completed",
+        terminal_reason="completed",
+        result_text=result,
+        error_text="",
+    )
 
 
 def extract_result(engine: str, event: dict) -> str | None:

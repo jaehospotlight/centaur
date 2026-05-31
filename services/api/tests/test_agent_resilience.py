@@ -49,6 +49,19 @@ class _UnknownEventBackend:
         return "gone"
 
 
+class _CodexFailedBackend:
+    async def stream_stdout(self, _session):
+        yield json.dumps(
+            {
+                "type": "turn.failed",
+                "error": {"message": "model crashed"},
+            }
+        )
+
+    async def status(self, _session):
+        return "gone"
+
+
 def test_elapsed_since_uses_monotonic_delta_when_available() -> None:
     from api.agent import _elapsed_since
 
@@ -105,6 +118,46 @@ async def test_stream_stdout_reattaches_when_running_eof() -> None:
     )
     backend.close_streams.assert_awaited_once_with(session)
     backend.attach.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
+async def test_stream_stdout_preserves_codex_turn_failed_error() -> None:
+    from api.agent import _stream_stdout
+
+    session = SandboxSession(
+        sandbox_id="sbx-codex-failed",
+        thread_key="test:codex-failed",
+        harness="codex",
+        engine="codex",
+    )
+    rt = RuntimeState()
+    rt.turn_counter = 1
+    backend = _CodexFailedBackend()
+
+    with (
+        patch("api.agent._persist_turn_messages", new_callable=AsyncMock),
+        patch("api.agent._db_complete_inflight_turn", new_callable=AsyncMock),
+    ):
+        events = [
+            event
+            async for event in _stream_stdout(
+                session,
+                backend,
+                rt,
+                turn_id=1,
+                t0=time.monotonic(),
+            )
+        ]
+
+    decoded = [json.loads(item["data"]) for item in events]
+    assert {"type": "error", "error": "model crashed"} in decoded
+    assert any(
+        evt.get("type") == "turn.done"
+        and evt.get("is_error") is True
+        and evt.get("error") == "model crashed"
+        and evt.get("result") == "model crashed"
+        for evt in decoded
+    )
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ from api.sandbox.harness_protocol import (
     extract_thread_id,
     is_turn_done,
     messages_to_content_blocks,
+    terminal_result,
 )
 
 
@@ -84,6 +85,20 @@ class TestIsTurnDone:
 
     def test_codex_turn_failed(self):
         assert is_turn_done("codex", {"type": "turn.failed"}) is True
+
+    def test_codex_turn_failed_error_extracts_result(self):
+        assert (
+            extract_result(
+                "codex",
+                {
+                    "type": "turn.done",
+                    "is_error": True,
+                    "error": "Turn failed",
+                    "result": "Turn failed",
+                },
+            )
+            == "Turn failed"
+        )
 
     def test_codex_other_event(self):
         assert is_turn_done("codex", {"type": "item.completed"}) is False
@@ -188,6 +203,58 @@ class TestExtractResult:
             },
         }
         assert extract_result("pi-mono", event) == "pi answer"
+
+
+class TestTerminalResult:
+    def test_codex_turn_failed_is_typed_failure(self):
+        terminal = terminal_result(
+            "codex",
+            {"type": "turn.failed", "error": {"message": "model crashed"}},
+            latest_result_text="",
+        )
+        assert terminal is not None
+        assert terminal.status == "failed_permanent"
+        assert terminal.terminal_reason == "harness_error"
+        assert terminal.result_text == ""
+        assert terminal.error_text == "model crashed"
+        assert terminal.is_error is True
+
+    def test_codex_turn_completed_uses_latest_result_text(self):
+        terminal = terminal_result(
+            "codex",
+            {"type": "turn.completed"},
+            latest_result_text="done",
+        )
+        assert terminal is not None
+        assert terminal.status == "completed"
+        assert terminal.terminal_reason == "completed"
+        assert terminal.result_text == "done"
+        assert terminal.error_text == ""
+
+    def test_amp_result_error_is_typed_failure(self):
+        terminal = terminal_result(
+            "amp",
+            {"type": "result", "subtype": "error", "result": "bad token"},
+            latest_result_text="",
+        )
+        assert terminal is not None
+        assert terminal.status == "failed_permanent"
+        assert terminal.error_text == "bad token"
+
+    def test_turn_done_error_is_typed_failure(self):
+        terminal = terminal_result(
+            "codex",
+            {
+                "type": "turn.done",
+                "is_error": True,
+                "result": "Turn failed",
+                "error": "Turn failed",
+            },
+        )
+        assert terminal is not None
+        assert terminal.status == "failed_permanent"
+        assert terminal.result_text == "Turn failed"
+        assert terminal.error_text == "Turn failed"
 
 
 class TestExtractThreadId:

@@ -59,7 +59,7 @@ from api.vm_metrics import (
     record_usage_observation,
 )
 from api.sandbox.normalize import normalize_harness_event
-from api.sandbox.harness_protocol import extract_result
+from api.sandbox.harness_protocol import extract_result, terminal_result
 from api.sandbox.registry import get_backend
 
 log = structlog.get_logger()
@@ -1125,7 +1125,7 @@ def _slackbot_streamed_answer_chars(value: Any) -> int:
 def _slackbot_live_delivery_covers_result(result_text: str, streamed_chars: int) -> bool:
     text = result_text.strip()
     if not text:
-        return True
+        return False
     return streamed_chars >= len(text)
 
 
@@ -3490,17 +3490,28 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
         )
         return
 
-    result_text = extract_result(engine, turn_done_event) or latest_terminal_result_text
+    terminal = terminal_result(
+        engine,
+        turn_done_event,
+        latest_result_text=latest_terminal_result_text,
+    )
+    if terminal is None:
+        await _finalize_execution(
+            status="failed_permanent",
+            terminal_reason="invalid_terminal_event",
+            result_text="",
+            error_text="stream ended with invalid terminal event",
+        )
+        return
+
+    result_text = terminal.result_text
     repo_context = _extract_repo_context(turn_done_event)
     if repo_context:
         await _merge_execution_repo_context(pool, execution_id, repo_context)
-    error_text = turn_done_event.get("error")
-    if not isinstance(error_text, str):
-        error_text = ""
-    is_error = bool(turn_done_event.get("is_error")) or bool(error_text)
-    if is_error:
-        terminal_reason = "harness_error"
-        combined_error = (error_text or result_text or "harness_error").strip()
+    if terminal.is_error:
+        terminal_reason = terminal.terminal_reason
+        error_text = terminal.error_text
+        combined_error = (terminal.error_text or result_text or "harness_error").strip()
         if _matches_user_cancelled(error_text, result_text, combined_error):
             await _finalize_execution(
                 status="cancelled",
@@ -3541,7 +3552,7 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
         if "timed out while reconnecting" in combined_error.lower():
             terminal_reason = "amp_reconnect_timeout"
         await _finalize_execution(
-            status="failed_permanent",
+            status=terminal.status,
             terminal_reason=terminal_reason,
             result_text=result_text,
             error_text=combined_error,
@@ -3549,8 +3560,8 @@ async def _process_execution_impl(pool, row: dict[str, Any]) -> None:
         return
 
     await _finalize_execution(
-        status="completed",
-        terminal_reason="completed",
+        status=terminal.status,
+        terminal_reason=terminal.terminal_reason,
         result_text=result_text,
         error_text=None,
     )
