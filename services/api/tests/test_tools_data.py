@@ -21,6 +21,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from fastapi import HTTPException
+
+from api.api_keys import APIKeyInfo
+from api.deps import require_scope
 from api.routers import tools_data as router_mod
 from api.tools_data import company_context as cc
 from api.tools_data import investmemos as im
@@ -229,8 +233,6 @@ async def test_im_search_memos_groups_and_ranks():
 async def test_im_read_memo_assembles_chunks():
     conn = _FakeConnection()
 
-    calls = {"n": 0}
-
     async def fetchrow(query, *args):
         return {"external_id": "memo-1", "data": {"memo_name": "Alpha"}}
 
@@ -372,6 +374,36 @@ async def test_capture_returns_none_without_live_session():
 async def test_handler_slack_capture_without_claims_returns_false():
     req = _FakeRequest({"channel": "C9", "text": "x"}, _FakeConnection(), sandbox_claims=None)
     assert await router_mod.slack_capture(req) == {"captured": False}
+
+
+# ── scope: a sandbox token's tools:* must satisfy a tools:<name> requirement ──
+
+
+def _request_with_scopes(scopes: list[str]):
+    return types.SimpleNamespace(
+        state=types.SimpleNamespace(
+            api_key_info=APIKeyInfo(
+                id="t", name="sandbox", key_prefix="sbx1", scopes=scopes,
+                created_by="system", source="sandbox",
+            )
+        )
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["tools:company_context", "tools:investmemos", "tools:slack"])
+async def test_require_scope_wildcard_grants_specific_tool(scope):
+    check = require_scope(scope)
+    # sandbox tokens carry ["agent", "tools:*"]; the broker must accept them.
+    await check(_request_with_scopes(["agent", "tools:*"]))
+
+
+@pytest.mark.asyncio
+async def test_require_scope_rejects_missing_tool_grant():
+    check = require_scope("tools:company_context")
+    with pytest.raises(HTTPException) as exc:
+        await check(_request_with_scopes(["agent"]))
+    assert exc.value.status_code == 403
 
 
 # ── tool-call metric ingest ──────────────────────────────────────────────────

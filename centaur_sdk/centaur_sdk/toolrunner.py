@@ -664,6 +664,18 @@ def list_tools(tool_dirs: list[Path]) -> dict[str, Any]:
                 )
                 methods = collect_methods(module)
             except Exception:
+                # A tool that fails to import (e.g. a missing dependency in an
+                # overlay tool) would otherwise vanish from discovery silently.
+                # Log why so it's diagnosable instead of "just not there".
+                log.warning(
+                    "tool skipped during discovery (failed to load)",
+                    extra={
+                        "event": "tool_discovery_load_failed",
+                        "tool": name,
+                        "tool_dir": str(tool_dir),
+                    },
+                    exc_info=True,
+                )
                 continue
             finally:
                 reset_tool_context(token)

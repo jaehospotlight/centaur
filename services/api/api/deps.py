@@ -219,11 +219,21 @@ def require_scope(scope: str) -> Callable:
 
         @router.post("/execute", dependencies=[Depends(require_scope("agent:execute"))])
         async def execute(...): ...
+        @router.post("/x", dependencies=[Depends(require_scope("tools:company_context"))])
+
+    Resource-qualified categories (``tools:`` / ``workflows:``) are split into
+    ``(category, resource)`` so ``check_scope`` matches a wildcard grant like
+    ``tools:*`` — otherwise a sandbox's ``tools:*`` would be rejected for a
+    specific ``tools:<name>`` requirement.
     """
+    if scope.startswith(("tools:", "workflows:")):
+        category, resource = scope.split(":", 1)
+    else:
+        category, resource = scope, ""
 
     async def _check(request: Request) -> None:
         key_info = get_key_info(request)
-        if not check_scope(key_info, scope):
+        if not check_scope(key_info, category, resource):
             raise HTTPException(
                 status_code=403,
                 detail=f"API key scope does not permit '{scope}'",
