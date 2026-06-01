@@ -19,6 +19,7 @@ const SANDBOX_REPOS_MOUNT_PATH: &str = "/home/agent/github";
 
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     init_tracing();
 
     let args = Args::parse();
