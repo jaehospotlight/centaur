@@ -3,7 +3,9 @@ use std::{collections::BTreeMap, env, net::SocketAddr, path::PathBuf, sync::Arc,
 use centaur_api_server::{SandboxRuntime, build_router_with_runtime};
 use centaur_iron_proxy::{SourceKind, SourcePolicy, discover_fragment_files, load_fragment_files};
 use centaur_sandbox_agent_k8s::{AgentSandboxBackend, AgentSandboxConfig, IronProxyPodConfig};
+use centaur_sandbox_core::{Mount, MountKind, SandboxSpec};
 use centaur_sandbox_local::LocalSandboxBackend;
+use centaur_session_core::ThreadKey;
 use centaur_session_runtime::SandboxWorkloadMode;
 use centaur_session_sqlx::PgSessionStore;
 use clap::{Parser, ValueEnum};
@@ -11,6 +13,8 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
+
+const SANDBOX_REPOS_MOUNT_PATH: &str = "/home/agent/github";
 
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
@@ -64,12 +68,9 @@ async fn sandbox_runtime_from_args(args: &Args) -> Result<SandboxRuntime, Server
             } else {
                 kube::Client::try_default().await?
             };
-            let backend = AgentSandboxBackend::new(client, config);
+            let backend = Arc::new(AgentSandboxBackend::new(client, config));
 
-            Ok(SandboxRuntime::backend_with_workload(
-                Arc::new(backend),
-                container_workload_mode(args),
-            ))
+            Ok(container_sandbox_runtime(backend, args))
         }
     }
 }
@@ -85,6 +86,31 @@ fn local_workload_mode(args: &Args) -> Result<SandboxWorkloadMode, ServerError> 
             "codex-app-server workload requires --session-sandbox-backend agent-k8s".to_owned(),
         )),
     }
+}
+
+fn container_sandbox_runtime(backend: Arc<AgentSandboxBackend>, args: &Args) -> SandboxRuntime {
+    if args.session_sandbox_workload == SandboxWorkloadKind::CodexAppServer {
+        if let Some(repos_path) = sandbox_repos_path_from_env() {
+            let image = args
+                .session_sandbox_image
+                .clone()
+                .unwrap_or_else(|| default_sandbox_image(args.session_sandbox_workload).to_owned());
+            let env_template = codex_app_server_env_template(args);
+            return SandboxRuntime::backend_with_spec_factory(
+                backend,
+                move |thread_key, _execution_id| {
+                    codex_app_server_spec(
+                        &image,
+                        thread_key,
+                        &env_template,
+                        Some(repos_path.as_str()),
+                    )
+                },
+            );
+        }
+    }
+
+    SandboxRuntime::backend_with_workload(backend, container_workload_mode(args))
 }
 
 fn container_workload_mode(args: &Args) -> SandboxWorkloadMode {
@@ -310,6 +336,42 @@ fn env_bool(name: &str) -> bool {
         .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
 }
+
+fn sandbox_repos_path_from_env() -> Option<String> {
+    nonempty_env("SESSION_SANDBOX_REPOS_PATH").or_else(|| nonempty_env("REPOS_PATH"))
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn codex_app_server_spec(
+    image: &str,
+    thread_key: &ThreadKey,
+    env_template: &[(String, String)],
+    repos_path: Option<&str>,
+) -> SandboxSpec {
+    let mut spec = SandboxSpec::new(image).env("CENTAUR_THREAD_KEY", thread_key.as_str());
+    if let Some(repos_path) = repos_path {
+        spec = spec.mount(
+            Mount::new(
+                MountKind::Bind {
+                    source_path: repos_path.to_owned(),
+                },
+                SANDBOX_REPOS_MOUNT_PATH,
+            )
+            .read_only(),
+        );
+    }
+    for (name, value) in env_template {
+        spec = spec.env(name.clone(), value.clone());
+    }
+    spec
+}
+
 fn codex_app_server_env_template(args: &Args) -> Vec<(String, String)> {
     let mut envs = Vec::new();
     push_env(
@@ -351,6 +413,52 @@ fn push_env(envs: &mut Vec<(String, String)>, name: &str, value: String) {
         *existing_value = value;
     } else {
         envs.push((name.to_owned(), value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_app_server_spec_mounts_repos_path_read_only() {
+        let thread_key = ThreadKey::parse("test:thread").unwrap();
+
+        let spec = codex_app_server_spec(
+            "centaur-agent:latest",
+            &thread_key,
+            &[("CENTAUR_API_URL".to_owned(), "http://api:8000".to_owned())],
+            Some("/host/github"),
+        );
+
+        assert_eq!(spec.mounts.len(), 1);
+        assert_eq!(spec.mounts[0].target_path, SANDBOX_REPOS_MOUNT_PATH);
+        assert!(spec.mounts[0].read_only);
+        assert_eq!(
+            spec.mounts[0].kind,
+            MountKind::Bind {
+                source_path: "/host/github".to_owned(),
+            }
+        );
+        assert!(
+            spec.env
+                .iter()
+                .any(|env| { env.name == "CENTAUR_API_URL" && env.value == "http://api:8000" })
+        );
+    }
+
+    #[test]
+    fn codex_app_server_spec_omits_repos_mount_when_unset() {
+        let thread_key = ThreadKey::parse("test:thread").unwrap();
+
+        let spec = codex_app_server_spec("centaur-agent:latest", &thread_key, &[], None);
+
+        assert!(spec.mounts.is_empty());
+        assert!(
+            spec.env
+                .iter()
+                .any(|env| { env.name == "CENTAUR_THREAD_KEY" && env.value == "test:thread" })
+        );
     }
 }
 
