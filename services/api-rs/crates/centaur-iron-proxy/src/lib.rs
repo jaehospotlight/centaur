@@ -104,10 +104,7 @@ impl SourcePolicy {
         self
     }
 
-    pub fn from_env() -> Self {
-        Self::from_lookup(|name| std::env::var(name).ok())
-    }
-
+    #[cfg(test)]
     fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
         let kind = match lookup("FIREWALL_MANAGER_SECRET_SOURCE")
             .or_else(|| lookup("KUBERNETES_FIREWALL_MANAGER_SECRET_SOURCE"))
