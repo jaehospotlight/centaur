@@ -4,7 +4,7 @@ use centaur_api_server::{SandboxRuntime, build_router_with_runtime};
 use centaur_sandbox_agent_k8s::{AgentSandboxBackend, AgentSandboxConfig};
 use centaur_sandbox_core::SandboxSpec;
 use centaur_sandbox_local::LocalSandboxBackend;
-use centaur_session_core::ThreadKey;
+use centaur_session_core::{HarnessType, ThreadKey};
 use centaur_session_sqlx::PgSessionStore;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -50,10 +50,36 @@ async fn sandbox_runtime_from_env() -> Result<SandboxRuntime, ServerError> {
     let backend = env::var("SESSION_SANDBOX_BACKEND").unwrap_or_else(|_| "mock".to_owned());
     match backend.as_str() {
         "mock" => Ok(SandboxRuntime::Mock),
-        "local" => Ok(SandboxRuntime::backend(
-            Arc::new(LocalSandboxBackend::new()),
-            local_mock_app_server_spec(),
-        )),
+        "local" => {
+            let workload =
+                env::var("SESSION_SANDBOX_WORKLOAD").unwrap_or_else(|_| "mock".to_owned());
+            let backend = Arc::new(LocalSandboxBackend::new());
+            match workload.as_str() {
+                "mock" => Ok(SandboxRuntime::backend(
+                    backend,
+                    local_mock_app_server_spec(),
+                )),
+                "codex-app-server" => {
+                    let harness_server = env::var("SESSION_LOCAL_HARNESS_SERVER_BIN")
+                        .unwrap_or_else(|_| {
+                            "crates/harness-server/target/debug/harness-server".to_owned()
+                        });
+                    let env_template = codex_app_server_env_template();
+                    Ok(SandboxRuntime::backend_with_spec_factory(
+                        backend,
+                        move |thread_key, harness_type, _execution_id| {
+                            local_codex_app_server_spec(
+                                &harness_server,
+                                harness_server_kind(harness_type),
+                                thread_key,
+                                &env_template,
+                            )
+                        },
+                    ))
+                }
+                other => Err(ServerError::InvalidSandboxWorkload(other.to_owned())),
+            }
+        }
         "agent-k8s" => {
             let namespace = env::var("SESSION_SANDBOX_K8S_NAMESPACE")
                 .unwrap_or_else(|_| "centaur-sandbox-e2e".to_owned());
@@ -94,8 +120,8 @@ async fn sandbox_runtime_from_env() -> Result<SandboxRuntime, ServerError> {
                     let env_template = codex_app_server_env_template();
                     Ok(SandboxRuntime::backend_with_spec_factory(
                         Arc::new(backend),
-                        move |thread_key, _execution_id| {
-                            codex_app_server_spec(&image, thread_key, &env_template)
+                        move |thread_key, harness_type, _execution_id| {
+                            codex_app_server_spec(&image, harness_type, thread_key, &env_template)
                         },
                     ))
                 }
@@ -112,6 +138,32 @@ fn local_mock_app_server_spec() -> SandboxSpec {
         .args([mock_app_server_script()])
 }
 
+fn local_codex_app_server_spec(
+    harness_server: &str,
+    harness_kind: &str,
+    thread_key: &ThreadKey,
+    env_template: &[(String, String)],
+) -> SandboxSpec {
+    let script = format!(
+        "exec {} {} 2>/tmp/centaur-harness-server-{}.$$.stderr",
+        shell_quote(harness_server),
+        shell_quote(harness_kind),
+        shell_quote(harness_kind)
+    );
+    let mut spec = SandboxSpec::new("/bin/sh")
+        .command(["/bin/sh", "-lc"])
+        .args([script])
+        .env("CENTAUR_THREAD_KEY", thread_key.as_str());
+    for (name, value) in env_template {
+        spec = spec.env(name.clone(), value.clone());
+    }
+    spec
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn agent_k8s_mock_app_server_spec(image: &str) -> SandboxSpec {
     SandboxSpec::new(image)
         .command(["/bin/sh", "-lc"])
@@ -120,14 +172,26 @@ fn agent_k8s_mock_app_server_spec(image: &str) -> SandboxSpec {
 
 fn codex_app_server_spec(
     image: &str,
+    harness_type: &HarnessType,
     thread_key: &ThreadKey,
     env_template: &[(String, String)],
 ) -> SandboxSpec {
-    let mut spec = SandboxSpec::new(image).env("CENTAUR_THREAD_KEY", thread_key.as_str());
+    let mut spec = SandboxSpec::new(image)
+        .args(["harness-server", harness_server_kind(harness_type)])
+        .env("CENTAUR_THREAD_KEY", thread_key.as_str());
     for (name, value) in env_template {
         spec = spec.env(name.clone(), value.clone());
     }
     spec
+}
+
+fn harness_server_kind(harness_type: &HarnessType) -> &str {
+    match harness_type.as_str() {
+        "claude" | "claude-code" => "claude-code",
+        "amp" => "amp",
+        "codex" => "codex",
+        other => other,
+    }
 }
 
 fn codex_app_server_env_template() -> Vec<(String, String)> {

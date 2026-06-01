@@ -196,6 +196,8 @@ WORKDIR /home/agent
 COPY --link --chown=1001:1001 crates/harness-server/ /tmp/harness-server/
 RUN --mount=type=cache,target=/home/agent/.cargo/registry,uid=1001,gid=1001,sharing=locked \
     --mount=type=cache,target=/home/agent/.cargo/git,uid=1001,gid=1001,sharing=locked \
+    --mount=type=cache,target=/home/agent/.cache/harness-server-target,uid=1001,gid=1001,sharing=locked \
+    CARGO_TARGET_DIR=/home/agent/.cache/harness-server-target \
     cargo install --locked --path /tmp/harness-server --root /home/agent/.local \
     && rm -rf /tmp/harness-server
 
