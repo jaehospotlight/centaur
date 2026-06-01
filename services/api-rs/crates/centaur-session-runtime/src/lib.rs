@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use centaur_sandbox_core::{
@@ -21,7 +24,7 @@ use thiserror::Error;
 use tokio::{
     io,
     sync::Mutex,
-    time::{Instant, Interval, MissedTickBehavior, interval_at},
+    time::{Instant, Interval, MissedTickBehavior, interval, interval_at, sleep},
 };
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError};
 use tracing::warn;
@@ -30,6 +33,8 @@ pub const SESSION_OUTPUT_LINE_EVENT: &str = "session.output.line";
 
 const MAX_SESSION_OUTPUT_LINE_BYTES: usize = 1024 * 1024;
 const EVENT_STREAM_SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const PIPE_LEASE_TTL: Duration = Duration::from_secs(45);
+const PIPE_LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(15);
 
 type SandboxSpecFactory = Arc<dyn Fn(&ThreadKey, &str) -> SandboxSpec + Send + Sync>;
 type SessionInputSink = FramedWrite<SandboxWrite, LinesCodec>;
@@ -39,6 +44,7 @@ pub struct SessionRuntime {
     store: PgSessionStore,
     sandbox_runtime: SandboxRuntime,
     sandbox_pipes: Arc<Mutex<HashMap<String, SessionPipe>>>,
+    pipe_owner_id: Arc<str>,
 }
 
 #[derive(Clone)]
@@ -70,6 +76,31 @@ pub struct ExecuteSessionInput {
 #[derive(Clone)]
 struct SessionPipe {
     stdin: Arc<Mutex<SessionInputSink>>,
+    lease: Arc<PipeLeaseState>,
+}
+
+#[derive(Debug, Default)]
+struct PipeLeaseState {
+    stop: AtomicBool,
+    lost: AtomicBool,
+}
+
+impl PipeLeaseState {
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    fn mark_lost(&self) {
+        self.lost.store(true, Ordering::Relaxed);
+    }
+
+    fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::Relaxed)
+    }
 }
 
 struct EventStreamState {
@@ -88,6 +119,7 @@ impl SessionRuntime {
             store,
             sandbox_runtime,
             sandbox_pipes: Arc::new(Mutex::new(HashMap::new())),
+            pipe_owner_id: Arc::from(default_pipe_owner_id()),
         }
     }
 
@@ -213,7 +245,24 @@ impl SessionRuntime {
     > {
         let session = self.store.get_session(thread_key).await?;
         if let Some(sandbox_id) = session.sandbox_id.as_deref() {
-            self.ensure_session_pipe(thread_key, sandbox_id).await?;
+            match self.ensure_session_pipe(thread_key, sandbox_id).await {
+                Ok(_) => {}
+                Err(SessionRuntimeError::PipeLeaseUnavailable { sandbox_id }) => {
+                    warn!(%sandbox_id, "session pipe is owned by another api replica");
+                    let runtime = self.clone();
+                    let thread_key = thread_key.clone();
+                    tokio::spawn(async move {
+                        sleep(PIPE_LEASE_TTL).await;
+                        match runtime.ensure_session_pipe(&thread_key, &sandbox_id).await {
+                            Ok(_) | Err(SessionRuntimeError::PipeLeaseUnavailable { .. }) => {}
+                            Err(error) => {
+                                warn!(%sandbox_id, %error, "delayed session pipe reclaim failed");
+                            }
+                        }
+                    });
+                }
+                Err(error) => return Err(error),
+            }
         }
 
         let listener = self.store.listen_session_events().await?;
@@ -256,21 +305,49 @@ impl SessionRuntime {
         thread_key: &ThreadKey,
         sandbox_id: &str,
     ) -> Result<SessionPipe, SessionRuntimeError> {
-        if let Some(pipe) = self.sandbox_pipes.lock().await.get(sandbox_id).cloned() {
-            return Ok(pipe);
+        {
+            let mut pipes = self.sandbox_pipes.lock().await;
+            if let Some(pipe) = pipes.get(sandbox_id).cloned() {
+                if !pipe.lease.is_lost() {
+                    return Ok(pipe);
+                }
+                pipes.remove(sandbox_id);
+            }
         }
 
-        let io = self
+        let owner_id = self.pipe_owner_id.to_string();
+        let claimed = self
+            .store
+            .try_claim_pipe_lease(thread_key, sandbox_id, &owner_id, PIPE_LEASE_TTL)
+            .await?;
+        if !claimed {
+            return Err(SessionRuntimeError::PipeLeaseUnavailable {
+                sandbox_id: sandbox_id.to_owned(),
+            });
+        }
+
+        let io = match self
             .sandbox_runtime
             .manager
             .open_io(&SandboxId::new(sandbox_id))
-            .await?
-            .into_parts();
+            .await
+        {
+            Ok(io) => io.into_parts(),
+            Err(error) => {
+                let _ = self
+                    .store
+                    .release_pipe_lease(thread_key, sandbox_id, &owner_id)
+                    .await;
+                return Err(error.into());
+            }
+        };
+        let lease = Arc::new(PipeLeaseState::default());
         let pipe = SessionPipe {
             stdin: Arc::new(Mutex::new(FramedWrite::new(
                 io.stdin,
                 LinesCodec::new_with_max_length(MAX_SESSION_OUTPUT_LINE_BYTES),
             ))),
+            lease: lease.clone(),
         };
 
         self.sandbox_pipes
@@ -285,10 +362,33 @@ impl SessionRuntime {
         let stderr = io.stderr;
         let guard = io.guard;
         let stderr_key = pump_key.clone();
+        let renew_store = store.clone();
+        let renew_thread_key = thread_key.clone();
+        let renew_key = pump_key.clone();
+        let renew_owner_id = owner_id.clone();
+        let renew_lease = lease.clone();
 
         tokio::spawn(async move {
-            let result =
-                run_stdout_pump(store.clone(), thread_key.clone(), &pump_key, stdout, guard).await;
+            renew_pipe_lease_until_stopped(
+                renew_store,
+                renew_thread_key,
+                renew_key,
+                renew_owner_id,
+                renew_lease,
+            )
+            .await;
+        });
+
+        tokio::spawn(async move {
+            let result = run_stdout_pump(
+                store.clone(),
+                thread_key.clone(),
+                &pump_key,
+                stdout,
+                guard,
+                lease.clone(),
+            )
+            .await;
             if let Err(error) = result {
                 warn!(%pump_key, %error, "session stdout pump failed");
                 let _ = store
@@ -303,6 +403,10 @@ impl SessionRuntime {
                     )
                     .await;
             }
+            lease.stop();
+            let _ = store
+                .release_pipe_lease(&thread_key, &pump_key, &owner_id)
+                .await;
             sandbox_pipes.lock().await.remove(&pump_key);
         });
 
@@ -484,6 +588,7 @@ async fn run_stdout_pump(
     sandbox_id: &str,
     stdout: SandboxRead,
     _guard: SandboxIoGuard,
+    lease: Arc<PipeLeaseState>,
 ) -> Result<(), SessionRuntimeError> {
     let mut stdout = FramedRead::new(
         stdout,
@@ -491,6 +596,9 @@ async fn run_stdout_pump(
     );
     while let Some(line) = stdout.next().await {
         let line = line.map_err(codec_error_to_runtime)?;
+        if lease.is_lost() {
+            break;
+        }
         append_output_line(&store, &thread_key, None, &line).await?;
     }
     store
@@ -504,6 +612,40 @@ async fn run_stdout_pump(
         )
         .await?;
     Ok(())
+}
+
+async fn renew_pipe_lease_until_stopped(
+    store: PgSessionStore,
+    thread_key: ThreadKey,
+    sandbox_id: String,
+    owner_id: String,
+    lease: Arc<PipeLeaseState>,
+) {
+    let mut tick = interval(PIPE_LEASE_RENEW_INTERVAL);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        tick.tick().await;
+        if lease.is_stopped() {
+            return;
+        }
+        match store
+            .renew_pipe_lease(&thread_key, &sandbox_id, &owner_id, PIPE_LEASE_TTL)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                lease.mark_lost();
+                warn!(%sandbox_id, "session pipe lease was lost to another api replica");
+                return;
+            }
+            Err(error) => {
+                lease.mark_lost();
+                warn!(%sandbox_id, %error, "failed to renew session pipe lease");
+                return;
+            }
+        }
+    }
 }
 
 async fn drain_stderr(mut stderr: SandboxRead) -> Result<(), SessionRuntimeError> {
@@ -588,10 +730,21 @@ fn nonzero_duration_millis(value: u64) -> Result<Duration, SessionRuntimeError> 
     Ok(Duration::from_millis(value))
 }
 
+fn default_pipe_owner_id() -> String {
+    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_owned());
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{host}-{}-{nanos}", std::process::id())
+}
+
 #[derive(Debug, Error)]
 pub enum SessionRuntimeError {
     #[error("{0}")]
     BadRequest(String),
+    #[error("sandbox pipe {sandbox_id} is owned by another api replica; retry shortly")]
+    PipeLeaseUnavailable { sandbox_id: String },
     #[error(transparent)]
     Store(#[from] SessionStoreError),
     #[error(transparent)]

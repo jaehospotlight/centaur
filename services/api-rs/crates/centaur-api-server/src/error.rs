@@ -36,6 +36,7 @@ impl IntoResponse for ApiError {
             Self::Runtime(SessionRuntimeError::Store(SessionStoreError::HarnessConflict {
                 ..
             })) => StatusCode::CONFLICT,
+            Self::Runtime(SessionRuntimeError::PipeLeaseUnavailable { .. }) => StatusCode::CONFLICT,
             Self::Runtime(_) | Self::Serialize(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(json!({

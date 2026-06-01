@@ -1,6 +1,6 @@
 //! SQLx-backed session repository.
 
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use centaur_session_core::{
     ExecutionStatus, HarnessType, Session, SessionEvent, SessionExecution, SessionMessage,
@@ -331,6 +331,91 @@ impl PgSessionStore {
         .await?;
 
         row.try_into()
+    }
+
+    pub async fn try_claim_pipe_lease(
+        &self,
+        thread_key: &ThreadKey,
+        sandbox_id: &str,
+        owner_id: &str,
+        ttl: Duration,
+    ) -> Result<bool, SessionStoreError> {
+        let result = sqlx::query(
+            r#"
+            update sessions
+            set
+                pipe_owner_id = $3,
+                pipe_lease_expires_at = now() + ($4::double precision * interval '1 second'),
+                updated_at = now()
+            where thread_key = $1
+                and sandbox_id = $2
+                and (
+                    pipe_owner_id is null
+                    or pipe_owner_id = $3
+                    or pipe_lease_expires_at is null
+                    or pipe_lease_expires_at < now()
+                )
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .bind(sandbox_id)
+        .bind(owner_id)
+        .bind(ttl.as_secs_f64())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn renew_pipe_lease(
+        &self,
+        thread_key: &ThreadKey,
+        sandbox_id: &str,
+        owner_id: &str,
+        ttl: Duration,
+    ) -> Result<bool, SessionStoreError> {
+        let result = sqlx::query(
+            r#"
+            update sessions
+            set
+                pipe_lease_expires_at = now() + ($4::double precision * interval '1 second'),
+                updated_at = now()
+            where thread_key = $1
+                and sandbox_id = $2
+                and pipe_owner_id = $3
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .bind(sandbox_id)
+        .bind(owner_id)
+        .bind(ttl.as_secs_f64())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn release_pipe_lease(
+        &self,
+        thread_key: &ThreadKey,
+        sandbox_id: &str,
+        owner_id: &str,
+    ) -> Result<(), SessionStoreError> {
+        sqlx::query(
+            r#"
+            update sessions
+            set pipe_owner_id = null, pipe_lease_expires_at = null, updated_at = now()
+            where thread_key = $1
+                and sandbox_id = $2
+                and pipe_owner_id = $3
+            "#,
+        )
+        .bind(thread_key.as_str())
+        .bind(sandbox_id)
+        .bind(owner_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn set_session_status(
