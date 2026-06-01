@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::{
-    ExecCommand, ExecResult, ObservedSandbox, ReadOptions, ReadResult, SandboxHandle, SandboxId,
-    SandboxResult, SandboxSpec, SandboxStatus, WriteAck,
+    ObservedSandbox, ReadOptions, ReadResult, SandboxHandle, SandboxId, SandboxResult, SandboxSpec,
+    SandboxStatus, WriteAck,
 };
 
 #[async_trait]
@@ -33,9 +33,8 @@ pub trait SandboxBackend: Send + Sync {
 
     /// Return the full observed runtime snapshot for one sandbox.
     ///
-    /// Unlike [`SandboxBackend::status`], this includes backend-owned metadata
-    /// used by reconcilers, such as an opaque generation/resource-version token
-    /// and a diagnostic reason.
+    /// Unlike [`SandboxBackend::status`], this can include backend-owned
+    /// diagnostic context used by reconcilers.
     async fn observe(&self, id: &SandboxId) -> SandboxResult<ObservedSandbox>;
 
     /// List all sandbox observations owned by this backend/control plane.
@@ -49,14 +48,4 @@ pub trait SandboxBackend: Send + Sync {
 
     /// Resume a previously suspended sandbox and wait until it can serve I/O.
     async fn resume(&self, id: &SandboxId) -> SandboxResult<()>;
-
-    /// Execute an auxiliary command inside the sandbox runtime.
-    async fn exec(&self, id: &SandboxId, command: ExecCommand) -> SandboxResult<ExecResult>;
-
-    /// Interrupt foreground work while keeping the sandbox runtime alive.
-    ///
-    /// For process-like backends this is typically SIGINT/Ctrl-C semantics. A
-    /// backend that cannot express this operation should return
-    /// [`crate::SandboxError::Unsupported`].
-    async fn interrupt(&self, id: &SandboxId) -> SandboxResult<()>;
 }

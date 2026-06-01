@@ -43,9 +43,10 @@ runtime layer.
 ## Existing Behavior to Preserve
 
 The Python API currently has a sandbox backend with create, attach, stdin,
-stdout, stop, status, exec, interrupt, pause, and resume operations. The useful
-parts to preserve in Rust are the runtime semantics, not the app-level
-arguments.
+stdout, stop, status, pause, and resume operations. The useful parts to preserve
+in Rust are the runtime semantics, not the app-level arguments. Auxiliary exec
+and interrupt behavior should live above or beside the portable sandbox
+abstraction, not on `SandboxBackend`.
 
 The Rust abstraction should not expose attach as a public operation. Kubernetes
 attach is a transport detail owned by the Agent Sandbox backend. The portable
@@ -113,7 +114,7 @@ Agent Sandbox CRD backend:
 - configure state volume claim templates
 - implement pause/resume through replica patches
 - delete CRD-owned state on stop
-- resolve the backing Pod for private I/O transport, exec, and status
+- resolve the backing Pod for private I/O transport and status
 - list observed Sandbox CRD objects and backing Pods for reconciliation
 
 This crate owns the complete Kubernetes runtime path. It may contain private
@@ -135,9 +136,8 @@ the higher-level Centaur data model is settled.
 
 ## Core Types
 
-Sketch only. Supporting types such as `EnvVar`, `Mount`, `ResourceLimits`,
-`ExecCommand`, `ExecResult`, and `SandboxError` would live in
-`centaur-sandbox-core`.
+Sketch only. Supporting types such as `EnvVar`, `Mount`, `ResourceLimits`, and
+`SandboxError` would live in `centaur-sandbox-core`.
 
 ```rust
 use async_trait::async_trait;
@@ -210,7 +210,6 @@ pub struct ObservedSandbox {
     pub id: SandboxId,
     pub backend: String,
     pub status: SandboxStatus,
-    pub generation: Option<String>,
     pub reason: Option<String>,
 }
 
@@ -244,14 +243,6 @@ pub trait SandboxBackend: Send + Sync {
     async fn stop(&self, id: &SandboxId) -> Result<(), SandboxError>;
     async fn pause(&self, id: &SandboxId) -> Result<(), SandboxError>;
     async fn resume(&self, id: &SandboxId) -> Result<(), SandboxError>;
-
-    async fn exec(
-        &self,
-        id: &SandboxId,
-        command: ExecCommand,
-    ) -> Result<ExecResult, SandboxError>;
-
-    async fn interrupt(&self, id: &SandboxId) -> Result<(), SandboxError>;
 }
 ```
 
@@ -386,11 +377,7 @@ Each backend should be able to:
 - list workloads owned by this control plane
 - map native runtime state into `SandboxStatus`
 - make lifecycle operations idempotent where possible
-- surface enough generation/resource-version information to detect stale
-  observations
-
-For Kubernetes, `generation` can be a resource version, UID, observed generation,
-or another backend-owned token. The core abstraction should treat it as opaque.
+- surface backend-owned diagnostic reasons for ambiguous observations
 
 ### Manager Responsibilities
 
@@ -424,7 +411,7 @@ at the manager layer. Kubernetes-specific details stay in the backend's
 Use the `kube` crate and generated or dynamic Kubernetes API types inside
 `centaur-sandbox-agent-k8s`:
 
-- `kube` for clients, watches, API calls, and private attach/exec transport
+- `kube` for clients, watches, API calls, and private attach transport
 - `k8s-openapi` for backing Pod, Secret, PVC, and NetworkPolicy types
 - `serde_json` for dynamic Agent Sandbox CRD payloads unless we add typed CRDs
 
@@ -436,7 +423,6 @@ The Agent Sandbox backend should own:
 - companion resource construction when needed
 - readiness wait through the controller-owned backing Pod
 - private attach stream demultiplexing into `read_bytes` and `write_bytes`
-- exec command implementation against the backing Pod
 - pause/resume patches
 - deletion of the Sandbox CRD, state PVC, and companion resources
 - observation of both the Sandbox object and backing Pod
@@ -520,10 +506,6 @@ manager.stop(&handle.id).await?;
 - Should stderr be exposed as a separate byte stream for all backends, or folded
   into backend diagnostics?
 - Should reconciliation be poll-first, watch-first, or both?
-- What is the minimum opaque generation token that works across the local test
-  backend and Agent Sandbox CRD backend?
-- Should interrupt remain in the sandbox abstraction, or should it be expressed
-  as backend-specific exec/write behavior above this layer?
 
 ## Recommendation
 

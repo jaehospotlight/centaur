@@ -4,8 +4,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use centaur_sandbox_agent_k8s::{AgentSandboxBackend, AgentSandboxConfig};
 use centaur_sandbox_core::{
-    ExecCommand, OutputStream, ReadOptions, ReadResult, SandboxBackend, SandboxId, SandboxSpec,
-    SandboxStatus,
+    OutputStream, ReadOptions, ReadResult, SandboxBackend, SandboxId, SandboxSpec, SandboxStatus,
 };
 use centaur_sandbox_local::LocalSandboxBackend;
 use centaur_sandbox_manager::{DriftReason, ReconcileOutcome, SandboxManager};
@@ -38,7 +37,6 @@ async fn sandbox_invariants_by_implementation() {
         stdin_close_reaches_eof(&implementation).await;
         reconnect_can_observe_and_stop(&implementation).await;
         pause_blocks_read_write_until_resume(&implementation).await;
-        exec_runs_command(&implementation).await;
         missing_sandbox_operations_are_consistent(&implementation).await;
         failed_create_cleans_up_observed_resources(&implementation).await;
     }
@@ -270,31 +268,6 @@ async fn missing_sandbox_operations_are_consistent(implementation: &SandboxImple
             implementation.name
         )
     });
-}
-
-async fn exec_runs_command(implementation: &SandboxImplementation) {
-    let manager = SandboxManager::new(implementation.backend.clone());
-    let handle = manager
-        .create_running(implementation.long_running_spec.clone())
-        .await
-        .unwrap_or_else(|err| panic!("{} create exec sandbox failed: {err}", implementation.name));
-
-    let result = manager
-        .exec(
-            &handle.id,
-            ExecCommand::new(["/bin/sh", "-lc", "printf exec-ok"]),
-        )
-        .await
-        .unwrap_or_else(|err| panic!("{} exec failed: {err}", implementation.name));
-
-    assert!(
-        result.success(),
-        "{} exec should succeed",
-        implementation.name
-    );
-    assert_eq!(result.stdout, b"exec-ok", "{}", implementation.name);
-
-    manager.stop(&handle.id).await.unwrap();
 }
 
 async fn failed_create_cleans_up_observed_resources(implementation: &SandboxImplementation) {

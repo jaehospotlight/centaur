@@ -96,12 +96,6 @@ pub struct ObservedSandbox {
     pub backend: String,
     /// Current portable lifecycle status.
     pub status: SandboxStatus,
-    /// Opaque backend version token used for freshness/fencing.
-    ///
-    /// Kubernetes backends may use a resource version, UID, or observed
-    /// generation. Local backends may use a counter. Callers should not parse
-    /// this value.
-    pub generation: Option<String>,
     /// Backend-owned diagnostic reason for the observed status.
     pub reason: Option<String>,
 }
@@ -116,7 +110,6 @@ impl ObservedSandbox {
             id: id.into(),
             backend: backend.into(),
             status,
-            generation: None,
             reason: None,
         }
     }

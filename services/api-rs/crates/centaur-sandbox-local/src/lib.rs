@@ -16,9 +16,8 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use centaur_sandbox_core::{
-    ExecCommand, ExecResult, ObservedSandbox, OutputStream, ReadOptions, ReadResult,
-    SandboxBackend, SandboxError, SandboxHandle, SandboxId, SandboxResult, SandboxSpec,
-    SandboxStatus, WriteAck,
+    ObservedSandbox, OutputStream, ReadOptions, ReadResult, SandboxBackend, SandboxError,
+    SandboxHandle, SandboxId, SandboxResult, SandboxSpec, SandboxStatus, WriteAck,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -249,48 +248,6 @@ impl SandboxBackend for LocalSandboxBackend {
         sandbox.status = SandboxStatus::Running;
         Ok(())
     }
-
-    async fn exec(&self, id: &SandboxId, command: ExecCommand) -> SandboxResult<ExecResult> {
-        let sandbox = self.sandbox(id).await?;
-        {
-            let mut sandbox = sandbox.lock().await;
-            let status = refresh_status(&mut sandbox).await?;
-            if !status.can_read_write() {
-                return Err(SandboxError::NotReady(format!(
-                    "local sandbox {} is {status:?}",
-                    id.as_str()
-                )));
-            }
-        }
-
-        let (program, args) = command
-            .argv
-            .split_first()
-            .ok_or_else(|| SandboxError::InvalidSpec("exec argv is empty".to_owned()))?;
-        let mut cmd = Command::new(program);
-        cmd.args(args);
-        for env in command.env {
-            cmd.env(env.name, env.value);
-        }
-        if let Some(working_dir) = command.working_dir {
-            cmd.current_dir(working_dir);
-        }
-        let output = cmd
-            .output()
-            .await
-            .map_err(|err| SandboxError::Backend(format!("failed to run local exec: {err}")))?;
-        Ok(ExecResult::new(
-            output.status.code().unwrap_or(-1),
-            output.stdout,
-            output.stderr,
-        ))
-    }
-
-    async fn interrupt(&self, id: &SandboxId) -> SandboxResult<()> {
-        let sandbox = self.sandbox(id).await?;
-        let sandbox = sandbox.lock().await;
-        send_signal(&sandbox.child, "INT").await
-    }
 }
 
 fn command_parts(spec: &SandboxSpec) -> SandboxResult<(&str, Vec<&str>)> {
@@ -455,45 +412,6 @@ mod tests {
             centaur_sandbox_manager::ReconcileOutcome::Drift(DriftReason::MissingWhileRunning)
         );
         manager.stop(&handle.id).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn local_backend_exec_requires_existing_running_sandbox() {
-        let backend = LocalSandboxBackend::new();
-        let missing = SandboxId::new("missing-local");
-        assert!(matches!(
-            backend
-                .exec(&missing, ExecCommand::new(["/bin/true"]))
-                .await,
-            Err(SandboxError::NotFound(_))
-        ));
-
-        let handle = backend.create(cat_spec()).await.unwrap();
-        backend.pause(&handle.id).await.unwrap();
-        assert!(matches!(
-            backend
-                .exec(&handle.id, ExecCommand::new(["/bin/true"]))
-                .await,
-            Err(SandboxError::NotReady(_))
-        ));
-
-        backend.resume(&handle.id).await.unwrap();
-        let result = backend
-            .exec(
-                &handle.id,
-                ExecCommand::new(["/bin/sh", "-lc", "printf ok"]),
-            )
-            .await
-            .unwrap();
-        assert_eq!(result.stdout, b"ok");
-
-        backend.stop(&handle.id).await.unwrap();
-        assert!(matches!(
-            backend
-                .exec(&handle.id, ExecCommand::new(["/bin/true"]))
-                .await,
-            Err(SandboxError::NotFound(_))
-        ));
     }
 
     fn cat_spec() -> SandboxSpec {
