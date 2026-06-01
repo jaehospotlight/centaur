@@ -69,6 +69,12 @@ pub struct ExecuteSessionInput {
 #[derive(Clone)]
 struct SessionPipe {
     stdin: Arc<Mutex<SessionInputSink>>,
+    active_execution: ActiveExecution,
+}
+
+#[derive(Clone, Default)]
+struct ActiveExecution {
+    execution_id: Arc<Mutex<Option<String>>>,
 }
 
 struct EventStreamState {
@@ -154,13 +160,20 @@ impl SessionRuntime {
             .await?;
 
         let write_result = match self.ensure_session_pipe(thread_key, &sandbox_id).await {
-            Ok(pipe) => write_input_lines(&pipe, &input.input_lines).await,
+            Ok(pipe) => {
+                pipe.active_execution
+                    .set(Some(execution.execution_id.clone()))
+                    .await;
+                write_input_lines(&pipe, &input.input_lines).await
+            }
             Err(error) => Err(error),
         };
 
         match write_result {
             Ok(()) => {}
             Err(error) => {
+                self.clear_active_execution(&sandbox_id, &execution.execution_id)
+                    .await;
                 let error_message = error.to_string();
                 let _ = self
                     .store
@@ -183,23 +196,7 @@ impl SessionRuntime {
             }
         }
 
-        self.store
-            .append_event(
-                thread_key,
-                Some(&execution.execution_id),
-                "session.execution_completed",
-                json!({
-                    "execution_id": execution.execution_id,
-                    "thread_key": thread_key.as_str(),
-                    "completion_reason": "input_accepted",
-                }),
-            )
-            .await?;
-
-        Ok(self
-            .store
-            .complete_execution(&execution.execution_id)
-            .await?)
+        Ok(execution)
     }
 
     pub async fn stream_events(
@@ -270,6 +267,7 @@ impl SessionRuntime {
                 io.stdin,
                 LinesCodec::new_with_max_length(MAX_SESSION_OUTPUT_LINE_BYTES),
             ))),
+            active_execution: ActiveExecution::default(),
         };
 
         self.sandbox_pipes
@@ -284,16 +282,25 @@ impl SessionRuntime {
         let stderr = io.stderr;
         let guard = io.guard;
         let stderr_key = pump_key.clone();
+        let active_execution = pipe.active_execution.clone();
 
         tokio::spawn(async move {
-            let result =
-                run_stdout_pump(store.clone(), thread_key.clone(), &pump_key, stdout, guard).await;
+            let result = run_stdout_pump(
+                store.clone(),
+                thread_key.clone(),
+                &pump_key,
+                stdout,
+                guard,
+                active_execution.clone(),
+            )
+            .await;
             if let Err(error) = result {
                 warn!(%pump_key, %error, "session stdout pump failed");
+                let execution_id = active_execution.current().await;
                 let _ = store
                     .append_event(
                         &thread_key,
-                        None,
+                        execution_id.as_deref(),
                         "session.stdout_pump_failed",
                         json!({
                             "sandbox_id": pump_key.as_str(),
@@ -312,6 +319,30 @@ impl SessionRuntime {
         });
 
         Ok(pipe)
+    }
+
+    async fn clear_active_execution(&self, sandbox_id: &str, execution_id: &str) {
+        let pipe = self.sandbox_pipes.lock().await.get(sandbox_id).cloned();
+        if let Some(pipe) = pipe {
+            pipe.active_execution.clear_if_current(execution_id).await;
+        }
+    }
+}
+
+impl ActiveExecution {
+    async fn set(&self, execution_id: Option<String>) {
+        *self.execution_id.lock().await = execution_id;
+    }
+
+    async fn current(&self) -> Option<String> {
+        self.execution_id.lock().await.clone()
+    }
+
+    async fn clear_if_current(&self, execution_id: &str) {
+        let mut current = self.execution_id.lock().await;
+        if current.as_deref() == Some(execution_id) {
+            *current = None;
+        }
     }
 }
 
@@ -383,8 +414,8 @@ printf '%s\n' '{"type":"system","subtype":"wrapper_heartbeat","phase":"app_serve
 sleep 0.2
 printf '%s\n' '{"type":"thread.started","thread_id":"mock-codex-thread"}'
 sleep 0.2
-turn_index=1
-while [ "$turn_index" -le 3 ]; do
+turn_index="${turn_index:-0}"
+turn_index=$((turn_index + 1))
   turn_id="mock-turn-$turn_index"
   printf '{"type":"turn.started","turn_id":"%s"}\n' "$turn_id"
   sleep 0.2
@@ -392,8 +423,6 @@ while [ "$turn_index" -le 3 ]; do
   sleep 0.2
   printf '{"type":"turn.completed","turn":{"id":"%s"},"usage":{"input_tokens":0,"output_tokens":1}}\n' "$turn_id"
   sleep 0.2
-  turn_index=$((turn_index + 1))
-done
 done"#
 }
 
@@ -471,6 +500,7 @@ async fn run_stdout_pump(
     sandbox_id: &str,
     stdout: SandboxRead,
     _guard: SandboxIoGuard,
+    active_execution: ActiveExecution,
 ) -> Result<(), SessionRuntimeError> {
     let mut stdout = FramedRead::new(
         stdout,
@@ -478,12 +508,37 @@ async fn run_stdout_pump(
     );
     while let Some(line) = stdout.next().await {
         let line = line.map_err(codec_error_to_runtime)?;
-        append_output_line(&store, &thread_key, None, &line).await?;
+        let execution_id = active_execution.current().await;
+        append_output_line(&store, &thread_key, execution_id.as_deref(), &line).await?;
+        if let (Some(execution_id), Some(terminal)) =
+            (execution_id.as_deref(), terminal_output_line(&line))
+        {
+            finish_execution_from_output(&store, &thread_key, execution_id, terminal).await?;
+            active_execution.clear_if_current(execution_id).await;
+        }
+    }
+    let execution_id = active_execution.current().await;
+    if let Some(execution_id) = execution_id.as_deref() {
+        let error = "sandbox stdout closed before terminal output";
+        store
+            .append_event(
+                &thread_key,
+                Some(execution_id),
+                "session.execution_failed",
+                json!({
+                    "execution_id": execution_id,
+                    "thread_key": thread_key.as_str(),
+                    "error": error,
+                }),
+            )
+            .await?;
+        store.fail_execution(execution_id, error).await?;
+        active_execution.clear_if_current(execution_id).await;
     }
     store
         .append_event(
             &thread_key,
-            None,
+            execution_id.as_deref(),
             "session.stdout_eof",
             json!({
                 "sandbox_id": sandbox_id,
@@ -491,6 +546,103 @@ async fn run_stdout_pump(
         )
         .await?;
     Ok(())
+}
+
+async fn finish_execution_from_output(
+    store: &PgSessionStore,
+    thread_key: &ThreadKey,
+    execution_id: &str,
+    terminal: TerminalOutput,
+) -> Result<(), SessionRuntimeError> {
+    match terminal {
+        TerminalOutput::Completed => {
+            store
+                .append_event(
+                    thread_key,
+                    Some(execution_id),
+                    "session.execution_completed",
+                    json!({
+                        "execution_id": execution_id,
+                        "thread_key": thread_key.as_str(),
+                        "completion_reason": "terminal_output",
+                    }),
+                )
+                .await?;
+            store.complete_execution(execution_id).await?;
+        }
+        TerminalOutput::Failed { error } => {
+            store
+                .append_event(
+                    thread_key,
+                    Some(execution_id),
+                    "session.execution_failed",
+                    json!({
+                        "execution_id": execution_id,
+                        "thread_key": thread_key.as_str(),
+                        "error": error,
+                    }),
+                )
+                .await?;
+            store.fail_execution(execution_id, &error).await?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TerminalOutput {
+    Completed,
+    Failed { error: String },
+}
+
+fn terminal_output_line(line: &str) -> Option<TerminalOutput> {
+    let payload = serde_json::from_str::<Value>(line).ok()?;
+    let event_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let method = payload
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    match (event_type, method) {
+        ("turn.completed" | "turn.done", _) | ("", "turn/completed") => {
+            Some(TerminalOutput::Completed)
+        }
+        ("result", _) if payload.get("subtype").and_then(Value::as_str) != Some("error") => {
+            Some(TerminalOutput::Completed)
+        }
+        ("turn.failed" | "error", _) | ("", "turn/failed" | "error") => {
+            Some(TerminalOutput::Failed {
+                error: terminal_error_message(&payload),
+            })
+        }
+        ("result", _) => Some(TerminalOutput::Failed {
+            error: terminal_error_message(&payload),
+        }),
+        _ => None,
+    }
+}
+
+fn terminal_error_message(payload: &Value) -> String {
+    if let Some(params) = payload.get("params")
+        && let Some(message) = terminal_error_message_value(params)
+    {
+        return message;
+    }
+    terminal_error_message_value(payload).unwrap_or_else(|| "execution failed".to_owned())
+}
+
+fn terminal_error_message_value(payload: &Value) -> Option<String> {
+    for key in ["error", "message", "result"] {
+        match payload.get(key) {
+            Some(Value::String(value)) if !value.trim().is_empty() => return Some(value.clone()),
+            Some(value) if value.is_object() || value.is_array() => return Some(value.to_string()),
+            _ => {}
+        }
+    }
+    None
 }
 
 async fn drain_stderr(mut stderr: SandboxRead) -> Result<(), SessionRuntimeError> {
@@ -583,4 +735,58 @@ pub enum SessionRuntimeError {
     Store(#[from] SessionStoreError),
     #[error(transparent)]
     Sandbox(#[from] SandboxError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TerminalOutput, terminal_output_line};
+
+    #[test]
+    fn terminal_output_line_matches_codex_type_events() {
+        assert_eq!(
+            terminal_output_line(r#"{"type":"turn.completed","turn":{"id":"turn-1"}}"#),
+            Some(TerminalOutput::Completed)
+        );
+        assert_eq!(
+            terminal_output_line(r#"{"type":"turn.done","result":"done"}"#),
+            Some(TerminalOutput::Completed)
+        );
+    }
+
+    #[test]
+    fn terminal_output_line_matches_app_server_methods() {
+        assert_eq!(
+            terminal_output_line(
+                r#"{"method":"turn/completed","params":{"turn":{"id":"turn-1"}}}"#
+            ),
+            Some(TerminalOutput::Completed)
+        );
+    }
+
+    #[test]
+    fn terminal_output_line_extracts_failures() {
+        assert_eq!(
+            terminal_output_line(r#"{"type":"turn.failed","error":"model stopped"}"#),
+            Some(TerminalOutput::Failed {
+                error: "model stopped".to_owned()
+            })
+        );
+        assert_eq!(
+            terminal_output_line(r#"{"method":"error","params":{"message":"boom"}}"#),
+            Some(TerminalOutput::Failed {
+                error: "boom".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_output_line_ignores_non_terminal_output() {
+        assert_eq!(
+            terminal_output_line(
+                r#"{"type":"item.agentMessage.delta","itemId":"msg-1","delta":"hello"}"#
+            ),
+            None
+        );
+        assert_eq!(terminal_output_line("not json"), None);
+    }
 }
