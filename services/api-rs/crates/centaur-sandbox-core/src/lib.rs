@@ -16,4 +16,4 @@ pub use io::{OutputStream, ReadOptions, ReadResult, WriteAck};
 pub use lifecycle::{
     DesiredSandboxState, ObservedSandbox, SandboxHandle, SandboxId, SandboxStatus,
 };
-pub use spec::{EnvVar, ExecCommand, ExecResult, Mount, MountKind, ResourceLimits, SandboxSpec};
+pub use spec::{EnvVar, Mount, MountKind, ResourceLimits, SandboxSpec};

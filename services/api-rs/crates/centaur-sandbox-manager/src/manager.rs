@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use centaur_sandbox_core::{
-    DesiredSandboxState, ExecCommand, ExecResult, ObservedSandbox, ReadOptions, ReadResult,
-    SandboxBackend, SandboxHandle, SandboxId, SandboxResult, SandboxSpec, SandboxStatus, WriteAck,
+    DesiredSandboxState, ObservedSandbox, ReadOptions, ReadResult, SandboxBackend, SandboxHandle,
+    SandboxId, SandboxResult, SandboxSpec, SandboxStatus, WriteAck,
 };
 
 use crate::{
@@ -95,14 +95,6 @@ where
         self.backend.stop(id).await?;
         self.store.set(id.clone(), DesiredSandboxState::Stopped);
         Ok(())
-    }
-
-    pub async fn exec(&self, id: &SandboxId, command: ExecCommand) -> SandboxResult<ExecResult> {
-        self.backend.exec(id, command).await
-    }
-
-    pub async fn interrupt(&self, id: &SandboxId) -> SandboxResult<()> {
-        self.backend.interrupt(id).await
     }
 
     pub async fn reconcile_one(&self, id: &SandboxId) -> SandboxResult<ReconcileOutcome> {

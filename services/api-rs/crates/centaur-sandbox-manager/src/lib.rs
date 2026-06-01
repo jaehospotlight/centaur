@@ -21,9 +21,9 @@ mod tests {
     use async_trait::async_trait;
     use bytes::Bytes;
     use centaur_sandbox_core::{
-        DesiredSandboxState, ExecCommand, ExecResult, ObservedSandbox, ReadOptions, ReadResult,
-        SandboxBackend, SandboxError, SandboxHandle, SandboxId, SandboxResult, SandboxSpec,
-        SandboxStatus, WriteAck,
+        DesiredSandboxState, ObservedSandbox, ReadOptions, ReadResult, SandboxBackend,
+        SandboxError, SandboxHandle, SandboxId, SandboxResult, SandboxSpec, SandboxStatus,
+        WriteAck,
     };
 
     use super::{DriftReason, ReconcileOutcome, SandboxManager};
@@ -301,14 +301,6 @@ mod tests {
             self.maybe_fail("resume")?;
             self.set_status(id, SandboxStatus::Running);
             Ok(())
-        }
-
-        async fn exec(&self, _id: &SandboxId, _command: ExecCommand) -> SandboxResult<ExecResult> {
-            unreachable!("reconciliation should not exec")
-        }
-
-        async fn interrupt(&self, _id: &SandboxId) -> SandboxResult<()> {
-            unreachable!("reconciliation should not interrupt")
         }
     }
 }

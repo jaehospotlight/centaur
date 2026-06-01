@@ -15,11 +15,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use bytes::Bytes;
 use centaur_sandbox_core::{
-    ExecCommand, ExecResult, MountKind, ObservedSandbox, ReadOptions, ReadResult, SandboxBackend,
-    SandboxError, SandboxHandle, SandboxId, SandboxResult, SandboxSpec, SandboxStatus, WriteAck,
+    MountKind, ObservedSandbox, ReadOptions, ReadResult, SandboxBackend, SandboxError,
+    SandboxHandle, SandboxId, SandboxResult, SandboxSpec, SandboxStatus, WriteAck,
 };
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use kube::api::{
     AttachParams, AttachedProcess, DeleteParams, ListParams, Patch, PatchParams, PostParams,
 };
@@ -350,13 +349,7 @@ impl SandboxBackend for AgentSandboxBackend {
 
     async fn observe(&self, id: &SandboxId) -> SandboxResult<ObservedSandbox> {
         let status = self.status(id).await?;
-        let generation = self
-            .get_sandbox(id)
-            .await?
-            .and_then(|sandbox| sandbox.metadata.resource_version);
-        let mut observed = ObservedSandbox::new(id.clone(), BACKEND_NAME, status);
-        observed.generation = generation;
-        Ok(observed)
+        Ok(ObservedSandbox::new(id.clone(), BACKEND_NAME, status))
     }
 
     async fn list_observed(&self) -> SandboxResult<Vec<ObservedSandbox>> {
@@ -399,46 +392,6 @@ impl SandboxBackend for AgentSandboxBackend {
     async fn resume(&self, id: &SandboxId) -> SandboxResult<()> {
         self.patch_replicas(id, 1).await?;
         self.wait_until_running(id).await
-    }
-
-    async fn exec(&self, id: &SandboxId, command: ExecCommand) -> SandboxResult<ExecResult> {
-        validate_kubernetes_exec_command(&command)?;
-        let params = AttachParams::default()
-            .container(self.config.container_name.clone())
-            .stdin(false)
-            .stdout(true)
-            .stderr(true)
-            .tty(false);
-        let mut attached = self
-            .pods()
-            .exec(id.as_str(), command.argv, &params)
-            .await
-            .map_err(|err| map_kube_error("exec sandbox pod", err))?;
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        if let Some(mut reader) = attached.stdout() {
-            reader
-                .read_to_end(&mut stdout)
-                .await
-                .map_err(|err| SandboxError::Io(format!("failed to read exec stdout: {err}")))?;
-        }
-        if let Some(mut reader) = attached.stderr() {
-            reader
-                .read_to_end(&mut stderr)
-                .await
-                .map_err(|err| SandboxError::Io(format!("failed to read exec stderr: {err}")))?;
-        }
-        let exit_code = match attached.take_status() {
-            Some(status) => status
-                .await
-                .map_or(-1, |status| exec_status_exit_code(&status)),
-            None => -1,
-        };
-        Ok(ExecResult::new(exit_code, stdout, stderr))
-    }
-
-    async fn interrupt(&self, _id: &SandboxId) -> SandboxResult<()> {
-        Err(unsupported("interrupt"))
     }
 }
 
@@ -498,41 +451,6 @@ fn pod_ready(pod: &Pod) -> bool {
                 .iter()
                 .any(|condition| condition.type_ == "Ready" && condition.status == "True")
         })
-}
-
-fn exec_status_exit_code(status: &Status) -> i32 {
-    if status.status.as_deref() == Some("Success") {
-        return 0;
-    }
-    status
-        .details
-        .as_ref()
-        .and_then(|details| details.causes.as_ref())
-        .and_then(|causes| {
-            causes
-                .iter()
-                .find(|cause| cause.reason.as_deref() == Some("ExitCode"))
-                .and_then(|cause| cause.message.as_deref())
-                .and_then(|message| message.parse::<i32>().ok())
-        })
-        .unwrap_or(1)
-}
-
-fn validate_kubernetes_exec_command(command: &ExecCommand) -> SandboxResult<()> {
-    if command.argv.is_empty() {
-        return Err(SandboxError::InvalidSpec("exec argv is empty".to_owned()));
-    }
-    if !command.env.is_empty() {
-        return Err(SandboxError::InvalidSpec(
-            "kubernetes exec does not support per-command env".to_owned(),
-        ));
-    }
-    if command.working_dir.is_some() {
-        return Err(SandboxError::InvalidSpec(
-            "kubernetes exec does not support per-command working_dir".to_owned(),
-        ));
-    }
-    Ok(())
 }
 
 fn build_agent_sandbox(
@@ -720,13 +638,6 @@ fn next_sandbox_name() -> String {
     format!("asbx-{millis}-{sequence}")
 }
 
-fn unsupported(operation: &'static str) -> SandboxError {
-    SandboxError::Unsupported {
-        backend: BACKEND_NAME,
-        operation,
-    }
-}
-
 fn is_not_found(err: &Error) -> bool {
     matches!(err, Error::Api(api_error) if api_error.code == 404)
 }
@@ -741,9 +652,8 @@ fn map_kube_error(operation: &str, err: Error) -> SandboxError {
 
 #[cfg(test)]
 mod tests {
-    use centaur_sandbox_core::{ExecCommand, ResourceLimits, SandboxError, SandboxSpec};
+    use centaur_sandbox_core::{ResourceLimits, SandboxSpec};
     use k8s_openapi::api::core::v1::{PodCondition, PodStatus};
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{StatusCause, StatusDetails};
 
     use super::*;
 
@@ -815,44 +725,6 @@ mod tests {
         assert_eq!(
             state_pvc_name(&SandboxId::new("asbx-test")),
             "state-asbx-test"
-        );
-    }
-
-    #[test]
-    fn preserves_kubernetes_exec_exit_code() {
-        let status = Status {
-            status: Some("Failure".to_owned()),
-            details: Some(StatusDetails {
-                causes: Some(vec![StatusCause {
-                    reason: Some("ExitCode".to_owned()),
-                    message: Some("42".to_owned()),
-                    ..StatusCause::default()
-                }]),
-                ..StatusDetails::default()
-            }),
-            ..Status::default()
-        };
-        assert_eq!(exec_status_exit_code(&status), 42);
-
-        let status = Status {
-            status: Some("Success".to_owned()),
-            ..Status::default()
-        };
-        assert_eq!(exec_status_exit_code(&status), 0);
-    }
-
-    #[test]
-    fn rejects_unsupported_kubernetes_exec_options() {
-        let err = validate_kubernetes_exec_command(&ExecCommand::new(["/bin/true"]).env("A", "B"))
-            .unwrap_err();
-        assert!(matches!(err, SandboxError::InvalidSpec(message) if message.contains("env")));
-
-        let err = validate_kubernetes_exec_command(
-            &ExecCommand::new(["/bin/true"]).working_dir("/workspace"),
-        )
-        .unwrap_err();
-        assert!(
-            matches!(err, SandboxError::InvalidSpec(message) if message.contains("working_dir"))
         );
     }
 
