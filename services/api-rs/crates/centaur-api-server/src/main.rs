@@ -294,6 +294,11 @@ fn codex_app_server_env_template(args: &Args) -> Vec<(String, String)> {
     {
         push_env(&mut envs, "CENTAUR_API_KEY", api_key.to_owned());
     }
+    for name in ["CLAUDE_CODE_AUTH_MODE", "CODEX_AUTH_MODE"] {
+        if let Ok(value) = env::var(name) {
+            push_env(&mut envs, name, value);
+        }
+    }
 
     for name in &args.session_sandbox_passthrough_env {
         if let Ok(value) = env::var(name) {
