@@ -2,6 +2,10 @@
 {{- if not .Values.repoCache.repositories }}
 {{- fail "repoCache.repositories must contain at least one owner/repo entry when repoCache.enabled=true" }}
 {{- end }}
+{{- $authMode := default "iron-proxy" .Values.repoCache.authMode -}}
+{{- if not (or (eq $authMode "iron-proxy") (eq $authMode "github-token")) }}
+{{- fail "repoCache.authMode must be one of: iron-proxy, github-token" }}
+{{- end }}
 {{- $repoCacheImageRepository := default .Values.sandbox.image.repository .Values.repoCache.image.repository -}}
 {{- $repoCacheImageTag := default .Values.sandbox.image.tag .Values.repoCache.image.tag -}}
 {{- $repoCacheImagePullPolicy := default .Values.sandbox.image.pullPolicy .Values.repoCache.image.pullPolicy -}}
@@ -46,49 +50,77 @@ spec:
             - -ec
             - |
               set -o pipefail
-              token_file=/github-token/token
-              if [ ! -s "$token_file" ]; then
-                echo "GitHub token file is missing or empty: $token_file" >&2
-                exit 1
-              fi
 
-              cat > /tmp/git-askpass <<'EOF'
-              #!/bin/sh
-              case "$1" in
-                *Username*) printf '%s\n' x-access-token ;;
-                *Password*) cat /github-token/token ;;
-                *) printf '\n' ;;
+              case "$REPO_CACHE_AUTH_MODE" in
+                iron-proxy)
+                  : "${GITHUB_TOKEN_PLACEHOLDER:=GITHUB_TOKEN}"
+                  if ! command -v gh >/dev/null 2>&1; then
+                    echo "repoCache.authMode=iron-proxy requires the GitHub CLI (gh) in the repo-cache image" >&2
+                    exit 1
+                  fi
+                  printf '%s\n' "$GITHUB_TOKEN_PLACEHOLDER" | gh auth login --hostname github.com --with-token >/dev/null
+                  gh auth setup-git --hostname github.com >/dev/null
+                  git config --global http.sslCAInfo /firewall-certs/ca-cert.pem
+                  ;;
+                github-token)
+                  token_file=/github-token/token
+                  if [ ! -s "$token_file" ]; then
+                    echo "GitHub token file is missing or empty: $token_file" >&2
+                    exit 1
+                  fi
+
+                  printf '%s\n' \
+                    '#!/bin/sh' \
+                    'case "$1" in' \
+                    '  *Username*) printf "%s\n" x-access-token ;;' \
+                    '  *Password*) cat /github-token/token ;;' \
+                    '  *) printf "\n" ;;' \
+                    'esac' > /tmp/git-askpass
+                  chmod 0700 /tmp/git-askpass
+                  export GIT_ASKPASS=/tmp/git-askpass
+                  ;;
+                *)
+                  echo "Unsupported REPO_CACHE_AUTH_MODE=${REPO_CACHE_AUTH_MODE}" >&2
+                  exit 2
+                  ;;
               esac
-              EOF
-              chmod 0700 /tmp/git-askpass
-              export GIT_ASKPASS=/tmp/git-askpass
               git config --global --add safe.directory '*'
               git config --global init.defaultBranch main
               umask 022
+
+              default_branch_for() {
+                repo_url="$1"
+                branch="$(git ls-remote --symref "$repo_url" HEAD 2>/dev/null | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+                if [ -z "$branch" ] || [ "$branch" = "(unknown)" ]; then
+                  branch=main
+                fi
+                printf '%s\n' "$branch"
+              }
 
               sync_repo() {
                 repo="$1"
                 repo_url="https://github.com/${repo}.git"
                 target="/cache/${repo}"
-                tmp="${target}.tmp.$$"
+                tmp="${target}.tmp.${HOSTNAME:-repo-cache}.${RANDOM:-0}"
+                default_branch="$(default_branch_for "$repo_url")"
 
                 mkdir -p "$(dirname "$target")"
                 if git -C "$target" rev-parse --git-dir >/dev/null 2>&1; then
                   echo "Updating $repo"
                   git -C "$target" config gc.auto 0 || true
                   git -C "$target" remote set-url origin "$repo_url" || git -C "$target" remote add origin "$repo_url"
-                  git -C "$target" -c gc.auto=0 fetch --prune --tags origin
-                  git -C "$target" remote set-head origin -a || true
-                  default_branch="$(git -C "$target" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
-                  if [ -z "$default_branch" ] || [ "$default_branch" = "(unknown)" ]; then
-                    default_branch=main
-                  fi
+                  git -C "$target" -c gc.auto=0 fetch --depth 1 --prune origin "+refs/heads/${default_branch}:refs/remotes/origin/${default_branch}"
+                  git -C "$target" remote set-head origin "$default_branch" || true
                   git -C "$target" checkout -q -B "$default_branch" "origin/$default_branch"
+                  git -C "$target" reset --hard -q "origin/$default_branch"
                   git -C "$target" clean -fd
                 else
                   echo "Cloning $repo"
                   rm -rf "$tmp" "$target"
-                  git clone --quiet "$repo_url" "$tmp"
+                  git clone --quiet --depth 1 --single-branch --branch "$default_branch" "$repo_url" "$tmp" || {
+                    rm -rf "$tmp"
+                    return 1
+                  }
                   git -C "$tmp" config gc.auto 0
                   mv "$tmp" "$target"
                 fi
@@ -109,6 +141,32 @@ spec:
               value: {{ .Values.repoCache.syncIntervalSeconds | quote }}
             - name: GIT_TERMINAL_PROMPT
               value: "0"
+            - name: REPO_CACHE_AUTH_MODE
+              value: {{ $authMode | quote }}
+{{- if eq $authMode "iron-proxy" }}
+            - name: GITHUB_TOKEN_PLACEHOLDER
+              value: {{ .Values.repoCache.ironProxy.githubTokenPlaceholder | quote }}
+            - name: HTTPS_PROXY
+              value: {{ include "centaur.firewallProxyUrl" . | quote }}
+            - name: HTTP_PROXY
+              value: {{ include "centaur.firewallProxyUrl" . | quote }}
+            - name: https_proxy
+              value: {{ include "centaur.firewallProxyUrl" . | quote }}
+            - name: http_proxy
+              value: {{ include "centaur.firewallProxyUrl" . | quote }}
+            - name: NO_PROXY
+              value: {{ printf "localhost,127.0.0.1,%s" (include "centaur.firewallNoProxyHosts" .) | quote }}
+            - name: no_proxy
+              value: {{ printf "localhost,127.0.0.1,%s" (include "centaur.firewallNoProxyHosts" .) | quote }}
+            - name: GIT_SSL_CAINFO
+              value: /firewall-certs/ca-cert.pem
+            - name: CURL_CA_BUNDLE
+              value: /firewall-certs/ca-cert.pem
+            - name: SSL_CERT_FILE
+              value: /firewall-certs/ca-cert.pem
+            - name: REQUESTS_CA_BUNDLE
+              value: /firewall-certs/ca-cert.pem
+{{- end }}
           readinessProbe:
             exec:
               command:
@@ -134,14 +192,25 @@ spec:
           volumeMounts:
             - name: repo-cache
               mountPath: /cache
+{{- if eq $authMode "iron-proxy" }}
+            - name: firewall-ca
+              mountPath: /firewall-certs
+              readOnly: true
+{{- else if eq $authMode "github-token" }}
             - name: github-token
               mountPath: /github-token
               readOnly: true
+{{- end }}
       volumes:
         - name: repo-cache
           hostPath:
             path: {{ .Values.repoCache.hostPath | quote }}
             type: DirectoryOrCreate
+{{- if eq $authMode "iron-proxy" }}
+        - name: firewall-ca
+          secret:
+            secretName: {{ include "centaur.trustedCaSecretName" . }}
+{{- else if eq $authMode "github-token" }}
         - name: github-token
           secret:
             secretName: {{ include "centaur.repoCacheGithubTokenSecretName" . }}
@@ -149,4 +218,5 @@ spec:
             items:
               - key: {{ .Values.repoCache.githubToken.secretKey | quote }}
                 path: token
+{{- end }}
 {{- end }}

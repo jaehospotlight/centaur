@@ -151,6 +151,10 @@ sandbox:
 
 repoCache:
   enabled: false
+  # iron-proxy uses gh auth + the shared Centaur GitHub credential without
+  # mounting a PAT into the repo-cache pod. Set to github-token to use
+  # repoCache.githubToken.
+  authMode: iron-proxy
   hostPath: /var/lib/centaur/repos
   repositories: []
   syncIntervalSeconds: 300
@@ -158,6 +162,8 @@ repoCache:
     repository: ""
     tag: ""
     pullPolicy: ""
+  ironProxy:
+    githubTokenPlaceholder: GITHUB_TOKEN
   githubToken:
     existingSecretName: ""
     secretKey: token

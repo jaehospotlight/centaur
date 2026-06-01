@@ -75,6 +75,14 @@ so a sandbox can use base or overlay tools that are mounted beside the working
 repo. The sandbox image only needs the language toolchains (`uv`, Rust, Go,
 Node, shell); the CLI inventory comes from mounted source.
 
+On Kubernetes, enable the Helm `repoCache` DaemonSet to keep configured GitHub
+repositories synced into the node-local repo cache and mount that cache into
+sandboxes at `~/github`. By default repo-cache authenticates through the shared
+iron-proxy GitHub credential using `gh auth setup-git`, so operators do not need
+to configure a separate GitHub PAT for the cache. Set
+`repoCache.authMode=github-token` only when you explicitly want the repo-cache
+pod to mount its own GitHub token Secret.
+
 ## Secrets
 
 Secrets are resolved in this order:

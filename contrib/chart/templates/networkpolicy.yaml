@@ -239,6 +239,11 @@ spec:
         - podSelector:
             matchLabels:
               centaur.ai/component: workflow-run
+{{- if and .Values.repoCache.enabled (eq (default "iron-proxy" .Values.repoCache.authMode) "iron-proxy") }}
+        - podSelector:
+            matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "repo-cache") | nindent 14 }}
+{{- end }}
 {{- range .Values.runnerAccess.allowedCidrs }}
         - ipBlock:
             cidr: {{ . | quote }}
@@ -308,8 +313,9 @@ spec:
         - protocol: TCP
           port: 443
 ---
-{{- end }}
-{{- if .Values.repoCache.enabled }}
+{{ end }}
+{{ if .Values.repoCache.enabled }}
+{{ $repoCacheAuthMode := default "iron-proxy" .Values.repoCache.authMode -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -323,10 +329,21 @@ spec:
   policyTypes:
     - Egress
   egress:
+{{- if eq $repoCacheAuthMode "iron-proxy" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              centaur.ai/iron-proxy: "true"
+              centaur.ai/sandbox-id: api
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ironProxy.service.proxyPort }}
+{{- else }}
 {{- range .Values.repoCache.egressPorts }}
     - ports:
         - protocol: TCP
           port: {{ . }}
+{{- end }}
 {{- end }}
 ---
 {{- end }}
