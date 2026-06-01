@@ -94,6 +94,7 @@ pub struct IronProxyPodConfig {
     pub op_connect_app_name: String,
     pub op_connect_port: u16,
     pub api_pod_labels: BTreeMap<String, String>,
+    pub token_broker_pod_labels: BTreeMap<String, String>,
     pub env_from_secret_names: Vec<String>,
     pub secret_env_name: Option<String>,
     pub secret_env_prefix: String,
@@ -123,6 +124,10 @@ impl IronProxyPodConfig {
             api_pod_labels: BTreeMap::from([(
                 "app.kubernetes.io/component".to_owned(),
                 "api".to_owned(),
+            )]),
+            token_broker_pod_labels: BTreeMap::from([(
+                "app.kubernetes.io/component".to_owned(),
+                "token-broker".to_owned(),
             )]),
             env_from_secret_names: Vec::new(),
             secret_env_name: None,
@@ -1352,22 +1357,12 @@ fn build_iron_proxy_network_policies(
                     "to": [{"podSelector": {"matchLabels": iron_proxy.api_pod_labels.clone()}}],
                     "ports": [{"protocol": "TCP", "port": 8000}],
                 },
-                {
-                    "ports": [
-                        {"protocol": "UDP", "port": 53},
-                        {"protocol": "TCP", "port": 53},
-                    ],
-                },
+                dns_egress_rule(),
             ],
         },
     });
     let mut proxy_egress = vec![
-        json!({
-            "ports": [
-                {"protocol": "UDP", "port": 53},
-                {"protocol": "TCP", "port": 53},
-            ],
-        }),
+        dns_egress_rule(),
         json!({
             "to": [{"podSelector": {"matchLabels": iron_proxy.api_pod_labels.clone()}}],
             "ports": [{"protocol": "TCP", "port": 8000}],
@@ -1376,10 +1371,15 @@ fn build_iron_proxy_network_policies(
             "ports": [
                 {"protocol": "TCP", "port": 443},
                 {"protocol": "TCP", "port": 5432},
-                {"protocol": "TCP", "port": 8181},
             ],
         }),
     ];
+    if let Some(broker_port) = iron_proxy_broker_port(iron_proxy) {
+        proxy_egress.push(json!({
+            "to": [{"podSelector": {"matchLabels": iron_proxy.token_broker_pod_labels.clone()}}],
+            "ports": [{"protocol": "TCP", "port": broker_port}],
+        }));
+    }
     if matches!(
         iron_proxy.source_policy.kind,
         SourceKind::OnePasswordConnect
@@ -1416,6 +1416,42 @@ fn build_iron_proxy_network_policies(
             })
         })
         .collect()
+}
+
+fn dns_egress_rule() -> Value {
+    json!({
+        "to": [{
+            "namespaceSelector": {
+                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
+            },
+        }],
+        "ports": [
+            {"protocol": "UDP", "port": 53},
+            {"protocol": "TCP", "port": 53},
+        ],
+    })
+}
+
+fn iron_proxy_broker_port(iron_proxy: &IronProxyPodConfig) -> Option<u16> {
+    iron_proxy
+        .extra_env
+        .get("IRON_BROKER_URL")
+        .map(|url| url_port(url).unwrap_or(centaur_iron_proxy::DEFAULT_BROKER_LISTEN_PORT))
+        .or_else(|| {
+            iron_proxy
+                .token_broker_name
+                .as_ref()
+                .map(|_| centaur_iron_proxy::DEFAULT_BROKER_LISTEN_PORT)
+        })
+}
+
+fn url_port(value: &str) -> Option<u16> {
+    let without_scheme = value
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(value);
+    let authority = without_scheme.split('/').next()?.trim();
+    authority.rsplit_once(':')?.1.parse().ok()
 }
 
 fn resources_json(spec: &SandboxSpec) -> Option<Value> {
@@ -1930,6 +1966,20 @@ mod tests {
                     .any(|port| port["port"] == 443))
         );
         assert!(
+            policy_json["asbx-test-sandbox-egress"]["spec"]["egress"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule["to"][0]["namespaceSelector"]["matchLabels"]
+                    ["kubernetes.io/metadata.name"]
+                    == "kube-system"
+                    && rule["ports"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|port| port["port"] == 53))
+        );
+        assert!(
             policy_json["asbx-test-proxy-net"]["spec"]["egress"]
                 .as_array()
                 .unwrap()
@@ -1937,6 +1987,16 @@ mod tests {
                 .any(|rule| rule["to"][0]["podSelector"]["matchLabels"]["app"]
                     == "onepassword-connect"
                     && rule["ports"][0]["port"] == 8080)
+        );
+        assert!(
+            policy_json["asbx-test-proxy-net"]["spec"]["egress"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule["to"][0]["podSelector"]["matchLabels"]
+                    ["app.kubernetes.io/component"]
+                    == "token-broker"
+                    && rule["ports"][0]["port"] == 8181)
         );
     }
 
