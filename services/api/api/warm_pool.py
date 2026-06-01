@@ -40,6 +40,12 @@ POOL_EVICT_ON_STARTUP = os.getenv("WARM_POOL_EVICT_ON_STARTUP", "1").lower() not
     "false",
     "no",
 )
+# Bulk-stop concurrency for startup eviction and the orphan sweep.
+POOL_STOP_CONCURRENCY = int(os.getenv("WARM_POOL_STOP_CONCURRENCY", "8"))
+# Reap untracked/unassigned warm sandboxes every Nth replenish cycle (0 disables).
+POOL_ORPHAN_SWEEP_EVERY = int(os.getenv("WARM_POOL_ORPHAN_SWEEP_EVERY", "12"))
+# Grace period before an orphan is reaped, to avoid racing a just-spawned/claimed sandbox.
+POOL_ORPHAN_GRACE_SECONDS = float(os.getenv("WARM_POOL_ORPHAN_GRACE_SECONDS", "300"))
 
 
 @dataclass
@@ -57,6 +63,8 @@ class WarmContainer:
 _pool_lock = asyncio.Lock()
 _pool: list[WarmContainer] = []
 _replenish_task: asyncio.Task | None = None
+# sandbox_id -> first time observed as an orphan (grace-period tracking).
+_orphan_seen: dict[str, float] = {}
 
 
 def _repo_root() -> Path:
@@ -443,7 +451,6 @@ async def _evict_existing_warm(assigned_sandbox_ids: set[str] | None = None) -> 
     """
     assigned = assigned_sandbox_ids or set()
     backend = get_backend()
-    evicted = 0
     try:
         sessions = await asyncio.wait_for(
             backend.recover_warm(POOL_HARNESS),
@@ -452,22 +459,81 @@ async def _evict_existing_warm(assigned_sandbox_ids: set[str] | None = None) -> 
     except Exception as exc:
         log.warning("warm_pool_evict_list_failed", error=str(exc))
         return 0
-    for session in sessions:
-        if session.sandbox_id in assigned:
-            continue
-        try:
-            await asyncio.wait_for(
-                backend.stop_by_id(session.sandbox_id),
-                timeout=POOL_BACKEND_TIMEOUT,
-            )
-            evicted += 1
-        except Exception as exc:
-            log.warning(
-                "warm_pool_evict_stop_failed",
-                sandbox=session.sandbox_id[:12],
-                error=str(exc),
-            )
-    return evicted
+    targets = [s.sandbox_id for s in sessions if s.sandbox_id not in assigned]
+    return await _stop_warm_many(targets)
+
+
+async def _stop_warm_many(sandbox_ids: list[str]) -> int:
+    """Stop many warm sandboxes with bounded concurrency. Returns count stopped."""
+    if not sandbox_ids:
+        return 0
+    backend = get_backend()
+    sem = asyncio.Semaphore(max(1, POOL_STOP_CONCURRENCY))
+
+    async def _stop_one(sandbox_id: str) -> bool:
+        async with sem:
+            try:
+                await asyncio.wait_for(
+                    backend.stop_by_id(sandbox_id),
+                    timeout=POOL_BACKEND_TIMEOUT,
+                )
+                return True
+            except Exception as exc:
+                log.warning(
+                    "warm_pool_evict_stop_failed",
+                    sandbox=sandbox_id[:12],
+                    error=str(exc),
+                )
+                return False
+
+    results = await asyncio.gather(*(_stop_one(sid) for sid in sandbox_ids))
+    return sum(1 for ok in results if ok)
+
+
+async def _sweep_orphan_warm(assigned_sandbox_ids: set[str] | None = None) -> int:
+    """Reap warm sandboxes present in the backend but untracked by this process.
+
+    Restarts drop the in-memory pool, so warm sandboxes from prior processes are
+    never re-listed into ``_pool`` and the replenish health-check never evicts
+    them. Stops backend warm sandboxes that are neither assigned nor pooled,
+    after a grace period so a just-spawned/claimed sandbox is never reaped.
+    """
+    assigned = assigned_sandbox_ids or set()
+    backend = get_backend()
+    try:
+        sessions = await asyncio.wait_for(
+            backend.recover_warm(POOL_HARNESS),
+            timeout=POOL_BACKEND_TIMEOUT * 2,
+        )
+    except Exception as exc:
+        log.warning("warm_pool_orphan_list_failed", error=str(exc))
+        return 0
+    async with _pool_lock:
+        tracked = {w.sandbox_id for w in _pool}
+    now = time.time()
+    current_orphans = {
+        s.sandbox_id
+        for s in sessions
+        if s.sandbox_id not in assigned and s.sandbox_id not in tracked
+    }
+    for sid in list(_orphan_seen):
+        if sid not in current_orphans:
+            _orphan_seen.pop(sid, None)
+    to_reap = []
+    for sid in current_orphans:
+        first_seen = _orphan_seen.setdefault(sid, now)
+        if now - first_seen >= POOL_ORPHAN_GRACE_SECONDS:
+            to_reap.append(sid)
+    reaped = await _stop_warm_many(to_reap)
+    for sid in to_reap:
+        _orphan_seen.pop(sid, None)
+    if reaped:
+        log.info(
+            "warm_pool_orphans_reaped",
+            reaped=reaped,
+            orphan_candidates=len(current_orphans),
+        )
+    return reaped
 
 
 async def _get_assigned_sandbox_ids() -> set[str]:
@@ -502,12 +568,19 @@ async def start_replenish_loop() -> asyncio.Task | None:
         count = await replenish()
         if count:
             log.info("warm_pool_initial_fill", spawned=count, target=POOL_SIZE)
+        cycle = 0
         while True:
             await asyncio.sleep(POOL_REPLENISH_INTERVAL)
             try:
                 await replenish()
             except Exception as exc:
                 log.warning("warm_pool_replenish_error", error=str(exc))
+            cycle += 1
+            if POOL_ORPHAN_SWEEP_EVERY and cycle % POOL_ORPHAN_SWEEP_EVERY == 0:
+                try:
+                    await _sweep_orphan_warm(await _get_assigned_sandbox_ids())
+                except Exception as exc:
+                    log.warning("warm_pool_orphan_sweep_error", error=str(exc))
 
     _replenish_task = asyncio.create_task(_loop())
     return _replenish_task
