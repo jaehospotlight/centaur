@@ -9,7 +9,7 @@ use centaur_session_core::{HarnessType, ThreadKey};
 
 use crate::SandboxWorkloadMode;
 
-type SandboxSpecFactory = Arc<dyn Fn(&ThreadKey, &HarnessType, &str) -> SandboxSpec + Send + Sync>;
+type SandboxSpecFactory = Arc<dyn Fn(&ThreadKey, &HarnessType) -> SandboxSpec + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SandboxRuntime {
@@ -19,9 +19,7 @@ pub struct SandboxRuntime {
 
 impl SandboxRuntime {
     pub fn backend(backend: Arc<dyn SandboxBackend>, spec: SandboxSpec) -> Self {
-        let spec_factory = move |_thread_key: &ThreadKey,
-                                 _harness_type: &HarnessType,
-                                 _execution_id: &str| { spec.clone() };
+        let spec_factory = move |_thread_key: &ThreadKey, _harness_type: &HarnessType| spec.clone();
         Self::backend_with_spec_factory(backend, spec_factory)
     }
 
@@ -30,7 +28,7 @@ impl SandboxRuntime {
         workload: SandboxWorkloadMode,
         auth_modes: HarnessAuthModes,
     ) -> Self {
-        Self::backend_with_spec_factory(backend, move |thread_key, harness_type, _execution_id| {
+        Self::backend_with_spec_factory(backend, move |thread_key, harness_type| {
             workload.spec(
                 thread_key,
                 auth_modes.credential_for(credential_profile_for(harness_type)),
@@ -40,7 +38,7 @@ impl SandboxRuntime {
 
     pub fn backend_with_spec_factory<F>(backend: Arc<dyn SandboxBackend>, spec_factory: F) -> Self
     where
-        F: Fn(&ThreadKey, &HarnessType, &str) -> SandboxSpec + Send + Sync + 'static,
+        F: Fn(&ThreadKey, &HarnessType) -> SandboxSpec + Send + Sync + 'static,
     {
         Self {
             manager: Arc::new(SandboxManager::new(backend)),
@@ -60,13 +58,8 @@ impl SandboxRuntime {
         self.manager.create_running(spec).await
     }
 
-    pub(super) fn spec(
-        &self,
-        thread_key: &ThreadKey,
-        harness_type: &HarnessType,
-        execution_id: &str,
-    ) -> SandboxSpec {
-        (self.spec_factory)(thread_key, harness_type, execution_id)
+    pub(super) fn spec(&self, thread_key: &ThreadKey, harness_type: &HarnessType) -> SandboxSpec {
+        (self.spec_factory)(thread_key, harness_type)
     }
 }
 

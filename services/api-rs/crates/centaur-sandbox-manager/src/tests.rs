@@ -11,14 +11,19 @@ use centaur_sandbox_core::{
 
 use crate::{DriftReason, ReconcileOutcome, SandboxManager};
 
+fn running() -> DesiredSandboxState {
+    DesiredSandboxState::Running(SandboxSpec::new("image"))
+}
+
+fn suspended() -> DesiredSandboxState {
+    DesiredSandboxState::Suspended(SandboxSpec::new("image"))
+}
+
 #[tokio::test]
 async fn reconcile_resumes_suspended_sandbox_desired_running() {
     let backend = Arc::new(FakeBackend::new([("sandbox-1", SandboxStatus::Suspended)]));
     let manager = SandboxManager::new(backend.clone());
-    manager.set_desired_state(
-        "sandbox-1".into(),
-        DesiredSandboxState::Running(SandboxSpec::new("image")),
-    );
+    manager.set_desired_state("sandbox-1".into(), running());
 
     let outcome = manager.reconcile_one(&"sandbox-1".into()).await.unwrap();
 
@@ -31,10 +36,7 @@ async fn reconcile_resumes_suspended_sandbox_desired_running() {
 async fn reconcile_pauses_running_sandbox_desired_suspended() {
     let backend = Arc::new(FakeBackend::new([("sandbox-1", SandboxStatus::Running)]));
     let manager = SandboxManager::new(backend.clone());
-    manager.set_desired_state(
-        "sandbox-1".into(),
-        DesiredSandboxState::Suspended(SandboxSpec::new("image")),
-    );
+    manager.set_desired_state("sandbox-1".into(), suspended());
 
     let outcome = manager.reconcile_one(&"sandbox-1".into()).await.unwrap();
 
@@ -63,10 +65,7 @@ async fn reconcile_stops_live_sandbox_desired_stopped() {
 async fn reconcile_reports_drift_when_running_sandbox_disappears() {
     let backend = Arc::new(FakeBackend::new([]));
     let manager = SandboxManager::new(backend.clone());
-    manager.set_desired_state(
-        "sandbox-1".into(),
-        DesiredSandboxState::Running(SandboxSpec::new("image")),
-    );
+    manager.set_desired_state("sandbox-1".into(), running());
 
     let outcome = manager.reconcile_one(&"sandbox-1".into()).await.unwrap();
 
@@ -82,10 +81,7 @@ async fn pause_keeps_desired_state_when_backend_pause_fails() {
     let backend = Arc::new(FakeBackend::new([("sandbox-1", SandboxStatus::Running)]));
     backend.fail_operation("pause");
     let manager = SandboxManager::new(backend.clone());
-    manager.set_desired_state(
-        "sandbox-1".into(),
-        DesiredSandboxState::Running(SandboxSpec::new("image")),
-    );
+    manager.set_desired_state("sandbox-1".into(), running());
 
     let err = manager.pause(&"sandbox-1".into()).await.unwrap_err();
 
@@ -105,14 +101,8 @@ async fn reconcile_all_reports_mixed_outcomes_after_partial_backend_loss() {
         ("stopped-but-running", SandboxStatus::Running),
     ]));
     let manager = SandboxManager::new(backend.clone());
-    manager.set_desired_state(
-        "running-but-suspended".into(),
-        DesiredSandboxState::Running(SandboxSpec::new("image")),
-    );
-    manager.set_desired_state(
-        "missing-running".into(),
-        DesiredSandboxState::Running(SandboxSpec::new("image")),
-    );
+    manager.set_desired_state("running-but-suspended".into(), running());
+    manager.set_desired_state("missing-running".into(), running());
     manager.set_desired_state("stopped-but-running".into(), DesiredSandboxState::Stopped);
 
     let mut outcomes = manager

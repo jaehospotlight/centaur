@@ -80,7 +80,6 @@ impl SessionRuntime {
                 thread_key,
                 &session.harness_type,
                 session.sandbox_id.as_deref(),
-                &execution.execution_id,
             )
             .await?;
 
@@ -174,7 +173,6 @@ impl SessionRuntime {
         thread_key: &ThreadKey,
         harness_type: &HarnessType,
         existing_sandbox_id: Option<&str>,
-        execution_id: &str,
     ) -> Result<String, SessionRuntimeError> {
         if let Some(sandbox_id) = existing_sandbox_id {
             let id = SandboxId::new(sandbox_id);
@@ -187,9 +185,7 @@ impl SessionRuntime {
             }
         }
 
-        let spec = self
-            .sandbox_runtime
-            .spec(thread_key, harness_type, execution_id);
+        let spec = self.sandbox_runtime.spec(thread_key, harness_type);
         let handle = self.sandbox_runtime.create_running(spec).await?;
         self.store
             .update_sandbox_id(thread_key, Some(handle.id.as_str()))
