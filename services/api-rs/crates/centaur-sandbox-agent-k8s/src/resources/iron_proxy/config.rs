@@ -36,14 +36,13 @@ pub(crate) fn iron_proxy_fragments_for_spec(
         })?];
     fragments.extend(iron_proxy.fragments.clone());
     for profile in &spec.credential_profiles {
-        let harness = profile.as_str();
         let auth_mode = iron_proxy
             .harness_auth_modes
-            .get(harness)
-            .map(String::as_str)
-            .unwrap_or("api_key");
-        if let Some(fragment) = centaur_iron_proxy::harness_fragment(harness, auth_mode)
-            .map_err(|err| SandboxError::InvalidSpec(format!("iron-proxy fragment: {err}")))?
+            .mode_for(*profile)
+            .unwrap_or(centaur_sandbox_core::HarnessAuthMode::ApiKey);
+        if let Some(fragment) =
+            centaur_iron_proxy::harness_fragment(profile.as_str(), auth_mode.as_str())
+                .map_err(|err| SandboxError::InvalidSpec(format!("iron-proxy fragment: {err}")))?
         {
             fragments.push(fragment);
         }

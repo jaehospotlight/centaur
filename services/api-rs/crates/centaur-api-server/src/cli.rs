@@ -75,14 +75,13 @@ impl SandboxArgs {
     fn agent_config(&self) -> Result<AgentSandboxConfig, ServerError> {
         let iron_proxy = self
             .iron_proxy
-            .to_config(&self.kubernetes, &self.harness_auth)?;
+            .to_config(&self.kubernetes, self.harness_auth.modes())?;
         Ok(self.kubernetes.agent_config(iron_proxy))
     }
 
     fn container_workload_mode(&self) -> centaur_session_runtime::SandboxWorkloadMode {
         self.workload.container_mode(
-            self.harness_auth.codex_auth_mode(),
-            self.harness_auth.claude_code_auth_mode(),
+            self.harness_auth.modes(),
             process_env_values(self.workload.passthrough_env_names()),
         )
     }
@@ -150,7 +149,12 @@ mod tests {
         assert_eq!(config.source_policy.op_vault, "engineering");
         assert_eq!(config.source_policy.ttl, "5m");
         assert_eq!(config.source_policy.token_broker_ttl, "30s");
-        assert_eq!(config.harness_auth_modes["codex"], "access_token");
+        assert_eq!(
+            config
+                .harness_auth_modes
+                .mode_for(centaur_sandbox_core::CredentialProfile::Codex),
+            Some(centaur_sandbox_core::HarnessAuthMode::AccessToken)
+        );
         assert_eq!(
             config.token_broker_name.as_deref(),
             Some("centaur-token-broker")

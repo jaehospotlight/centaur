@@ -9,7 +9,7 @@ mod workload;
 
 pub use error::SessionRuntimeError;
 pub use runtime::{ExecuteSessionInput, SandboxRuntime, SessionRuntime};
-pub use workload::{AppServerAuthMode, CodexAppServerWorkload, SandboxWorkloadMode};
+pub use workload::{CodexAppServerWorkload, SandboxWorkloadMode};
 
 pub const SESSION_OUTPUT_LINE_EVENT: &str = "session.output.line";
 

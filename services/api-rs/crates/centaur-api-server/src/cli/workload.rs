@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use centaur_session_runtime::{AppServerAuthMode, CodexAppServerWorkload, SandboxWorkloadMode};
+use centaur_sandbox_core::HarnessAuthModes;
+use centaur_session_runtime::{CodexAppServerWorkload, SandboxWorkloadMode};
 use clap::{Args as ClapArgs, ValueEnum};
 
 use super::ServerError;
@@ -52,8 +53,7 @@ impl SandboxWorkloadArgs {
 
     pub(super) fn container_mode(
         &self,
-        codex_auth_mode: Option<AppServerAuthMode>,
-        claude_code_auth_mode: Option<AppServerAuthMode>,
+        auth_modes: HarnessAuthModes,
         passthrough_env: BTreeMap<String, String>,
     ) -> SandboxWorkloadMode {
         let image = self
@@ -67,8 +67,7 @@ impl SandboxWorkloadArgs {
                     image,
                     centaur_api_url: self.centaur_api_url.clone(),
                     centaur_api_key: self.centaur_api_key.clone(),
-                    codex_auth_mode,
-                    claude_code_auth_mode,
+                    auth_modes,
                     passthrough_env: passthrough_env.into_iter().collect(),
                 })
             }

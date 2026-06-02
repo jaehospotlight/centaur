@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use centaur_iron_proxy::{ProxyFragment, SourcePolicy};
+use centaur_sandbox_core::HarnessAuthModes;
 
 const DEFAULT_CONTAINER_NAME: &str = "agent";
 
@@ -45,7 +46,7 @@ pub struct IronProxyPodConfig {
     pub image_pull_secrets: Vec<String>,
     pub fragments: Vec<ProxyFragment>,
     pub source_policy: SourcePolicy,
-    pub harness_auth_modes: BTreeMap<String, String>,
+    pub harness_auth_modes: HarnessAuthModes,
     pub ca_cert_secret_name: String,
     pub ca_key_secret_name: String,
     pub op_connect_app_name: String,
@@ -71,7 +72,7 @@ impl IronProxyPodConfig {
             image_pull_secrets: Vec::new(),
             fragments: Vec::new(),
             source_policy: SourcePolicy::default(),
-            harness_auth_modes: BTreeMap::new(),
+            harness_auth_modes: HarnessAuthModes::default(),
             ca_cert_secret_name: ca_cert_secret_name.into(),
             ca_key_secret_name: ca_key_secret_name.into(),
             op_connect_app_name: "onepassword-connect".to_owned(),

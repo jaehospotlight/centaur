@@ -16,4 +16,7 @@ pub use io::{SandboxIo, SandboxIoGuard, SandboxIoParts, SandboxRead, SandboxWrit
 pub use lifecycle::{
     DesiredSandboxState, ObservedSandbox, SandboxHandle, SandboxId, SandboxStatus,
 };
-pub use spec::{CredentialProfile, EnvVar, Mount, MountKind, ResourceLimits, SandboxSpec};
+pub use spec::{
+    CredentialProfile, EnvVar, HarnessAuthMode, HarnessAuthModes, Mount, MountKind, ResourceLimits,
+    SandboxSpec,
+};
