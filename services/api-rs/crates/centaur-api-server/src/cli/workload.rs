@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-
-use centaur_sandbox_core::HarnessAuthModes;
+use centaur_sandbox_core::{EnvVar, HarnessAuthModes};
 use centaur_session_runtime::{CodexAppServerWorkload, SandboxWorkloadMode};
 use clap::{Args as ClapArgs, ValueEnum};
 
@@ -29,11 +27,12 @@ pub(super) struct SandboxWorkloadArgs {
     #[arg(long, env = "CENTAUR_API_KEY")]
     centaur_api_key: Option<String>,
     #[arg(
-        long = "kubernetes-sandbox-passthrough-env",
-        env = "KUBERNETES_SANDBOX_PASSTHROUGH_ENV",
-        value_delimiter = ','
+        long = "kubernetes-sandbox-env",
+        env = "KUBERNETES_SANDBOX_ENV",
+        value_delimiter = ',',
+        value_name = "NAME=VALUE"
     )]
-    passthrough_env: Vec<String>,
+    sandbox_env: Vec<EnvVar>,
 }
 
 impl SandboxWorkloadArgs {
@@ -51,11 +50,7 @@ impl SandboxWorkloadArgs {
         }
     }
 
-    pub(super) fn container_mode(
-        &self,
-        auth_modes: HarnessAuthModes,
-        passthrough_env: BTreeMap<String, String>,
-    ) -> SandboxWorkloadMode {
+    pub(super) fn container_mode(&self, auth_modes: HarnessAuthModes) -> SandboxWorkloadMode {
         let image = self
             .agent_image
             .clone()
@@ -68,14 +63,10 @@ impl SandboxWorkloadArgs {
                     centaur_api_url: self.centaur_api_url.clone(),
                     centaur_api_key: self.centaur_api_key.clone(),
                     auth_modes,
-                    passthrough_env: passthrough_env.into_iter().collect(),
+                    extra_env: self.sandbox_env.clone(),
                 })
             }
         }
-    }
-
-    pub(super) fn passthrough_env_names(&self) -> &[String] {
-        &self.passthrough_env
     }
 }
 

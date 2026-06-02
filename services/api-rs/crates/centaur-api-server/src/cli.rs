@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use centaur_api_server::SandboxRuntime;
 use centaur_sandbox_agent_k8s::{AgentSandboxBackend, AgentSandboxConfig};
@@ -78,10 +78,7 @@ impl SandboxArgs {
     }
 
     fn container_workload_mode(&self) -> centaur_session_runtime::SandboxWorkloadMode {
-        self.workload.container_mode(
-            self.harness_auth.modes(),
-            process_env_values(self.workload.passthrough_env_names()),
-        )
+        self.workload.container_mode(self.harness_auth.modes())
     }
 }
 
@@ -90,13 +87,6 @@ enum SandboxBackendKind {
     Local,
     #[value(name = "agent-k8s")]
     AgentK8s,
-}
-
-fn process_env_values(names: &[String]) -> BTreeMap<String, String> {
-    names
-        .iter()
-        .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)))
-        .collect()
 }
 
 #[cfg(test)]

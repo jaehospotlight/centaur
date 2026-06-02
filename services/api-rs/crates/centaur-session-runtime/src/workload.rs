@@ -1,4 +1,4 @@
-use centaur_sandbox_core::{CredentialProfile, HarnessAuthModes, SandboxSpec};
+use centaur_sandbox_core::{CredentialProfile, EnvVar, HarnessAuthModes, SandboxSpec};
 use centaur_session_core::{HarnessType, ThreadKey};
 
 #[derive(Clone, Debug)]
@@ -13,7 +13,7 @@ pub struct CodexAppServerWorkload {
     pub centaur_api_url: String,
     pub centaur_api_key: Option<String>,
     pub auth_modes: HarnessAuthModes,
-    pub passthrough_env: Vec<(String, String)>,
+    pub extra_env: Vec<EnvVar>,
 }
 
 impl SandboxWorkloadMode {
@@ -50,8 +50,8 @@ impl CodexAppServerWorkload {
         if let Some(api_key) = &self.centaur_api_key {
             spec = spec.env("CENTAUR_API_KEY", api_key);
         }
-        for (name, value) in &self.passthrough_env {
-            spec = spec.env(name, value);
+        for env in &self.extra_env {
+            spec = spec.env(&env.name, &env.value);
         }
         spec
     }
@@ -105,7 +105,7 @@ mod tests {
                 Some(HarnessAuthMode::AccessToken),
                 Some(HarnessAuthMode::ApiKey),
             ),
-            passthrough_env: vec![("NO_PROXY".to_owned(), "api".to_owned())],
+            extra_env: vec![EnvVar::new("NO_PROXY", "api")],
         })
         .spec(&thread_key, &HarnessType::Codex);
         let env = spec
