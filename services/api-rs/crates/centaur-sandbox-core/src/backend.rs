@@ -17,6 +17,18 @@ pub trait SandboxBackend: Send + Sync {
     /// Create a sandbox from the supplied workload spec and return its handle.
     async fn create(&self, spec: SandboxSpec) -> SandboxResult<SandboxHandle>;
 
+    /// Prepare backend-owned warm capacity for the supplied workload and return
+    /// currently claimable sandbox IDs, if this backend supports prewarming.
+    async fn prewarm(&self, _spec: SandboxSpec) -> SandboxResult<Vec<SandboxId>> {
+        Ok(Vec::new())
+    }
+
+    /// Mark a warm sandbox whose interactive runtime has been initialized by
+    /// the control plane before it is assigned to a user thread.
+    async fn mark_prewarmed(&self, _id: &SandboxId, _marker: &str) -> SandboxResult<()> {
+        Ok(())
+    }
+
     /// Open owned stdin/stdout/stderr handles for a running sandbox.
     async fn open_io(&self, id: &SandboxId) -> SandboxResult<SandboxIo>;
 

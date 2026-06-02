@@ -43,6 +43,7 @@ const SANDBOX_ID_LABEL: &str = "centaur.ai/sandbox-id";
 const SANDBOX_CLAIM_LABEL: &str = "centaur.ai/sandbox-claim";
 const SANDBOX_TEMPLATE_LABEL: &str = "centaur.ai/sandbox-template";
 const SANDBOX_WARM_POOL_LABEL: &str = "centaur.ai/sandbox-warm-pool";
+const PREWARMED_RUNTIME_LABEL: &str = "centaur.ai/prewarmed-runtime";
 const MANAGED_BY_VALUE: &str = "api-rs";
 const TOKEN_BROKER_LABEL: &str = "centaur.ai/iron-token-broker";
 const TOKEN_BROKER_CONFIG_KEY: &str = "iron-token-broker.yaml";
@@ -438,11 +439,28 @@ impl AgentSandboxBackend {
         warm_pool: &SandboxWarmPoolConfig,
         resolved: &ResolvedIronProxy,
     ) -> SandboxResult<()> {
+        for id in self.ready_unclaimed_warm_pool_sandboxes(warm_pool).await? {
+            self.create_iron_proxy_configmap(&id, Some(resolved))
+                .await?;
+            self.create_iron_proxy_service(&id, resolved).await?;
+            self.create_iron_proxy_pod(&id, resolved).await?;
+            self.wait_until_proxy_running(&iron_proxy_pod_name(&id))
+                .await?;
+            self.wait_until_proxy_endpoint_ready(&id, resolved).await?;
+        }
+        Ok(())
+    }
+
+    async fn ready_unclaimed_warm_pool_sandboxes(
+        &self,
+        warm_pool: &SandboxWarmPoolConfig,
+    ) -> SandboxResult<Vec<SandboxId>> {
         let sandboxes = self
             .sandboxes()
             .list(&ListParams::default())
             .await
             .map_err(|err| map_kube_error("list warm-pool sandboxes", err))?;
+        let mut ids = Vec::new();
         for sandbox in sandboxes {
             if !is_unclaimed_warm_pool_sandbox(&sandbox, warm_pool) {
                 continue;
@@ -457,18 +475,11 @@ impl AgentSandboxBackend {
                 Err(err) if is_not_found(&err) => continue,
                 Err(err) => return Err(map_kube_error("get warm-pool sandbox pod", err)),
             };
-            if !pod_ready(&pod) {
-                continue;
+            if pod_ready(&pod) {
+                ids.push(id);
             }
-            self.create_iron_proxy_configmap(&id, Some(resolved))
-                .await?;
-            self.create_iron_proxy_service(&id, resolved).await?;
-            self.create_iron_proxy_pod(&id, resolved).await?;
-            self.wait_until_proxy_running(&iron_proxy_pod_name(&id))
-                .await?;
-            self.wait_until_proxy_endpoint_ready(&id, resolved).await?;
         }
-        Ok(())
+        Ok(ids)
     }
 
     async fn wait_for_warm_pool_ready(
@@ -1100,6 +1111,44 @@ impl SandboxBackend for AgentSandboxBackend {
             .await
     }
 
+    async fn prewarm(&self, spec: SandboxSpec) -> SandboxResult<Vec<SandboxId>> {
+        let warm_pool = &self.config.warm_pool;
+        validate_warm_pool_spec(&spec, &self.config)?;
+        let resolved_iron_proxy = self.reconcile_warm_pool(&spec, warm_pool).await?;
+        self.wait_for_warm_pool_ready(warm_pool).await?;
+        if let Some(resolved) = resolved_iron_proxy.as_ref() {
+            self.prewarm_ready_warm_pool_proxies(warm_pool, resolved)
+                .await?;
+        }
+        self.ready_unclaimed_warm_pool_sandboxes(warm_pool).await
+    }
+
+    async fn mark_prewarmed(&self, id: &SandboxId, marker: &str) -> SandboxResult<()> {
+        let label_value = k8s_label_value(marker);
+        let patch = Patch::Merge(json!({
+            "metadata": {
+                "labels": {
+                    PREWARMED_RUNTIME_LABEL: label_value,
+                },
+            },
+        }));
+        self.sandboxes()
+            .patch(id.as_str(), &PatchParams::default(), &patch)
+            .await
+            .map_err(|err| map_kube_error("label prewarmed sandbox", err))?;
+
+        let sandbox = self
+            .get_sandbox(id)
+            .await?
+            .ok_or_else(|| SandboxError::NotFound(id.as_str().to_owned()))?;
+        let pod_name = sandbox_pod_name(&sandbox, id);
+        self.pods()
+            .patch(&pod_name, &PatchParams::default(), &patch)
+            .await
+            .map(|_| ())
+            .map_err(|err| map_kube_error("label prewarmed sandbox pod", err))
+    }
+
     async fn open_io(&self, id: &SandboxId) -> SandboxResult<SandboxIo> {
         self.attach_io(id).await
     }
@@ -1500,6 +1549,13 @@ fn build_agent_sandbox(
     });
     insert_optional(
         &mut pod_spec,
+        "initContainers",
+        resolved_iron_proxy
+            .is_some()
+            .then(|| vec![direct_https_block_init_container(spec, config)]),
+    );
+    insert_optional(
+        &mut pod_spec,
         "imagePullSecrets",
         image_pull_secret_refs(&config.image_pull_secrets),
     );
@@ -1543,6 +1599,30 @@ fn build_agent_sandbox(
     sandbox.metadata.labels = Some(labels);
     sandbox.metadata.annotations = Some(config.annotations.clone());
     Ok(sandbox)
+}
+
+fn direct_https_block_init_container(spec: &SandboxSpec, config: &AgentSandboxConfig) -> Value {
+    let mut container = json!({
+        "name": "block-direct-https",
+        "image": spec.image,
+        "command": ["/bin/sh", "-lc"],
+        "args": [
+            "set -eu\niptables -w -A OUTPUT -p tcp --dport 443 -j REJECT\niptables -w -A OUTPUT -p udp --dport 443 -j REJECT\nprintf '%s\\n' direct-https-block-installed\n"
+        ],
+        "securityContext": {
+            "runAsUser": 0,
+            "runAsNonRoot": false,
+            "allowPrivilegeEscalation": false,
+            "capabilities": {"drop": ["ALL"], "add": ["NET_ADMIN"]},
+            "seccompProfile": {"type": "RuntimeDefault"}
+        },
+    });
+    insert_optional(
+        &mut container,
+        "imagePullPolicy",
+        config.image_pull_policy.clone(),
+    );
+    container
 }
 
 fn codex_app_server_readiness_probe(spec: &SandboxSpec) -> Option<Value> {
@@ -2194,6 +2274,36 @@ fn iron_proxy_service_name(id: &SandboxId) -> String {
     format!("{}-proxy", id.as_str())
 }
 
+fn k8s_label_value(value: &str) -> String {
+    let mut sanitized: String = value
+        .chars()
+        .map(|ch| match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' => ch,
+            _ => '-',
+        })
+        .take(63)
+        .collect();
+    while sanitized
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| !byte.is_ascii_alphanumeric())
+    {
+        sanitized.remove(0);
+    }
+    while sanitized
+        .as_bytes()
+        .last()
+        .is_some_and(|byte| !byte.is_ascii_alphanumeric())
+    {
+        sanitized.pop();
+    }
+    if sanitized.is_empty() {
+        "set".to_owned()
+    } else {
+        sanitized
+    }
+}
+
 fn iron_proxy_sandbox_egress_policy_name(id: &SandboxId) -> String {
     format!("{}-sandbox-egress", id.as_str())
 }
@@ -2789,6 +2899,32 @@ mod tests {
         let containers = &pod_spec.containers;
         assert_eq!(containers.len(), 1);
         assert_eq!(containers[0].name, "agent");
+        let init_containers = pod_spec.init_containers.as_ref().unwrap();
+        assert_eq!(init_containers.len(), 1);
+        assert_eq!(init_containers[0].name, "block-direct-https");
+        assert_eq!(
+            init_containers[0]
+                .security_context
+                .as_ref()
+                .and_then(|context| context.run_as_user),
+            Some(0)
+        );
+        assert!(
+            init_containers[0]
+                .security_context
+                .as_ref()
+                .and_then(|context| context.capabilities.as_ref())
+                .and_then(|capabilities| capabilities.add.as_ref())
+                .is_some_and(|capabilities| capabilities.contains(&"NET_ADMIN".to_owned()))
+        );
+        assert!(
+            init_containers[0]
+                .args
+                .as_ref()
+                .unwrap()
+                .join("\n")
+                .contains("--dport 443 -j REJECT")
+        );
         assert_eq!(
             sandbox
                 .spec

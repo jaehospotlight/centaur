@@ -40,6 +40,7 @@ type SessionInputSink = FramedWrite<SandboxWrite, LinesCodec>;
 const CODEX_WORKSPACE_DIR: &str = "/home/agent/workspace";
 const CODEX_APP_SERVER_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const CODEX_APP_SERVER_INIT_TIMEOUT: Duration = Duration::from_secs(30);
+const CODEX_APP_SERVER_PREWARMED_MARKER: &str = "codex-app-server-initialized";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExistingSandboxReuse {
@@ -107,6 +108,8 @@ struct CodexAppServerPipe {
     notifications: broadcast::Sender<CodexNotification>,
     state: Arc<Mutex<CodexAppServerState>>,
     execute_lock: Arc<Mutex<()>>,
+    output_thread_key: Arc<Mutex<Option<ThreadKey>>>,
+    prewarmed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -312,11 +315,45 @@ impl SessionRuntime {
         }
 
         let spec = (self.sandbox_runtime.spec_factory)(thread_key, execution_id);
+        if self.sandbox_runtime.protocol == SandboxProtocol::CodexAppServer {
+            self.prewarm_codex_app_server_pool(&spec).await?;
+        }
         let handle = self.sandbox_runtime.manager.create_running(spec).await?;
         self.store
             .update_sandbox_id(thread_key, Some(handle.id.as_str()))
             .await?;
         Ok(handle.id.into_string())
+    }
+
+    async fn prewarm_codex_app_server_pool(
+        &self,
+        spec: &SandboxSpec,
+    ) -> Result<(), SessionRuntimeError> {
+        let candidates = self.sandbox_runtime.manager.prewarm(spec.clone()).await?;
+        for id in candidates {
+            let sandbox_id = id.as_str().to_owned();
+            if self.sandbox_pipes.lock().await.contains_key(&sandbox_id) {
+                continue;
+            }
+            match self.open_codex_app_server_pipe(&sandbox_id, true).await {
+                Ok(pipe) => {
+                    self.sandbox_runtime
+                        .manager
+                        .mark_prewarmed(&id, CODEX_APP_SERVER_PREWARMED_MARKER)
+                        .await?;
+                    self.sandbox_pipes
+                        .lock()
+                        .await
+                        .insert(sandbox_id.clone(), SessionPipe::CodexAppServer(pipe));
+                }
+                Err(error) => {
+                    warn!(%sandbox_id, %error, "codex warm-pool pre-initialize failed");
+                    self.sandbox_pipes.lock().await.remove(&sandbox_id);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn ensure_session_pipe(
@@ -325,36 +362,39 @@ impl SessionRuntime {
         sandbox_id: &str,
     ) -> Result<SessionPipe, SessionRuntimeError> {
         if let Some(pipe) = self.sandbox_pipes.lock().await.get(sandbox_id).cloned() {
+            if let SessionPipe::CodexAppServer(codex_pipe) = &pipe {
+                self.bind_codex_app_server_pipe(thread_key, codex_pipe)
+                    .await?;
+            }
             return Ok(pipe);
         }
 
-        let io = self
-            .sandbox_runtime
-            .manager
-            .open_io(&SandboxId::new(sandbox_id))
-            .await?
-            .into_parts();
-        let stdin = Arc::new(Mutex::new(FramedWrite::new(
-            io.stdin,
-            LinesCodec::new_with_max_length(MAX_SESSION_OUTPUT_LINE_BYTES),
-        )));
-
-        let store = self.store.clone();
-        let thread_key = thread_key.clone();
-        let pump_key = sandbox_id.to_owned();
-        let sandbox_pipes = self.sandbox_pipes.clone();
-        let stdout = io.stdout;
-        let stderr = io.stderr;
-        let guard = io.guard;
-        let stderr_key = pump_key.clone();
         let pipe = match self.sandbox_runtime.protocol {
             SandboxProtocol::Line => {
+                let io = self
+                    .sandbox_runtime
+                    .manager
+                    .open_io(&SandboxId::new(sandbox_id))
+                    .await?
+                    .into_parts();
+                let stdin = Arc::new(Mutex::new(FramedWrite::new(
+                    io.stdin,
+                    LinesCodec::new_with_max_length(MAX_SESSION_OUTPUT_LINE_BYTES),
+                )));
                 let pipe = SessionPipe::Line(LineSessionPipe { stdin });
                 self.sandbox_pipes
                     .lock()
                     .await
                     .insert(sandbox_id.to_owned(), pipe.clone());
 
+                let store = self.store.clone();
+                let thread_key = thread_key.clone();
+                let pump_key = sandbox_id.to_owned();
+                let sandbox_pipes = self.sandbox_pipes.clone();
+                let stdout = io.stdout;
+                let stderr = io.stderr;
+                let guard = io.guard;
+                let stderr_key = pump_key.clone();
                 tokio::spawn(async move {
                     let result = run_line_stdout_pump(
                         store.clone(),
@@ -380,80 +420,141 @@ impl SessionRuntime {
                     }
                     sandbox_pipes.lock().await.remove(&pump_key);
                 });
+                tokio::spawn(async move {
+                    if let Err(error) = drain_stderr(stderr).await {
+                        warn!(%stderr_key, %error, "session stderr drain failed");
+                    }
+                });
                 pipe
             }
             SandboxProtocol::CodexAppServer => {
-                let (notifications, _) = broadcast::channel(256);
-                let pipe = SessionPipe::CodexAppServer(CodexAppServerPipe {
-                    stdin,
-                    next_request_id: Arc::new(AtomicI64::new(1)),
-                    responses: Arc::new(Mutex::new(HashMap::new())),
-                    notifications,
-                    state: Arc::new(Mutex::new(CodexAppServerState::default())),
-                    execute_lock: Arc::new(Mutex::new(())),
-                });
+                let codex_pipe = self.open_codex_app_server_pipe(sandbox_id, false).await?;
+                self.bind_codex_app_server_pipe(thread_key, &codex_pipe)
+                    .await?;
+                let pipe = SessionPipe::CodexAppServer(codex_pipe);
                 self.sandbox_pipes
                     .lock()
                     .await
                     .insert(sandbox_id.to_owned(), pipe.clone());
-
-                let SessionPipe::CodexAppServer(codex_pipe) = pipe.clone() else {
-                    unreachable!("constructed codex pipe")
-                };
-                let pump_store = store.clone();
-                let pump_thread_key = thread_key.clone();
-                let pump_key = pump_key.clone();
-                let pump_responses = codex_pipe.responses.clone();
-                let pump_notifications = codex_pipe.notifications.clone();
-                let pump_state = codex_pipe.state.clone();
-                tokio::spawn(async move {
-                    let result = run_codex_app_server_stdout_pump(
-                        pump_store.clone(),
-                        pump_thread_key.clone(),
-                        &pump_key,
-                        stdout,
-                        guard,
-                        pump_responses,
-                        pump_notifications,
-                        pump_state,
-                    )
-                    .await;
-                    if let Err(error) = result {
-                        warn!(%pump_key, %error, "codex app-server stdout pump failed");
-                        let _ = pump_store
-                            .append_event(
-                                &pump_thread_key,
-                                None,
-                                "session.stdout_pump_failed",
-                                json!({
-                                    "sandbox_id": pump_key.as_str(),
-                                    "error": error.to_string(),
-                                }),
-                            )
-                            .await;
-                    }
-                    sandbox_pipes.lock().await.remove(&pump_key);
-                });
-                initialize_codex_app_server(&codex_pipe).await?;
-                append_output_line(
-                    &self.store,
-                    &thread_key,
-                    None,
-                    &json!({"type": "system", "subtype": "app_server", "phase": "initialized"})
-                        .to_string(),
-                )
-                .await?;
                 pipe
             }
         };
 
+        Ok(pipe)
+    }
+
+    async fn open_codex_app_server_pipe(
+        &self,
+        sandbox_id: &str,
+        prewarmed: bool,
+    ) -> Result<CodexAppServerPipe, SessionRuntimeError> {
+        let io = self
+            .sandbox_runtime
+            .manager
+            .open_io(&SandboxId::new(sandbox_id))
+            .await?
+            .into_parts();
+        let stdin = Arc::new(Mutex::new(FramedWrite::new(
+            io.stdin,
+            LinesCodec::new_with_max_length(MAX_SESSION_OUTPUT_LINE_BYTES),
+        )));
+        let (notifications, _) = broadcast::channel(256);
+        let pipe = CodexAppServerPipe {
+            stdin,
+            next_request_id: Arc::new(AtomicI64::new(1)),
+            responses: Arc::new(Mutex::new(HashMap::new())),
+            notifications,
+            state: Arc::new(Mutex::new(CodexAppServerState::default())),
+            execute_lock: Arc::new(Mutex::new(())),
+            output_thread_key: Arc::new(Mutex::new(None)),
+            prewarmed,
+        };
+
+        let pump_store = self.store.clone();
+        let pump_key = sandbox_id.to_owned();
+        let pump_responses = pipe.responses.clone();
+        let pump_notifications = pipe.notifications.clone();
+        let pump_state = pipe.state.clone();
+        let pump_output_thread_key = pipe.output_thread_key.clone();
+        let sandbox_pipes = self.sandbox_pipes.clone();
+        let stdout = io.stdout;
+        let stderr = io.stderr;
+        let guard = io.guard;
+        let stderr_key = pump_key.clone();
+        tokio::spawn(async move {
+            let result = run_codex_app_server_stdout_pump(
+                pump_store.clone(),
+                &pump_key,
+                stdout,
+                guard,
+                pump_responses,
+                pump_notifications,
+                pump_state,
+                pump_output_thread_key.clone(),
+            )
+            .await;
+            if let Err(error) = result {
+                warn!(%pump_key, %error, "codex app-server stdout pump failed");
+                let thread_key = { pump_output_thread_key.lock().await.clone() };
+                if let Some(thread_key) = thread_key {
+                    let _ = pump_store
+                        .append_event(
+                            &thread_key,
+                            None,
+                            "session.stdout_pump_failed",
+                            json!({
+                                "sandbox_id": pump_key.as_str(),
+                                "error": error.to_string(),
+                            }),
+                        )
+                        .await;
+                }
+            }
+            sandbox_pipes.lock().await.remove(&pump_key);
+        });
         tokio::spawn(async move {
             if let Err(error) = drain_stderr(stderr).await {
                 warn!(%stderr_key, %error, "session stderr drain failed");
             }
         });
 
+        initialize_codex_app_server(&pipe).await?;
         Ok(pipe)
+    }
+
+    async fn bind_codex_app_server_pipe(
+        &self,
+        thread_key: &ThreadKey,
+        pipe: &CodexAppServerPipe,
+    ) -> Result<(), SessionRuntimeError> {
+        let mut output_thread_key = pipe.output_thread_key.lock().await;
+        match output_thread_key.as_ref() {
+            Some(existing) if existing != thread_key => {
+                return Err(SessionRuntimeError::CodexAppServer(format!(
+                    "codex app-server pipe is already bound to thread {existing}"
+                )));
+            }
+            Some(_) => return Ok(()),
+            None => {
+                *output_thread_key = Some(thread_key.clone());
+            }
+        }
+        drop(output_thread_key);
+
+        append_output_line(
+            &self.store,
+            thread_key,
+            None,
+            &json!({
+                "type": "system",
+                "subtype": "app_server",
+                "phase": "initialized",
+                "prewarmed": pipe.prewarmed,
+            })
+            .to_string(),
+        )
+        .await?;
+        Ok(())
     }
 
     async fn execute_codex_app_server_turn(
@@ -1005,13 +1106,13 @@ async fn run_line_stdout_pump(
 
 async fn run_codex_app_server_stdout_pump(
     store: PgSessionStore,
-    thread_key: ThreadKey,
     sandbox_id: &str,
     stdout: SandboxRead,
     _guard: SandboxIoGuard,
     responses: Arc<Mutex<HashMap<i64, oneshot::Sender<Value>>>>,
     notifications: broadcast::Sender<CodexNotification>,
     state: Arc<Mutex<CodexAppServerState>>,
+    output_thread_key: Arc<Mutex<Option<ThreadKey>>>,
 ) -> Result<(), SessionRuntimeError> {
     let mut stdout = FramedRead::new(
         stdout,
@@ -1038,20 +1139,26 @@ async fn run_codex_app_server_stdout_pump(
         if let Some((payload, notification)) =
             translate_codex_notification(method, msg.get("params"), &state).await
         {
-            append_output_line(&store, &thread_key, None, &payload.to_string()).await?;
+            let thread_key = { output_thread_key.lock().await.clone() };
+            if let Some(thread_key) = thread_key {
+                append_output_line(&store, &thread_key, None, &payload.to_string()).await?;
+            }
             let _ = notifications.send(notification);
         }
     }
-    store
-        .append_event(
-            &thread_key,
-            None,
-            "session.stdout_eof",
-            json!({
-                "sandbox_id": sandbox_id,
-            }),
-        )
-        .await?;
+    let thread_key = { output_thread_key.lock().await.clone() };
+    if let Some(thread_key) = thread_key {
+        store
+            .append_event(
+                &thread_key,
+                None,
+                "session.stdout_eof",
+                json!({
+                    "sandbox_id": sandbox_id,
+                }),
+            )
+            .await?;
+    }
     Ok(())
 }
 

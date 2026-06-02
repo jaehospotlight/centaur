@@ -48,6 +48,14 @@ where
         Ok(handle)
     }
 
+    pub async fn prewarm(&self, spec: SandboxSpec) -> SandboxResult<Vec<SandboxId>> {
+        self.backend.prewarm(spec).await
+    }
+
+    pub async fn mark_prewarmed(&self, id: &SandboxId, marker: &str) -> SandboxResult<()> {
+        self.backend.mark_prewarmed(id, marker).await
+    }
+
     pub async fn open_io(&self, id: &SandboxId) -> SandboxResult<SandboxIo> {
         self.backend.open_io(id).await
     }
