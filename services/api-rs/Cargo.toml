@@ -3,7 +3,6 @@ members = [
     "crates/centaur-api-server",
     "crates/centaur-iron-proxy",
     "crates/centaur-sandbox-core",
-    "crates/centaur-sandbox-e2e",
     "crates/centaur-sandbox-agent-k8s",
     "crates/centaur-sandbox-local",
     "crates/centaur-sandbox-manager",
@@ -47,7 +46,6 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std"] }
 sqlx = { version = "0.8.6", default-features = false, features = ["derive", "json", "macros", "migrate", "postgres", "runtime-tokio-rustls", "time"] }
 strum = { version = "0.28", features = ["derive"] }
-test-case = "3.3.1"
 thiserror = "2"
 time = { version = "0.3", features = ["serde"] }
 tokio = "1"

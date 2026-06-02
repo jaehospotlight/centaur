@@ -10,7 +10,7 @@ pub(super) struct KubernetesSandboxArgs {
     #[arg(
         long = "kubernetes-namespace",
         env = "KUBERNETES_NAMESPACE",
-        default_value = "centaur-sandbox-e2e"
+        default_value = "centaur"
     )]
     namespace: String,
     #[arg(long = "kubernetes-context", env = "KUBERNETES_CONTEXT")]
