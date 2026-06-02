@@ -101,10 +101,10 @@ mod tests {
             image: "centaur-agent:test".to_owned(),
             centaur_api_url: "http://api:8000".to_owned(),
             centaur_api_key: None,
-            auth_modes: HarnessAuthModes::new(
-                Some(HarnessAuthMode::AccessToken),
-                Some(HarnessAuthMode::ApiKey),
-            ),
+            auth_modes: HarnessAuthModes {
+                codex: Some(HarnessAuthMode::AccessToken),
+                claude_code: Some(HarnessAuthMode::ApiKey),
+            },
             extra_env: vec![EnvVar::new("NO_PROXY", "api")],
         })
         .spec(&thread_key, &HarnessType::Codex);

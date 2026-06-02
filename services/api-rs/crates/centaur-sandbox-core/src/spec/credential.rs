@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -32,10 +34,6 @@ pub struct HarnessAuthModes {
 }
 
 impl HarnessAuthModes {
-    pub fn new(codex: Option<HarnessAuthMode>, claude_code: Option<HarnessAuthMode>) -> Self {
-        Self { codex, claude_code }
-    }
-
     pub fn mode_for(&self, profile: CredentialProfile) -> Option<HarnessAuthMode> {
         match profile {
             CredentialProfile::Codex => self.codex,
@@ -57,6 +55,18 @@ impl HarnessAuthMode {
         match self {
             Self::ApiKey => "api_key",
             Self::AccessToken => "access_token",
+        }
+    }
+}
+
+impl FromStr for HarnessAuthMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "api_key" => Ok(Self::ApiKey),
+            "access_token" => Ok(Self::AccessToken),
+            _ => Err(format!("unsupported harness auth mode {value:?}")),
         }
     }
 }
