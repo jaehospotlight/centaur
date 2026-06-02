@@ -70,6 +70,7 @@ pub struct SandboxRuntime {
 pub enum SandboxWorkloadMode {
     MockAppServer {
         image: String,
+        mounts: Vec<Mount>,
     },
     CodexAppServer {
         image: String,
@@ -1442,6 +1443,7 @@ impl SandboxWorkloadMode {
     pub fn mock_app_server(image: impl Into<String>) -> Self {
         Self::MockAppServer {
             image: image.into(),
+            mounts: Vec::new(),
         }
     }
 
@@ -1458,8 +1460,9 @@ impl SandboxWorkloadMode {
 
     pub fn mount(mut self, mount: Mount) -> Self {
         match &mut self {
-            Self::MockAppServer { .. } => {}
-            Self::CodexAppServer { mounts, .. } => mounts.push(mount),
+            Self::MockAppServer { mounts, .. } | Self::CodexAppServer { mounts, .. } => {
+                mounts.push(mount);
+            }
         }
         self
     }
@@ -1473,24 +1476,29 @@ impl SandboxWorkloadMode {
     }
 
     fn spec_with_thread_key(&self, thread_key: Option<&ThreadKey>) -> SandboxSpec {
-        match self {
-            Self::MockAppServer { image } => SandboxSpec::new(image)
+        let spec = match self {
+            Self::MockAppServer { image, .. } => SandboxSpec::new(image)
                 .command(["/bin/sh", "-lc"])
                 .args([mock_app_server_script()]),
-            Self::CodexAppServer { image, env, mounts } => {
+            Self::CodexAppServer { image, env, .. } => {
                 let mut spec = SandboxSpec::new(image);
                 if let Some(thread_key) = thread_key {
                     spec = spec.env("CENTAUR_THREAD_KEY", thread_key.as_str());
-                }
-                for mount in mounts {
-                    spec = spec.mount(mount.clone());
                 }
                 for (name, value) in env {
                     spec = spec.env(name.clone(), value.clone());
                 }
                 spec
             }
+        };
+        let mounts = match self {
+            Self::MockAppServer { mounts, .. } | Self::CodexAppServer { mounts, .. } => mounts,
+        };
+        let mut spec = spec;
+        for mount in mounts {
+            spec = spec.mount(mount.clone());
         }
+        spec
     }
 }
 
