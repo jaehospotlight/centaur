@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::Serialize;
 use serde_yaml::Value;
 
@@ -31,11 +33,6 @@ impl SourcePolicy {
             ttl: ttl.into(),
             token_broker_ttl: "1m".to_owned(),
         }
-    }
-
-    pub fn with_token_broker_ttl(mut self, ttl: impl Into<String>) -> Self {
-        self.token_broker_ttl = ttl.into();
-        self
     }
 
     pub(crate) fn source_for(&self, placeholder: &str, json_key: Option<&str>) -> Result<Value> {
@@ -86,6 +83,19 @@ pub enum SourceKind {
     Env,
     OnePassword,
     OnePasswordConnect,
+}
+
+impl FromStr for SourceKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "env" => Ok(Self::Env),
+            "onepassword" => Ok(Self::OnePassword),
+            "onepassword-connect" => Ok(Self::OnePasswordConnect),
+            _ => Err(format!("unsupported secret source {value:?}")),
+        }
+    }
 }
 
 #[derive(Serialize)]
