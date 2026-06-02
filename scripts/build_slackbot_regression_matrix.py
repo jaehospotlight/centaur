@@ -271,11 +271,12 @@ FAILURES: list[dict[str, Any]] = [
     {
         "failure_id": "slack_subscribed_idle_reply_does_not_execute",
         "priority": "p0",
-        "repro_status": "local_slack_repro",
+        "repro_status": "local_slack_repro_fixed",
         "surfaces": ["slack", "slackbotv2", "api-rs"],
         "summary": (
-            "A reply in a subscribed Slack thread after the session is idle is appended to "
-            "history but does not execute a new turn or produce a bot response."
+            "A reply in a subscribed Slack thread after the session is idle was appended to "
+            "history without executing a new turn or producing a bot response; the local fix "
+            "now executes inactive subscribed replies and keeps active-stream replies append-only."
         ),
         "regression_targets": [
             "Slackbot subscribed-thread idle reply policy",

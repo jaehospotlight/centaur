@@ -55,6 +55,9 @@ without committing large channel-history snapshots.
 - `slack-regression-check-20260602T1640Z.json`: live Slack check in `#centaur-ai-zygis` showing
   idle pause works through Slackbot v2, a non-mention subscribed-thread reply after idle silently
   appends without executing, and a mention reply after idle resumes and returns a final answer.
+- `slack-regression-check-20260602T1653Z.json`: live Slack check in `#centaur-ai-zygis` showing
+  the Slackbot v2 fix: a non-mention subscribed-thread reply after idle now starts a second
+  execution, resumes the paused sandbox, returns final text, and pauses again.
 - `regression-matrix.json` and `REGRESSION_MATRIX.md`: generated failure matrix that maps corpus
   evidence to stable regression test targets and expected assertions.
 
@@ -72,6 +75,8 @@ This pass added executable tests for several corpus failures:
     later final answer
   - slash-method `turn/completed` without result text should not close the Slack stream before a
     later final-answer delta
+  - subscribed-thread replies execute when the thread is idle, while replies during an active
+    stream remain append-only steering updates
 - [services/api-rs/crates/centaur-session-runtime/src/lib.rs](../../services/api-rs/crates/centaur-session-runtime/src/lib.rs)
   and [services/api-rs/crates/centaur-session-sqlx/src/lib.rs](../../services/api-rs/crates/centaur-session-sqlx/src/lib.rs):
   - sandbox setup / I/O failures now persist `session.execution_failed` and mark the execution
@@ -366,10 +371,12 @@ sandbox cannot produce a healthy turn.
 ### slack_subscribed_idle_reply_does_not_execute
 
 Artifact:
-`local-corpus/slackbot-fuzz/slack-regression-check-20260602T1640Z.json`
+- Repro: `local-corpus/slackbot-fuzz/slack-regression-check-20260602T1640Z.json`
+- Fix proof: `local-corpus/slackbot-fuzz/slack-regression-check-20260602T1653Z.json`
 
 Slack thread:
-`slack:C0APUQ8U5T9:1780418218.640919`
+- Repro: `slack:C0APUQ8U5T9:1780418218.640919`
+- Fix proof: `slack:C0APUQ8U5T9:1780419146.814209`
 
 Observed:
 - Root Slack mention completed with visible final text `SLACK_IDLE_ROOT2_OK` and then api-rs
@@ -380,12 +387,16 @@ Observed:
   reply for that user message.
 - A subsequent mention reply in the same thread did execute, recorded `session.sandbox_resumed` at
   event `1427`, produced `SLACK_IDLE_FORCED_RESUME_OK`, and paused again at event `1448`.
+- After the Slackbot v2 fix, a plain non-mention reply at `1780419205.297529` created execution
+  `exe_055c9847c50348479a99e6e2c0c0220d` with `is_mention = false`, recorded
+  `session.sandbox_resumed` at event `1475`, produced final text `IDLE_SUBSCRIBED_REPLY3_OK`, and
+  paused again at event `1496`.
 
 Why this matters:
 Users commonly follow up in an already-subscribed thread without re-mentioning the bot. After an
-idle pause, silently appending that reply with no execution looks like the bot ignored the user.
-The Slackbot policy should either execute idle subscribed-thread replies or post an explicit visible
-response that tells users a mention is required.
+idle pause, silently appending that reply with no execution looks like the bot ignored the user. The
+current Slackbot policy now executes subscribed-thread replies when no stream is active and still
+keeps active-stream replies append-only so they can steer the running turn.
 
 ### blank_response_then_cancelled
 

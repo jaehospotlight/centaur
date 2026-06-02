@@ -1,6 +1,6 @@
 {
   "schema": "centaur.slackbot_regression_matrix.v1",
-  "created_at": "2026-06-02T16:42:06.299321+00:00",
+  "created_at": "2026-06-02T16:55:34.870388+00:00",
   "source_paths": {
     "fuzz_summaries": [
       "local-corpus/slackbot-fuzz/20260602T144627Z/summary.json",
@@ -26,7 +26,8 @@
       "local-corpus/slackbot-fuzz/api-rs-regression-check-20260602T1633Z.json"
     ],
     "slack_checks": [
-      "local-corpus/slackbot-fuzz/slack-regression-check-20260602T1640Z.json"
+      "local-corpus/slackbot-fuzz/slack-regression-check-20260602T1640Z.json",
+      "local-corpus/slackbot-fuzz/slack-regression-check-20260602T1653Z.json"
     ]
   },
   "counts": {
@@ -42,7 +43,7 @@
       "synthetic_repro": 2,
       "synthetic_repro_plus_local_seed": 1,
       "production_seed_backlog": 1,
-      "local_slack_repro": 1,
+      "local_slack_repro_fixed": 1,
       "production_seed": 2
     }
   },
@@ -2950,13 +2951,13 @@
     {
       "failure_id": "slack_subscribed_idle_reply_does_not_execute",
       "priority": "p0",
-      "repro_status": "local_slack_repro",
+      "repro_status": "local_slack_repro_fixed",
       "surfaces": [
         "slack",
         "slackbotv2",
         "api-rs"
       ],
-      "summary": "A reply in a subscribed Slack thread after the session is idle is appended to history but does not execute a new turn or produce a bot response.",
+      "summary": "A reply in a subscribed Slack thread after the session is idle was appended to history without executing a new turn or producing a bot response; the local fix now executes inactive subscribed replies and keeps active-stream replies append-only.",
       "regression_targets": [
         "Slackbot subscribed-thread idle reply policy",
         "Slackbot append-vs-execute routing",
@@ -2994,6 +2995,68 @@
             "thread_key": "slack:C0APUQ8U5T9:1780418218.640919",
             "channel_id": "C0APUQ8U5T9",
             "file": "local-corpus/slackbot-fuzz/slack-regression-check-20260602T1640Z.json"
+          },
+          {
+            "failure_id": "slack_subscribed_idle_reply_does_not_execute",
+            "status": "fixed",
+            "prior_repro_file": "local-corpus/slackbot-fuzz/slack-regression-check-20260602T1640Z.json",
+            "root_message_ts": "1780419146.814209",
+            "plain_reply_ts": "1780419205.297529",
+            "root_execution_id": "exe_05bf777046ee4138a227de61c7930a9d",
+            "plain_reply_execution_id": "exe_055c9847c50348479a99e6e2c0c0220d",
+            "root_event_range": [
+              1449,
+              1473
+            ],
+            "plain_reply_event_range": [
+              1474,
+              1496
+            ],
+            "root_final_text": "IDLE_SUBSCRIBED_ROOT3_OK",
+            "plain_reply_final_text": "IDLE_SUBSCRIBED_REPLY3_OK",
+            "plain_reply_metadata": {
+              "is_mention": false,
+              "idle_timeout_ms": 2000,
+              "max_duration_ms": 60000
+            },
+            "db_event_sequence_after_idle": [
+              "session.execution_started",
+              "session.sandbox_resumed",
+              "session.output.line",
+              "session.execution_completed",
+              "session.stdout_eof",
+              "session.sandbox_paused"
+            ],
+            "slack_readback": [
+              {
+                "ts": "1780419148.948599",
+                "bot_id": "B0B7KFSF212",
+                "text": "IDLE_SUBSCRIBED_ROOT3_OK, with interactive elements",
+                "block_types": [
+                  "plan",
+                  "rich_text"
+                ]
+              },
+              {
+                "ts": "1780419208.365069",
+                "bot_id": "B0B7KFSF212",
+                "text": "IDLE_SUBSCRIBED_REPLY3_OK, with interactive elements",
+                "block_types": [
+                  "plan",
+                  "rich_text"
+                ]
+              }
+            ],
+            "assertions": [
+              "plain subscribed-thread reply after idle created a second execution",
+              "second execution metadata preserved is_mention=false",
+              "second execution resumed the paused sandbox and completed with final answer text",
+              "Slack readback includes the plain reply final answer"
+            ],
+            "remaining_issue": "Slack fallback text still appends ', with interactive elements' for plan+rich_text bot messages.",
+            "thread_key": "slack:C0APUQ8U5T9:1780419146.814209",
+            "channel_id": "C0APUQ8U5T9",
+            "file": "local-corpus/slackbot-fuzz/slack-regression-check-20260602T1653Z.json"
           }
         ]
       }
