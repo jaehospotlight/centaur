@@ -53,7 +53,7 @@ fn builds_agent_sandbox_spec_with_limits() {
                 .memory_bytes(512 * 1024 * 1024),
         );
     let mut config = AgentSandboxConfig::new("centaur");
-    config.image_pull_secrets = vec!["regcred".to_owned(), "mirrorcred".to_owned()];
+    config.image_pull.secrets = vec!["regcred".to_owned(), "mirrorcred".to_owned()];
     config.runtime_class_name = Some("gvisor".to_owned());
     config.service_account_name = Some("sandbox-agent".to_owned());
 

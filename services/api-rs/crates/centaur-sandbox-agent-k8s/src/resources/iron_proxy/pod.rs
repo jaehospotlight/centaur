@@ -30,7 +30,7 @@ pub(crate) fn build_iron_proxy_pod(
             restart_policy: Some("Never".to_owned()),
             containers: vec![iron_proxy_container(iron_proxy, resolved)],
             volumes: Some(iron_proxy_volumes(id, iron_proxy)),
-            image_pull_secrets: image_pull_secret_refs(&iron_proxy.image_pull_secrets),
+            image_pull_secrets: image_pull_secret_refs(&iron_proxy.image_pull.secrets),
             ..Default::default()
         }),
         ..Default::default()
@@ -44,7 +44,7 @@ fn iron_proxy_container(
     Container {
         name: "iron-proxy".to_owned(),
         image: Some(iron_proxy.image.clone()),
-        image_pull_policy: iron_proxy.image_pull_policy.clone(),
+        image_pull_policy: iron_proxy.image_pull.policy.clone(),
         env: Some(iron_proxy_env_vars(iron_proxy, resolved)),
         env_from: iron_proxy_env_from(iron_proxy),
         ports: Some(container_ports(resolved)),

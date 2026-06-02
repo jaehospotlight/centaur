@@ -73,8 +73,9 @@ pub(crate) struct SandboxArgs {
 
 impl SandboxArgs {
     fn agent_config(&self) -> Result<AgentSandboxConfig, ServerError> {
-        let iron_proxy = self.iron_proxy.to_config(&self.kubernetes)?;
-        Ok(self.kubernetes.agent_config(iron_proxy))
+        let image_pull = self.kubernetes.image_pull_config();
+        let iron_proxy = self.iron_proxy.to_config(&image_pull)?;
+        Ok(self.kubernetes.agent_config(image_pull, iron_proxy))
     }
 
     fn container_workload_mode(&self) -> centaur_session_runtime::SandboxWorkloadMode {

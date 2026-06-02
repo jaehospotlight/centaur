@@ -1,12 +1,14 @@
+use centaur_sandbox_agent_k8s::ImagePullConfig;
 use clap::Args as ClapArgs;
 
 #[derive(Debug, ClapArgs)]
 pub(super) struct IronProxyImageArgs {
     #[arg(
         long = "kubernetes-iron-proxy-image",
-        env = "KUBERNETES_IRON_PROXY_IMAGE"
+        env = "KUBERNETES_IRON_PROXY_IMAGE",
+        default_value = "centaur-iron-proxy:latest"
     )]
-    image_name: Option<String>,
+    pub(super) image_name: String,
     #[arg(
         long = "kubernetes-iron-proxy-image-pull-policy",
         env = "KUBERNETES_IRON_PROXY_IMAGE_PULL_POLICY"
@@ -15,13 +17,10 @@ pub(super) struct IronProxyImageArgs {
 }
 
 impl IronProxyImageArgs {
-    pub(super) fn name(&self) -> String {
-        self.image_name
-            .clone()
-            .unwrap_or_else(|| "centaur-iron-proxy:latest".to_owned())
-    }
-
-    pub(super) fn pull_policy(&self) -> Option<String> {
-        self.pull_policy.clone()
+    pub(super) fn image_pull_config(&self, fallback: &ImagePullConfig) -> ImagePullConfig {
+        ImagePullConfig {
+            policy: self.pull_policy.clone().or_else(|| fallback.policy.clone()),
+            secrets: fallback.secrets.clone(),
+        }
     }
 }

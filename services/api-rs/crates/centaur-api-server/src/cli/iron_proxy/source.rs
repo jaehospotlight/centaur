@@ -19,8 +19,8 @@ pub(super) struct IronProxySourceArgs {
         default_value = "env"
     )]
     source: IronProxySecretSourceArg,
-    #[arg(long = "op-vault", env = "OP_VAULT")]
-    op_vault: Option<String>,
+    #[arg(long = "op-vault", env = "OP_VAULT", default_value = "ai-agents")]
+    op_vault: String,
     #[arg(
         long = "kubernetes-firewall-manager-secret-ttl",
         env = "KUBERNETES_FIREWALL_MANAGER_SECRET_TTL",
@@ -37,17 +37,13 @@ pub(super) struct IronProxySourceArgs {
 
 impl IronProxySourceArgs {
     pub(super) fn policy(&self) -> SourcePolicy {
-        let op_vault = self
-            .op_vault
-            .clone()
-            .unwrap_or_else(|| "ai-agents".to_owned());
         match self.source {
             IronProxySecretSourceArg::Env => SourcePolicy::env(),
             IronProxySecretSourceArg::OnePassword => {
-                SourcePolicy::onepassword(op_vault, self.secret_ttl.clone())
+                SourcePolicy::onepassword(self.op_vault.clone(), self.secret_ttl.clone())
             }
             IronProxySecretSourceArg::OnePasswordConnect => {
-                SourcePolicy::onepassword_connect(op_vault, self.secret_ttl.clone())
+                SourcePolicy::onepassword_connect(self.op_vault.clone(), self.secret_ttl.clone())
             }
         }
         .with_token_broker_ttl(self.token_broker_ttl.clone())

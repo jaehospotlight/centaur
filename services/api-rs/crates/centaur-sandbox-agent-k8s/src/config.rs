@@ -12,8 +12,7 @@ pub struct AgentSandboxConfig {
     pub container_name: String,
     pub labels: BTreeMap<String, String>,
     pub annotations: BTreeMap<String, String>,
-    pub image_pull_policy: Option<String>,
-    pub image_pull_secrets: Vec<String>,
+    pub image_pull: ImagePullConfig,
     pub runtime_class_name: Option<String>,
     pub service_account_name: Option<String>,
     pub iron_proxy: Option<IronProxyPodConfig>,
@@ -28,8 +27,7 @@ impl AgentSandboxConfig {
             container_name: DEFAULT_CONTAINER_NAME.to_owned(),
             labels: BTreeMap::new(),
             annotations: BTreeMap::new(),
-            image_pull_policy: None,
-            image_pull_secrets: Vec::new(),
+            image_pull: ImagePullConfig::default(),
             runtime_class_name: None,
             service_account_name: None,
             iron_proxy: None,
@@ -38,11 +36,16 @@ impl AgentSandboxConfig {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ImagePullConfig {
+    pub policy: Option<String>,
+    pub secrets: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct IronProxyPodConfig {
     pub image: String,
-    pub image_pull_policy: Option<String>,
-    pub image_pull_secrets: Vec<String>,
+    pub image_pull: ImagePullConfig,
     pub fragments: Vec<ProxyFragment>,
     pub source_policy: SourcePolicy,
     pub ca_cert_secret_name: String,
@@ -66,8 +69,7 @@ impl IronProxyPodConfig {
     ) -> Self {
         Self {
             image: image.into(),
-            image_pull_policy: None,
-            image_pull_secrets: Vec::new(),
+            image_pull: ImagePullConfig::default(),
             fragments: Vec::new(),
             source_policy: SourcePolicy::default(),
             ca_cert_secret_name: ca_cert_secret_name.into(),

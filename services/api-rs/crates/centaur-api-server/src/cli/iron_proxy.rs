@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 
 use centaur_iron_proxy::load_fragment_files;
-use centaur_sandbox_agent_k8s::IronProxyPodConfig;
+use centaur_sandbox_agent_k8s::{ImagePullConfig, IronProxyPodConfig};
 use clap::Args as ClapArgs;
 
 use super::ServerError;
-use super::kubernetes::KubernetesSandboxArgs;
 
 mod ca;
 mod fragments;
@@ -57,7 +56,7 @@ pub(super) struct IronProxyArgs {
 impl IronProxyArgs {
     pub(super) fn to_config(
         &self,
-        kubernetes: &KubernetesSandboxArgs,
+        sandbox_image_pull: &ImagePullConfig,
     ) -> Result<Option<IronProxyPodConfig>, ServerError> {
         let fragment_paths = self.fragments.paths()?;
         if !self
@@ -68,15 +67,14 @@ impl IronProxyArgs {
         }
         let (ca_cert_secret_name, ca_key_secret_name) = self.ca.required()?;
 
-        let mut config =
-            IronProxyPodConfig::new(self.image.name(), ca_cert_secret_name, ca_key_secret_name)
-                .with_fragments(load_fragment_files(&fragment_paths)?);
+        let mut config = IronProxyPodConfig::new(
+            self.image.image_name.clone(),
+            ca_cert_secret_name,
+            ca_key_secret_name,
+        )
+        .with_fragments(load_fragment_files(&fragment_paths)?);
 
-        config.image_pull_policy = self
-            .image
-            .pull_policy()
-            .or_else(|| kubernetes.agent_image_pull_policy());
-        config.image_pull_secrets = kubernetes.image_pull_secrets();
+        config.image_pull = self.image.image_pull_config(sandbox_image_pull);
         config.source_policy = self.source.policy();
         self.secret_env.apply_to(&mut config);
         self.op_connect.apply_to(&mut config);

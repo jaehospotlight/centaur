@@ -44,7 +44,7 @@ pub(crate) fn build_agent_sandbox(
     let container = Container {
         name: config.container_name.clone(),
         image: Some(spec.image.clone()),
-        image_pull_policy: config.image_pull_policy.clone(),
+        image_pull_policy: config.image_pull.policy.clone(),
         command: spec.command.clone(),
         args: (!spec.args.is_empty()).then(|| spec.args.clone()),
         env: env_vars(spec, resolved_iron_proxy),
@@ -71,7 +71,7 @@ pub(crate) fn build_agent_sandbox(
                 containers: vec![container],
                 restart_policy: Some("Never".to_owned()),
                 automount_service_account_token: Some(false),
-                image_pull_secrets: image_pull_secret_refs(&config.image_pull_secrets),
+                image_pull_secrets: image_pull_secret_refs(&config.image_pull.secrets),
                 runtime_class_name: config.runtime_class_name.clone(),
                 service_account_name: config.service_account_name.clone(),
                 volumes: (!volumes.is_empty()).then_some(volumes),

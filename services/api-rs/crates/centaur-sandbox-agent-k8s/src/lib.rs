@@ -6,7 +6,7 @@ pub mod crd;
 mod resources;
 
 pub use backend::AgentSandboxBackend;
-pub use config::{AgentSandboxConfig, IronProxyPodConfig};
+pub use config::{AgentSandboxConfig, ImagePullConfig, IronProxyPodConfig};
 
 const BACKEND_NAME: &str = "agent-sandbox-k8s";
 const MANAGED_LABEL: &str = "centaur.ai/managed";
