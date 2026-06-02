@@ -6,7 +6,7 @@ use centaur_sandbox_agent_k8s::{AgentSandboxBackend, AgentSandboxConfig, IronPro
 use centaur_sandbox_local::LocalSandboxBackend;
 use centaur_session_runtime::SandboxWorkloadMode;
 use centaur_session_sqlx::PgSessionStore;
-use clap::{Parser, ValueEnum};
+use clap::{Args as ClapArgs, Parser, ValueEnum};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -17,16 +17,16 @@ async fn main() -> Result<(), ServerError> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     init_tracing();
 
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    let store = PgSessionStore::connect(&args.database_url).await?;
-    if args.run_migrations {
+    let store = PgSessionStore::connect(&cli.database_url).await?;
+    if cli.run_migrations {
         store.run_migrations().await?;
     }
-    let sandbox_runtime = sandbox_runtime_from_args(&args).await?;
+    let sandbox_runtime = sandbox_runtime_from_args(&cli.sandbox).await?;
 
-    let listener = TcpListener::bind(args.bind_addr).await?;
-    info!(bind_addr = %args.bind_addr, "starting centaur api-rs server");
+    let listener = TcpListener::bind(cli.bind_addr).await?;
+    info!(bind_addr = %cli.bind_addr, "starting centaur api-rs server");
 
     axum::serve(listener, build_router_with_runtime(store, sandbox_runtime))
         .with_graceful_shutdown(shutdown_signal())
@@ -43,196 +43,283 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-async fn sandbox_runtime_from_args(args: &Args) -> Result<SandboxRuntime, ServerError> {
-    match args.kubernetes_sandbox_backend {
+async fn sandbox_runtime_from_args(args: &SandboxArgs) -> Result<SandboxRuntime, ServerError> {
+    match args.backend {
         SandboxBackendKind::Local => Ok(SandboxRuntime::backend_with_workload(
             Arc::new(LocalSandboxBackend::new()),
-            local_workload_mode(args)?,
+            args.workload.local_mode()?,
         )),
         SandboxBackendKind::AgentK8s => {
-            let mut config = agent_sandbox_config_from_args(args)?;
-            config.ready_timeout = Duration::from_secs(args.kubernetes_sandbox_ready_timeout_s);
-
-            let client = if let Some(context) = args.kubernetes_context.as_deref() {
-                let kube_config = kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions {
-                    context: Some(context.to_owned()),
-                    ..kube::config::KubeConfigOptions::default()
-                })
-                .await?;
-                kube::Client::try_from(kube_config)?
-            } else {
-                kube::Client::try_default().await?
-            };
-            let backend = Arc::new(AgentSandboxBackend::new(client, config));
-
-            Ok(container_sandbox_runtime(backend, args))
-        }
-    }
-}
-
-fn local_workload_mode(args: &Args) -> Result<SandboxWorkloadMode, ServerError> {
-    match args.kubernetes_sandbox_workload {
-        SandboxWorkloadKind::Mock => Ok(SandboxWorkloadMode::mock_app_server(
-            args.kubernetes_agent_image
-                .clone()
-                .unwrap_or_else(|| "local-mock-app-server".to_owned()),
-        )),
-        SandboxWorkloadKind::CodexAppServer => Err(ServerError::UnsupportedConfig(
-            "codex-app-server workload requires --kubernetes-sandbox-backend agent-k8s".to_owned(),
-        )),
-    }
-}
-
-fn container_sandbox_runtime(backend: Arc<AgentSandboxBackend>, args: &Args) -> SandboxRuntime {
-    SandboxRuntime::backend_with_workload(backend, container_workload_mode(args))
-}
-
-fn container_workload_mode(args: &Args) -> SandboxWorkloadMode {
-    let image = args
-        .kubernetes_agent_image
-        .clone()
-        .unwrap_or_else(|| default_sandbox_image(args.kubernetes_sandbox_workload).to_owned());
-    match args.kubernetes_sandbox_workload {
-        SandboxWorkloadKind::Mock => SandboxWorkloadMode::mock_app_server(image),
-        SandboxWorkloadKind::CodexAppServer => {
-            SandboxWorkloadMode::codex_app_server(image, codex_app_server_env_template(args))
+            let config = AgentSandboxConfig::try_from(args)?;
+            let backend = Arc::new(AgentSandboxBackend::new(
+                args.kubernetes.client().await?,
+                config,
+            ));
+            Ok(SandboxRuntime::backend_with_workload(
+                backend,
+                args.workload.container_mode(&args.harness_auth),
+            ))
         }
     }
 }
 
 #[derive(Debug, Parser)]
 #[command(about = "Run the Centaur API Rust control plane")]
-struct Args {
+struct Cli {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
     #[arg(long, env = "BIND_ADDR", default_value = "127.0.0.1:8080")]
     bind_addr: SocketAddr,
     #[arg(long, env = "RUN_MIGRATIONS", default_value_t = false)]
     run_migrations: bool,
+    #[command(flatten)]
+    sandbox: SandboxArgs,
+}
+
+#[derive(Debug, ClapArgs)]
+struct SandboxArgs {
     #[arg(
-        long,
+        long = "kubernetes-sandbox-backend",
         env = "KUBERNETES_SANDBOX_BACKEND",
         value_enum,
         default_value = "local"
     )]
-    kubernetes_sandbox_backend: SandboxBackendKind,
+    backend: SandboxBackendKind,
+    #[command(flatten)]
+    kubernetes: KubernetesSandboxArgs,
+    #[command(flatten)]
+    workload: SandboxWorkloadArgs,
+    #[command(flatten)]
+    harness_auth: HarnessAuthArgs,
+    #[command(flatten)]
+    iron_proxy: IronProxyArgs,
+}
+
+#[derive(Debug, ClapArgs)]
+struct KubernetesSandboxArgs {
     #[arg(
-        long,
+        long = "kubernetes-namespace",
+        env = "KUBERNETES_NAMESPACE",
+        default_value = "centaur-sandbox-e2e"
+    )]
+    namespace: String,
+    #[arg(long = "kubernetes-context", env = "KUBERNETES_CONTEXT")]
+    context: Option<String>,
+    #[arg(
+        long = "kubernetes-agent-image-pull-policy",
+        env = "KUBERNETES_AGENT_IMAGE_PULL_POLICY"
+    )]
+    agent_image_pull_policy: Option<String>,
+    #[arg(
+        long = "kubernetes-sandbox-image-pull-secrets",
+        env = "KUBERNETES_SANDBOX_IMAGE_PULL_SECRETS",
+        value_delimiter = ','
+    )]
+    image_pull_secrets: Vec<String>,
+    #[arg(
+        long = "kubernetes-sandbox-ready-timeout-s",
+        env = "KUBERNETES_SANDBOX_READY_TIMEOUT_S",
+        default_value_t = 90
+    )]
+    ready_timeout_s: u64,
+    #[arg(
+        long = "kubernetes-sandbox-runtime-class-name",
+        env = "KUBERNETES_SANDBOX_RUNTIME_CLASS_NAME"
+    )]
+    runtime_class_name: Option<String>,
+    #[arg(
+        long = "kubernetes-sandbox-service-account-name",
+        env = "KUBERNETES_SANDBOX_SERVICE_ACCOUNT_NAME"
+    )]
+    service_account_name: Option<String>,
+}
+
+impl KubernetesSandboxArgs {
+    async fn client(&self) -> Result<kube::Client, ServerError> {
+        if let Some(context) = self.context.as_deref() {
+            let kube_config = kube::Config::from_kubeconfig(&kube::config::KubeConfigOptions {
+                context: Some(context.to_owned()),
+                ..kube::config::KubeConfigOptions::default()
+            })
+            .await?;
+            return Ok(kube::Client::try_from(kube_config)?);
+        }
+        Ok(kube::Client::try_default().await?)
+    }
+
+    fn apply_to(&self, config: &mut AgentSandboxConfig) {
+        config.image_pull_policy = self.agent_image_pull_policy.clone();
+        config.image_pull_secrets = self.image_pull_secrets.clone();
+        config.ready_timeout = Duration::from_secs(self.ready_timeout_s);
+        config.runtime_class_name = self.runtime_class_name.clone();
+        config.service_account_name = self.service_account_name.clone();
+    }
+}
+
+#[derive(Debug, ClapArgs)]
+struct SandboxWorkloadArgs {
+    #[arg(
+        long = "kubernetes-sandbox-workload",
         env = "KUBERNETES_SANDBOX_WORKLOAD",
         value_enum,
         default_value = "mock"
     )]
-    kubernetes_sandbox_workload: SandboxWorkloadKind,
-    #[arg(
-        long,
-        env = "KUBERNETES_NAMESPACE",
-        default_value = "centaur-sandbox-e2e"
-    )]
-    kubernetes_namespace: String,
-    #[arg(long, env = "KUBERNETES_AGENT_IMAGE")]
-    kubernetes_agent_image: Option<String>,
-    #[arg(long, env = "KUBERNETES_AGENT_IMAGE_PULL_POLICY")]
-    kubernetes_agent_image_pull_policy: Option<String>,
-    #[arg(
-        long,
-        env = "KUBERNETES_SANDBOX_IMAGE_PULL_SECRETS",
-        value_delimiter = ','
-    )]
-    kubernetes_sandbox_image_pull_secrets: Vec<String>,
-    #[arg(long, env = "KUBERNETES_SANDBOX_READY_TIMEOUT_S", default_value_t = 90)]
-    kubernetes_sandbox_ready_timeout_s: u64,
-    #[arg(long, env = "KUBERNETES_CONTEXT")]
-    kubernetes_context: Option<String>,
-    #[arg(long, env = "KUBERNETES_SANDBOX_RUNTIME_CLASS_NAME")]
-    kubernetes_sandbox_runtime_class_name: Option<String>,
-    #[arg(long, env = "KUBERNETES_SANDBOX_SERVICE_ACCOUNT_NAME")]
-    kubernetes_sandbox_service_account_name: Option<String>,
+    workload: SandboxWorkloadKind,
+    #[arg(long = "kubernetes-agent-image", env = "KUBERNETES_AGENT_IMAGE")]
+    agent_image: Option<String>,
     #[arg(long, env = "CENTAUR_API_URL", default_value = "http://api:8000")]
     centaur_api_url: String,
     #[arg(long, env = "CENTAUR_API_KEY")]
     centaur_api_key: Option<String>,
     #[arg(
-        long,
+        long = "kubernetes-sandbox-passthrough-env",
         env = "KUBERNETES_SANDBOX_PASSTHROUGH_ENV",
         value_delimiter = ','
     )]
-    kubernetes_sandbox_passthrough_env: Vec<String>,
-    #[arg(long, env = "CODEX_AUTH_MODE")]
-    codex_auth_mode: Option<String>,
-    #[arg(long, env = "CLAUDE_CODE_AUTH_MODE")]
-    claude_code_auth_mode: Option<String>,
+    passthrough_env: Vec<String>,
+}
+
+impl SandboxWorkloadArgs {
+    fn local_mode(&self) -> Result<SandboxWorkloadMode, ServerError> {
+        match self.workload {
+            SandboxWorkloadKind::Mock => Ok(SandboxWorkloadMode::mock_app_server(
+                self.agent_image
+                    .clone()
+                    .unwrap_or_else(|| "local-mock-app-server".to_owned()),
+            )),
+            SandboxWorkloadKind::CodexAppServer => Err(ServerError::UnsupportedConfig(
+                "codex-app-server workload requires --kubernetes-sandbox-backend agent-k8s"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    fn container_mode(&self, harness_auth: &HarnessAuthArgs) -> SandboxWorkloadMode {
+        let image = self
+            .agent_image
+            .clone()
+            .unwrap_or_else(|| default_sandbox_image(self.workload).to_owned());
+        match self.workload {
+            SandboxWorkloadKind::Mock => SandboxWorkloadMode::mock_app_server(image),
+            SandboxWorkloadKind::CodexAppServer => {
+                SandboxWorkloadMode::codex_app_server(image, self.app_server_env(harness_auth))
+            }
+        }
+    }
+
+    fn app_server_env(&self, harness_auth: &HarnessAuthArgs) -> Vec<(String, String)> {
+        let mut values =
+            BTreeMap::from([("CENTAUR_API_URL".to_owned(), self.centaur_api_url.clone())]);
+        if let Some(api_key) = &self.centaur_api_key {
+            values.insert("CENTAUR_API_KEY".to_owned(), api_key.clone());
+        }
+        harness_auth.insert_app_server_env(&mut values);
+        for name in &self.passthrough_env {
+            if let Ok(value) = env::var(name) {
+                values.insert(name.clone(), value);
+            }
+        }
+        values.into_iter().collect()
+    }
+}
+
+#[derive(Debug, ClapArgs)]
+struct HarnessAuthArgs {
+    #[arg(long = "codex-auth-mode", env = "CODEX_AUTH_MODE")]
+    codex: Option<String>,
+    #[arg(long = "claude-code-auth-mode", env = "CLAUDE_CODE_AUTH_MODE")]
+    claude_code: Option<String>,
+}
+
+impl HarnessAuthArgs {
+    fn insert_app_server_env(&self, values: &mut BTreeMap<String, String>) {
+        if let Some(value) = &self.claude_code {
+            values.insert("CLAUDE_CODE_AUTH_MODE".to_owned(), value.clone());
+        }
+        if let Some(value) = &self.codex {
+            values.insert("CODEX_AUTH_MODE".to_owned(), value.clone());
+        }
+    }
+
+    fn proxy_modes(&self) -> BTreeMap<String, String> {
+        [
+            self.codex.clone().map(|mode| ("codex".to_owned(), mode)),
+            self.claude_code
+                .clone()
+                .map(|mode| ("claude-code".to_owned(), mode)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+#[derive(Debug, ClapArgs)]
+struct IronProxyArgs {
     #[arg(
-        long,
+        long = "kubernetes-sandbox-iron-proxy-mode",
         env = "KUBERNETES_SANDBOX_IRON_PROXY_MODE",
         value_enum,
         default_value = "auto"
     )]
-    kubernetes_sandbox_iron_proxy_mode: IronProxyMode,
-    #[arg(long, env = "KUBERNETES_IRON_PROXY_IMAGE")]
-    kubernetes_iron_proxy_image: Option<String>,
-    #[arg(long, env = "KUBERNETES_IRON_PROXY_IMAGE_PULL_POLICY")]
-    kubernetes_iron_proxy_image_pull_policy: Option<String>,
+    mode: IronProxyMode,
     #[arg(
-        long,
+        long = "kubernetes-iron-proxy-image",
+        env = "KUBERNETES_IRON_PROXY_IMAGE"
+    )]
+    iron_proxy_image: Option<String>,
+    #[arg(
+        long = "kubernetes-iron-proxy-image-pull-policy",
+        env = "KUBERNETES_IRON_PROXY_IMAGE_PULL_POLICY"
+    )]
+    image_pull_policy: Option<String>,
+    #[arg(
+        long = "kubernetes-iron-proxy-fragment-paths",
         env = "KUBERNETES_IRON_PROXY_FRAGMENT_PATHS",
         value_delimiter = ','
     )]
-    kubernetes_iron_proxy_fragment_paths: Vec<PathBuf>,
+    fragment_paths: Vec<PathBuf>,
     #[arg(
-        long,
+        long = "kubernetes-iron-proxy-fragment-dirs",
         env = "KUBERNETES_IRON_PROXY_FRAGMENT_DIRS",
         value_delimiter = ','
     )]
-    kubernetes_iron_proxy_fragment_dirs: Vec<PathBuf>,
-    #[arg(long, env = "TOOL_DIRS", value_delimiter = ':')]
+    fragment_dirs: Vec<PathBuf>,
+    #[arg(long = "tool-dirs", env = "TOOL_DIRS", value_delimiter = ':')]
     tool_dirs: Vec<PathBuf>,
-    #[arg(long, env = "KUBERNETES_FIREWALL_CA_SECRET_NAME")]
-    kubernetes_firewall_ca_secret_name: Option<String>,
-    #[arg(long, env = "KUBERNETES_FIREWALL_CA_KEY_SECRET_NAME")]
-    kubernetes_firewall_ca_key_secret_name: Option<String>,
-    #[arg(long, env = "KUBERNETES_SECRET_ENV_NAME")]
-    kubernetes_secret_env_name: Option<String>,
-    #[arg(long, env = "KUBERNETES_SECRET_ENV_PREFIX")]
-    kubernetes_secret_env_prefix: Option<String>,
-    #[arg(long, env = "KUBERNETES_BOOTSTRAP_SECRET_NAME")]
-    kubernetes_bootstrap_secret_name: Option<String>,
     #[arg(
-        long,
-        env = "KUBERNETES_FIREWALL_MANAGER_SECRET_SOURCE",
-        value_enum,
-        default_value = "env"
+        long = "kubernetes-firewall-ca-secret-name",
+        env = "KUBERNETES_FIREWALL_CA_SECRET_NAME"
     )]
-    kubernetes_firewall_manager_secret_source: IronProxySecretSourceArg,
-    #[arg(long, env = "OP_VAULT")]
-    op_vault: Option<String>,
+    ca_cert_secret_name: Option<String>,
     #[arg(
-        long,
-        env = "KUBERNETES_FIREWALL_MANAGER_SECRET_TTL",
-        default_value = "10m"
+        long = "kubernetes-firewall-ca-key-secret-name",
+        env = "KUBERNETES_FIREWALL_CA_KEY_SECRET_NAME"
     )]
-    kubernetes_firewall_manager_secret_ttl: String,
+    ca_key_secret_name: Option<String>,
     #[arg(
-        long,
-        env = "KUBERNETES_FIREWALL_MANAGER_TOKEN_BROKER_TTL",
-        default_value = "1m"
+        long = "kubernetes-secret-env-name",
+        env = "KUBERNETES_SECRET_ENV_NAME"
     )]
-    kubernetes_firewall_manager_token_broker_ttl: String,
-    #[arg(long, env = "KUBERNETES_OP_CONNECT_HOST")]
-    kubernetes_op_connect_host: Option<String>,
-    #[arg(long, env = "KUBERNETES_OP_CONNECT_APP_NAME")]
-    kubernetes_op_connect_app_name: Option<String>,
-    #[arg(long, env = "KUBERNETES_OP_CONNECT_PORT")]
-    kubernetes_op_connect_port: Option<u16>,
+    secret_env_name: Option<String>,
     #[arg(
-        long,
-        env = "KUBERNETES_API_POD_LABEL_SELECTOR",
-        value_parser = parse_label_selector_arg
+        long = "kubernetes-secret-env-prefix",
+        env = "KUBERNETES_SECRET_ENV_PREFIX"
     )]
-    kubernetes_api_pod_label_selector: Option<BTreeMap<String, String>>,
-    #[arg(long, env = "KUBERNETES_TOKEN_BROKER_NAME")]
-    kubernetes_token_broker_name: Option<String>,
-    #[arg(long, env = "KUBERNETES_TOKEN_BROKER_CONFIGMAP_NAME")]
-    kubernetes_token_broker_configmap_name: Option<String>,
+    secret_env_prefix: Option<String>,
+    #[arg(
+        long = "kubernetes-bootstrap-secret-name",
+        env = "KUBERNETES_BOOTSTRAP_SECRET_NAME"
+    )]
+    bootstrap_secret_name: Option<String>,
+    #[command(flatten)]
+    source: IronProxySourceArgs,
+    #[command(flatten)]
+    op_connect: OnePasswordConnectArgs,
+    #[arg(long = "kubernetes-api-pod-label-selector", env = "KUBERNETES_API_POD_LABEL_SELECTOR", value_parser = parse_label_selector_arg)]
+    api_pod_label_selector: Option<BTreeMap<String, String>>,
+    #[command(flatten)]
+    token_broker: TokenBrokerArgs,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -256,6 +343,16 @@ enum IronProxyMode {
     Disabled,
 }
 
+impl IronProxyMode {
+    fn enabled(self, has_fragments: bool, has_ca_config: bool) -> bool {
+        match self {
+            IronProxyMode::Auto => has_fragments || has_ca_config,
+            IronProxyMode::Enabled => true,
+            IronProxyMode::Disabled => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum IronProxySecretSourceArg {
     Env,
@@ -265,6 +362,100 @@ enum IronProxySecretSourceArg {
     OnePasswordConnect,
 }
 
+#[derive(Debug, ClapArgs)]
+struct IronProxySourceArgs {
+    #[arg(
+        long = "kubernetes-firewall-manager-secret-source",
+        env = "KUBERNETES_FIREWALL_MANAGER_SECRET_SOURCE",
+        value_enum,
+        default_value = "env"
+    )]
+    source: IronProxySecretSourceArg,
+    #[arg(long = "op-vault", env = "OP_VAULT")]
+    op_vault: Option<String>,
+    #[arg(
+        long = "kubernetes-firewall-manager-secret-ttl",
+        env = "KUBERNETES_FIREWALL_MANAGER_SECRET_TTL",
+        default_value = "10m"
+    )]
+    secret_ttl: String,
+    #[arg(
+        long = "kubernetes-firewall-manager-token-broker-ttl",
+        env = "KUBERNETES_FIREWALL_MANAGER_TOKEN_BROKER_TTL",
+        default_value = "1m"
+    )]
+    token_broker_ttl: String,
+}
+
+impl From<&IronProxySourceArgs> for SourcePolicy {
+    fn from(args: &IronProxySourceArgs) -> Self {
+        let op_vault = args
+            .op_vault
+            .clone()
+            .unwrap_or_else(|| "ai-agents".to_owned());
+        match args.source {
+            IronProxySecretSourceArg::Env => SourcePolicy::env(),
+            IronProxySecretSourceArg::OnePassword => {
+                SourcePolicy::onepassword(op_vault, args.secret_ttl.clone())
+            }
+            IronProxySecretSourceArg::OnePasswordConnect => {
+                SourcePolicy::onepassword_connect(op_vault, args.secret_ttl.clone())
+            }
+        }
+        .with_token_broker_ttl(args.token_broker_ttl.clone())
+    }
+}
+
+#[derive(Debug, ClapArgs)]
+struct OnePasswordConnectArgs {
+    #[arg(
+        long = "kubernetes-op-connect-host",
+        env = "KUBERNETES_OP_CONNECT_HOST"
+    )]
+    host: Option<String>,
+    #[arg(
+        long = "kubernetes-op-connect-app-name",
+        env = "KUBERNETES_OP_CONNECT_APP_NAME"
+    )]
+    app_name: Option<String>,
+    #[arg(
+        long = "kubernetes-op-connect-port",
+        env = "KUBERNETES_OP_CONNECT_PORT"
+    )]
+    port: Option<u16>,
+}
+
+impl OnePasswordConnectArgs {
+    fn apply_to(&self, config: &mut IronProxyPodConfig) {
+        if let Some(app_name) = &self.app_name {
+            config.op_connect_app_name = app_name.clone();
+        }
+        config.op_connect_port = self
+            .port
+            .or_else(|| self.host.as_deref().and_then(parse_host_port))
+            .unwrap_or(config.op_connect_port);
+        if let Some(host) = &self.host {
+            config
+                .extra_env
+                .insert("OP_CONNECT_HOST".to_owned(), host.clone());
+        }
+    }
+}
+
+#[derive(Debug, ClapArgs)]
+struct TokenBrokerArgs {
+    #[arg(
+        long = "kubernetes-token-broker-name",
+        env = "KUBERNETES_TOKEN_BROKER_NAME"
+    )]
+    name: Option<String>,
+    #[arg(
+        long = "kubernetes-token-broker-configmap-name",
+        env = "KUBERNETES_TOKEN_BROKER_CONFIGMAP_NAME"
+    )]
+    configmap_name: Option<String>,
+}
+
 fn default_sandbox_image(workload: SandboxWorkloadKind) -> &'static str {
     match workload {
         SandboxWorkloadKind::Mock => "busybox:1.36",
@@ -272,139 +463,91 @@ fn default_sandbox_image(workload: SandboxWorkloadKind) -> &'static str {
     }
 }
 
-fn agent_sandbox_config_from_args(args: &Args) -> Result<AgentSandboxConfig, ServerError> {
-    let mut config = AgentSandboxConfig::new(args.kubernetes_namespace.clone());
-    config.image_pull_policy = args.kubernetes_agent_image_pull_policy.clone();
-    config.image_pull_secrets = args.kubernetes_sandbox_image_pull_secrets.clone();
-    config.runtime_class_name = args.kubernetes_sandbox_runtime_class_name.clone();
-    config.service_account_name = args.kubernetes_sandbox_service_account_name.clone();
-    config.iron_proxy = iron_proxy_config_from_args(args)?;
-    Ok(config)
+impl TryFrom<&SandboxArgs> for AgentSandboxConfig {
+    type Error = ServerError;
+
+    fn try_from(args: &SandboxArgs) -> Result<Self, Self::Error> {
+        let mut config = AgentSandboxConfig::new(args.kubernetes.namespace.clone());
+        args.kubernetes.apply_to(&mut config);
+        config.iron_proxy = args
+            .iron_proxy
+            .to_config(&args.kubernetes, &args.harness_auth)?;
+        Ok(config)
+    }
 }
 
-fn iron_proxy_config_from_args(args: &Args) -> Result<Option<IronProxyPodConfig>, ServerError> {
-    let fragment_paths = iron_proxy_fragment_paths(args)?;
-    let ca_cert_secret_name = args.kubernetes_firewall_ca_secret_name.clone();
-    let ca_key_secret_name = args.kubernetes_firewall_ca_key_secret_name.clone();
-    if !iron_proxy_enabled(
-        args.kubernetes_sandbox_iron_proxy_mode,
-        !fragment_paths.is_empty(),
-        ca_cert_secret_name.is_some() && ca_key_secret_name.is_some(),
-    ) {
-        return Ok(None);
-    }
-    let image = args
-        .kubernetes_iron_proxy_image
-        .clone()
-        .unwrap_or_else(|| "centaur-iron-proxy:latest".to_owned());
-    let mut config = IronProxyPodConfig::new(
-        image,
-        ca_cert_secret_name.ok_or(ServerError::MissingIronProxyCaSecret)?,
-        ca_key_secret_name.ok_or(ServerError::MissingIronProxyCaSecret)?,
-    )
-    .with_fragments(load_fragment_files(&fragment_paths)?);
-    config.image_pull_policy = args
-        .kubernetes_iron_proxy_image_pull_policy
-        .clone()
-        .or_else(|| args.kubernetes_agent_image_pull_policy.clone());
-    config.image_pull_secrets = args.kubernetes_sandbox_image_pull_secrets.clone();
-    config.source_policy = source_policy_from_args(args);
-    if let Some(secret_name) = &args.kubernetes_secret_env_name {
-        config.secret_env_name = Some(secret_name.clone());
-        config.secret_env_prefix = args
-            .kubernetes_secret_env_prefix
+impl IronProxyArgs {
+    fn to_config(
+        &self,
+        kubernetes: &KubernetesSandboxArgs,
+        harness_auth: &HarnessAuthArgs,
+    ) -> Result<Option<IronProxyPodConfig>, ServerError> {
+        let fragment_paths = self.fragment_paths()?;
+        if !self.mode.enabled(
+            !fragment_paths.is_empty(),
+            self.ca_cert_secret_name.is_some() && self.ca_key_secret_name.is_some(),
+        ) {
+            return Ok(None);
+        }
+
+        let mut config = IronProxyPodConfig::new(
+            self.iron_proxy_image
+                .clone()
+                .unwrap_or_else(|| "centaur-iron-proxy:latest".to_owned()),
+            self.ca_cert_secret_name
+                .clone()
+                .ok_or(ServerError::MissingIronProxyCaSecret)?,
+            self.ca_key_secret_name
+                .clone()
+                .ok_or(ServerError::MissingIronProxyCaSecret)?,
+        )
+        .with_fragments(load_fragment_files(&fragment_paths)?);
+
+        config.image_pull_policy = self
+            .image_pull_policy
             .clone()
-            .unwrap_or_default();
-        config.env_from_secret_names.push(secret_name.clone());
+            .or_else(|| kubernetes.agent_image_pull_policy.clone());
+        config.image_pull_secrets = kubernetes.image_pull_secrets.clone();
+        config.source_policy = SourcePolicy::from(&self.source);
+        config.harness_auth_modes = harness_auth.proxy_modes();
+        self.apply_secret_env(&mut config);
+        self.op_connect.apply_to(&mut config);
+        config.token_broker_name = self.token_broker.name.clone();
+        config.token_broker_configmap_name = self.token_broker.configmap_name.clone();
+        if let Some(labels) = self
+            .api_pod_label_selector
+            .as_ref()
+            .filter(|labels| !labels.is_empty())
+        {
+            config.api_pod_labels = labels.clone();
+        }
+        Ok(Some(config))
     }
-    if matches!(config.source_policy.kind, SourceKind::OnePassword) {
-        if let Some(secret_name) = &args.kubernetes_bootstrap_secret_name {
+
+    fn fragment_paths(&self) -> Result<Vec<PathBuf>, ServerError> {
+        let mut paths = self.fragment_paths.clone();
+        let mut dirs = self.fragment_dirs.clone();
+        if dirs.is_empty() {
+            dirs.extend(self.tool_dirs.clone());
+        }
+        paths.extend(discover_fragment_files(&dirs)?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    fn apply_secret_env(&self, config: &mut IronProxyPodConfig) {
+        if let Some(secret_name) = &self.secret_env_name {
+            config.secret_env_name = Some(secret_name.clone());
+            config.secret_env_prefix = self.secret_env_prefix.clone().unwrap_or_default();
             config.env_from_secret_names.push(secret_name.clone());
         }
-    }
-    if let Some(app_name) = &args.kubernetes_op_connect_app_name {
-        config.op_connect_app_name = app_name.clone();
-    }
-    config.op_connect_port = args
-        .kubernetes_op_connect_port
-        .or_else(|| {
-            args.kubernetes_op_connect_host
-                .as_deref()
-                .and_then(parse_host_port)
-        })
-        .unwrap_or(config.op_connect_port);
-    if let Some(labels) = args
-        .kubernetes_api_pod_label_selector
-        .as_ref()
-        .filter(|labels| !labels.is_empty())
-    {
-        config.api_pod_labels = labels.clone();
-    }
-    config.token_broker_name = args.kubernetes_token_broker_name.clone();
-    config.token_broker_configmap_name = args.kubernetes_token_broker_configmap_name.clone();
-    config.harness_auth_modes = harness_auth_modes_from_args(args);
-    config.extra_env.extend(
-        [("OP_CONNECT_HOST", args.kubernetes_op_connect_host.clone())]
-            .into_iter()
-            .filter_map(|(name, value)| value.map(|value| (name.to_owned(), value))),
-    );
-    Ok(Some(config))
-}
-
-fn iron_proxy_fragment_paths(args: &Args) -> Result<Vec<PathBuf>, ServerError> {
-    let mut paths = args.kubernetes_iron_proxy_fragment_paths.clone();
-    let mut dirs = args.kubernetes_iron_proxy_fragment_dirs.clone();
-    if dirs.is_empty() {
-        dirs.extend(args.tool_dirs.clone());
-    }
-    paths.extend(discover_fragment_files(&dirs)?);
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
-}
-
-fn iron_proxy_enabled(
-    mode: IronProxyMode,
-    has_fragment_paths: bool,
-    has_kubernetes_proxy_config: bool,
-) -> bool {
-    match mode {
-        IronProxyMode::Auto => has_fragment_paths || has_kubernetes_proxy_config,
-        IronProxyMode::Enabled => true,
-        IronProxyMode::Disabled => false,
-    }
-}
-
-fn source_policy_from_args(args: &Args) -> SourcePolicy {
-    let op_vault = args
-        .op_vault
-        .clone()
-        .unwrap_or_else(|| "ai-agents".to_owned());
-    let ttl = args.kubernetes_firewall_manager_secret_ttl.clone();
-    let token_broker_ttl = args.kubernetes_firewall_manager_token_broker_ttl.clone();
-
-    match args.kubernetes_firewall_manager_secret_source {
-        IronProxySecretSourceArg::Env => SourcePolicy::env(),
-        IronProxySecretSourceArg::OnePassword => SourcePolicy::onepassword(op_vault, ttl),
-        IronProxySecretSourceArg::OnePasswordConnect => {
-            SourcePolicy::onepassword_connect(op_vault, ttl)
+        if matches!(config.source_policy.kind, SourceKind::OnePassword) {
+            if let Some(secret_name) = &self.bootstrap_secret_name {
+                config.env_from_secret_names.push(secret_name.clone());
+            }
         }
     }
-    .with_token_broker_ttl(token_broker_ttl)
-}
-
-fn harness_auth_modes_from_args(args: &Args) -> BTreeMap<String, String> {
-    [
-        args.codex_auth_mode
-            .clone()
-            .map(|mode| ("codex".to_owned(), mode)),
-        args.claude_code_auth_mode
-            .clone()
-            .map(|mode| ("claude-code".to_owned(), mode)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
 }
 
 fn parse_host_port(value: &str) -> Option<u16> {
@@ -431,69 +574,13 @@ fn parse_label_selector_arg(value: &str) -> Result<BTreeMap<String, String>, Str
     Ok(labels)
 }
 
-fn codex_app_server_env_template(args: &Args) -> Vec<(String, String)> {
-    let mut envs = Vec::new();
-    push_env(&mut envs, "CENTAUR_API_URL", args.centaur_api_url.clone());
-    if let Some(api_key) = &args.centaur_api_key {
-        push_env(&mut envs, "CENTAUR_API_KEY", api_key.clone());
-    }
-    if let Some(value) = &args.claude_code_auth_mode {
-        push_env(&mut envs, "CLAUDE_CODE_AUTH_MODE", value.clone());
-    }
-    if let Some(value) = &args.codex_auth_mode {
-        push_env(&mut envs, "CODEX_AUTH_MODE", value.clone());
-    }
-
-    for name in &args.kubernetes_sandbox_passthrough_env {
-        if let Ok(value) = env::var(&name) {
-            push_env(&mut envs, &name, value);
-        }
-    }
-
-    envs
-}
-
-fn push_env(envs: &mut Vec<(String, String)>, name: &str, value: String) {
-    if let Some((_, existing_value)) = envs
-        .iter_mut()
-        .find(|(existing_name, _)| existing_name == name)
-    {
-        *existing_value = value;
-    } else {
-        envs.push((name.to_owned(), value));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn iron_proxy_enables_for_stock_kubernetes_proxy_config() {
-        assert!(iron_proxy_enabled(IronProxyMode::Auto, false, true));
-        assert!(iron_proxy_enabled(IronProxyMode::Auto, true, false));
-        assert!(!iron_proxy_enabled(IronProxyMode::Auto, false, false));
-    }
-
-    #[test]
-    fn iron_proxy_mode_overrides_auto_detection() {
-        assert!(!iron_proxy_enabled(IronProxyMode::Disabled, true, true));
-        assert!(iron_proxy_enabled(IronProxyMode::Enabled, false, false));
-    }
-
-    #[test]
-    fn parses_label_selector_args_strictly() {
-        let labels = parse_label_selector_arg("app=api, component = worker").unwrap();
-
-        assert_eq!(labels["app"], "api");
-        assert_eq!(labels["component"], "worker");
-        assert!(parse_label_selector_arg("app").is_err());
-        assert!(parse_label_selector_arg("app=").is_err());
-    }
-
-    #[test]
-    fn clap_drives_iron_proxy_config() {
-        let args = Args::try_parse_from([
+    fn clap_builds_brokered_iron_proxy_config() {
+        let cli = Cli::try_parse_from([
             "centaur-api-server",
             "--database-url",
             "postgresql://postgres@localhost/centaur",
@@ -522,7 +609,10 @@ mod tests {
         ])
         .unwrap();
 
-        let config = iron_proxy_config_from_args(&args).unwrap().unwrap();
+        let config = AgentSandboxConfig::try_from(&cli.sandbox)
+            .unwrap()
+            .iron_proxy
+            .unwrap();
 
         assert_eq!(config.image, "centaur-iron-proxy:test");
         assert_eq!(config.ca_cert_secret_name, "firewall-ca-cert");

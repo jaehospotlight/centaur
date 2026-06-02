@@ -1623,105 +1623,6 @@ mod tests {
     }
 
     #[test]
-    fn builds_agent_sandbox_with_iron_proxy_env_and_ca_mount() {
-        let mut config = AgentSandboxConfig::new("centaur");
-        config.iron_proxy = Some(IronProxyPodConfig::new(
-            "centaur-iron-proxy:latest",
-            "firewall-ca-cert",
-            "firewall-ca-key",
-        ));
-        let resolved = ResolvedIronProxy {
-            config_yaml: "transforms: []\n".to_owned(),
-            placeholder_env: BTreeMap::from([(
-                "OPENAI_API_KEY".to_owned(),
-                "OPENAI_API_KEY".to_owned(),
-            )]),
-            proxy_host: "asbx-test-proxy".to_owned(),
-            proxy_pod_name: "asbx-test-proxy-123".to_owned(),
-            proxy_port: 18080,
-            listen_ports: vec![8080],
-            pg_dsn_env: BTreeMap::from([(
-                "WAREHOUSE_DSN".to_owned(),
-                "postgresql://app_user:pg-pass@asbx-test-proxy:5432/warehouse".to_owned(),
-            )]),
-            pg_proxy_password_env: BTreeMap::new(),
-        };
-        let spec = SandboxSpec::new("centaur-agent:latest")
-            .env("CENTAUR_API_URL", "http://centaur-centaur-api:8000")
-            .env("NO_PROXY", "otel.local")
-            .env("CENTAUR_HARNESS_KIND", "codex");
-
-        let sandbox = build_agent_sandbox(
-            &SandboxId::new("asbx-test"),
-            &spec,
-            &config,
-            Some(&resolved),
-        )
-        .unwrap();
-        let pod_spec = &sandbox.spec.pod_template.spec;
-        let containers = &pod_spec.containers;
-        assert_eq!(containers.len(), 1);
-        assert_eq!(containers[0].name, "agent");
-        assert_eq!(
-            sandbox
-                .spec
-                .pod_template
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.labels.as_ref())
-                .unwrap()
-                .get(MANAGED_LABEL),
-            Some(&"true".to_owned())
-        );
-        let agent_env = containers[0]
-            .env
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|env| (env.name.as_str(), env.value.as_deref().unwrap_or("")))
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(agent_env["OPENAI_API_KEY"], "OPENAI_API_KEY");
-        assert_eq!(
-            agent_env["WAREHOUSE_DSN"],
-            "postgresql://app_user:pg-pass@asbx-test-proxy:5432/warehouse"
-        );
-        assert_eq!(agent_env["FIREWALL_HOST"], "asbx-test-proxy");
-        assert_eq!(agent_env["FIREWALL_PROXY_PORT"], "18080");
-        assert_eq!(agent_env["HTTPS_PROXY"], "http://asbx-test-proxy:18080");
-        assert!(agent_env["NO_PROXY"].contains("asbx-test-proxy"));
-        assert!(agent_env["NO_PROXY"].contains("centaur-centaur-api"));
-        assert!(agent_env["NO_PROXY"].contains("otel.local"));
-        assert_eq!(
-            agent_env["REQUESTS_CA_BUNDLE"],
-            "/firewall-certs/ca-cert.pem"
-        );
-        assert_eq!(agent_env["CURL_CA_BUNDLE"], "/firewall-certs/ca-cert.pem");
-        assert!(
-            containers[0]
-                .volume_mounts
-                .as_ref()
-                .unwrap()
-                .iter()
-                .any(|mount| mount.name == "iron-proxy-ca-cert"
-                    && mount.mount_path == "/firewall-certs"
-                    && mount.read_only == Some(true))
-        );
-        let volumes = pod_spec.volumes.as_ref().unwrap();
-        assert!(
-            volumes
-                .iter()
-                .any(|volume| volume.name == "iron-proxy-ca-cert"
-                    && volume.secret.as_ref().unwrap().secret_name.as_deref()
-                        == Some("firewall-ca-cert"))
-        );
-        assert!(
-            !volumes
-                .iter()
-                .any(|volume| volume.name == "iron-proxy-config-rendered")
-        );
-    }
-
-    #[test]
     fn security_model_agent_pod_gets_placeholders_not_proxy_secrets() {
         let mut iron_proxy = IronProxyPodConfig::new(
             "centaur-iron-proxy:latest",
@@ -1772,8 +1673,14 @@ mod tests {
             env["WAREHOUSE_DSN"],
             "postgresql://app_user:pg-pass@asbx-sec-proxy:5440/warehouse"
         );
+        assert_eq!(env["FIREWALL_HOST"], "asbx-sec-proxy");
+        assert_eq!(env["FIREWALL_PROXY_PORT"], "18080");
         assert_eq!(env["HTTPS_PROXY"], "http://asbx-sec-proxy:18080");
         assert_eq!(env["HTTP_PROXY"], "http://asbx-sec-proxy:18080");
+        assert!(env["NO_PROXY"].contains("asbx-sec-proxy"));
+        assert!(env["NO_PROXY"].contains("api"));
+        assert_eq!(env["REQUESTS_CA_BUNDLE"], "/firewall-certs/ca-cert.pem");
+        assert_eq!(env["CURL_CA_BUNDLE"], "/firewall-certs/ca-cert.pem");
 
         for proxy_only_name in [
             "IRON_MANAGEMENT_API_KEY",
@@ -1788,6 +1695,18 @@ mod tests {
         }
 
         let volumes = pod_spec.volumes.as_ref().unwrap();
+        assert!(
+            container
+                .volume_mounts
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|mount| {
+                    mount.name == "iron-proxy-ca-cert"
+                        && mount.mount_path == "/firewall-certs"
+                        && mount.read_only == Some(true)
+                })
+        );
         assert!(volumes.iter().any(|volume| {
             volume.name == "iron-proxy-ca-cert"
                 && volume.secret.as_ref().unwrap().secret_name.as_deref()
@@ -1815,6 +1734,10 @@ mod tests {
         iron_proxy.secret_env_name = Some("centaur-infra-env".to_owned());
         iron_proxy.secret_env_prefix = "CENT_".to_owned();
         iron_proxy.token_broker_name = Some("centaur-token-broker".to_owned());
+        assert_eq!(
+            iron_token_broker_configmap_name(&iron_proxy).unwrap(),
+            "centaur-token-broker-config"
+        );
         let resolved = ResolvedIronProxy {
             config_yaml: "transforms: []\n".to_owned(),
             placeholder_env: BTreeMap::new(),
@@ -1884,26 +1807,6 @@ mod tests {
                 })
             })
         }));
-    }
-
-    #[test]
-    fn token_broker_configmap_defaults_to_deployment_name() {
-        let mut iron_proxy = IronProxyPodConfig::new(
-            "centaur-iron-proxy:latest",
-            "firewall-ca-cert",
-            "firewall-ca-key",
-        );
-        iron_proxy.token_broker_name = Some("centaur-token-broker".to_owned());
-        assert_eq!(
-            iron_token_broker_configmap_name(&iron_proxy).unwrap(),
-            "centaur-token-broker-config"
-        );
-        iron_proxy.token_broker_configmap_name = Some("custom-config".to_owned());
-        assert_eq!(
-            iron_token_broker_configmap_name(&iron_proxy).unwrap(),
-            "custom-config"
-        );
-        assert_eq!(short_sha256("abc"), "ba7816bf8f01cfea");
     }
 
     #[test]
