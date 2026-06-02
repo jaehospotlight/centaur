@@ -93,19 +93,17 @@ mod tests {
     #[test]
     fn codex_app_server_declares_credential_profile() {
         let thread_key = ThreadKey::parse("cli:test").unwrap();
+        let credential = CredentialRequest {
+            profile: CredentialProfile::Codex,
+            auth_mode: Some(HarnessAuthMode::AccessToken),
+        };
         let spec = SandboxWorkloadMode::CodexAppServer(CodexAppServerWorkload {
             image: "centaur-agent:test".to_owned(),
             centaur_api_url: "http://api:8000".to_owned(),
             centaur_api_key: None,
             extra_env: vec![EnvVar::new("NO_PROXY", "api")],
         })
-        .spec(
-            &thread_key,
-            CredentialRequest {
-                profile: CredentialProfile::Codex,
-                auth_mode: Some(HarnessAuthMode::AccessToken),
-            },
-        );
+        .spec(&thread_key, credential);
         let env = spec
             .env
             .iter()
@@ -121,12 +119,6 @@ mod tests {
             spec.args,
             ["--codex-auth-mode", "access_token", "codex-app-wrapper"].map(str::to_owned)
         );
-        assert_eq!(
-            spec.credentials,
-            vec![CredentialRequest {
-                profile: CredentialProfile::Codex,
-                auth_mode: Some(HarnessAuthMode::AccessToken),
-            }]
-        );
+        assert_eq!(spec.credentials, vec![credential]);
     }
 }

@@ -121,10 +121,10 @@ impl IronProxyArgs {
             config.secret_env_prefix = self.secret_env_prefix.clone().unwrap_or_default();
             config.env_from_secret_names.push(secret_name.clone());
         }
-        if matches!(config.source_policy.kind, SourceKind::OnePassword) {
-            if let Some(secret_name) = &self.bootstrap_secret_name {
-                config.env_from_secret_names.push(secret_name.clone());
-            }
+        if matches!(config.source_policy.kind, SourceKind::OnePassword)
+            && let Some(secret_name) = &self.bootstrap_secret_name
+        {
+            config.env_from_secret_names.push(secret_name.clone());
         }
         if let Some(app_name) = &self.op_connect_app_name {
             config.op_connect_app_name = app_name.clone();
