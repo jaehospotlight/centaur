@@ -15,8 +15,17 @@ pub(super) struct KubernetesSandboxArgs {
     namespace: String,
     #[arg(long = "kubernetes-context", env = "KUBERNETES_CONTEXT")]
     context: Option<String>,
-    #[command(flatten)]
-    image_pull: KubernetesImagePullArgs,
+    #[arg(
+        long = "kubernetes-agent-image-pull-policy",
+        env = "KUBERNETES_AGENT_IMAGE_PULL_POLICY"
+    )]
+    agent_image_pull_policy: Option<String>,
+    #[arg(
+        long = "kubernetes-sandbox-image-pull-secrets",
+        env = "KUBERNETES_SANDBOX_IMAGE_PULL_SECRETS",
+        value_delimiter = ','
+    )]
+    image_pull_secrets: Vec<String>,
     #[arg(
         long = "kubernetes-sandbox-ready-timeout-s",
         env = "KUBERNETES_SANDBOX_READY_TIMEOUT_S",
@@ -35,30 +44,6 @@ pub(super) struct KubernetesSandboxArgs {
     service_account_name: Option<String>,
 }
 
-#[derive(Debug, ClapArgs)]
-struct KubernetesImagePullArgs {
-    #[arg(
-        long = "kubernetes-agent-image-pull-policy",
-        env = "KUBERNETES_AGENT_IMAGE_PULL_POLICY"
-    )]
-    agent_image_pull_policy: Option<String>,
-    #[arg(
-        long = "kubernetes-sandbox-image-pull-secrets",
-        env = "KUBERNETES_SANDBOX_IMAGE_PULL_SECRETS",
-        value_delimiter = ','
-    )]
-    image_pull_secrets: Vec<String>,
-}
-
-impl From<&KubernetesImagePullArgs> for ImagePullConfig {
-    fn from(args: &KubernetesImagePullArgs) -> Self {
-        Self {
-            policy: args.agent_image_pull_policy.clone(),
-            secrets: args.image_pull_secrets.clone(),
-        }
-    }
-}
-
 impl KubernetesSandboxArgs {
     pub(super) async fn client(&self) -> Result<kube::Client, ServerError> {
         if let Some(context) = self.context.as_deref() {
@@ -73,7 +58,10 @@ impl KubernetesSandboxArgs {
     }
 
     pub(super) fn image_pull_config(&self) -> ImagePullConfig {
-        (&self.image_pull).into()
+        ImagePullConfig {
+            policy: self.agent_image_pull_policy.clone(),
+            secrets: self.image_pull_secrets.clone(),
+        }
     }
 
     pub(super) fn agent_config(
