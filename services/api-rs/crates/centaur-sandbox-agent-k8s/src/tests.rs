@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use centaur_iron_proxy::SourcePolicy;
-use centaur_sandbox_core::{CredentialProfile, ResourceLimits, SandboxSpec};
+use centaur_sandbox_core::{CredentialProfile, MountKind, ResourceLimits, SandboxSpec};
 use k8s_openapi::api::core::v1::{Pod, PodCondition, PodStatus};
 
 use super::*;
