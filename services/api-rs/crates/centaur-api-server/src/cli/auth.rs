@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use centaur_session_runtime::AppServerAuthMode;
 use clap::{Args as ClapArgs, ValueEnum};
 
 #[derive(Debug, ClapArgs)]
@@ -18,8 +19,17 @@ enum HarnessAuthMode {
     AccessToken,
 }
 
+impl From<HarnessAuthMode> for AppServerAuthMode {
+    fn from(value: HarnessAuthMode) -> Self {
+        match value {
+            HarnessAuthMode::ApiKey => Self::ApiKey,
+            HarnessAuthMode::AccessToken => Self::AccessToken,
+        }
+    }
+}
+
 impl HarnessAuthMode {
-    fn as_str(self) -> &'static str {
+    fn proxy_value(self) -> &'static str {
         match self {
             Self::ApiKey => "api_key",
             Self::AccessToken => "access_token",
@@ -28,20 +38,20 @@ impl HarnessAuthMode {
 }
 
 impl HarnessAuthArgs {
-    pub(super) fn codex_auth_mode(&self) -> Option<String> {
-        self.codex.map(|mode| mode.as_str().to_owned())
+    pub(super) fn codex_auth_mode(&self) -> Option<AppServerAuthMode> {
+        self.codex.map(Into::into)
     }
 
-    pub(super) fn claude_code_auth_mode(&self) -> Option<String> {
-        self.claude_code.map(|mode| mode.as_str().to_owned())
+    pub(super) fn claude_code_auth_mode(&self) -> Option<AppServerAuthMode> {
+        self.claude_code.map(Into::into)
     }
 
     pub(super) fn proxy_modes(&self) -> BTreeMap<String, String> {
         [
-            self.codex_auth_mode()
-                .map(|mode| ("codex".to_owned(), mode)),
-            self.claude_code_auth_mode()
-                .map(|mode| ("claude-code".to_owned(), mode)),
+            self.codex
+                .map(|mode| ("codex".to_owned(), mode.proxy_value().to_owned())),
+            self.claude_code
+                .map(|mode| ("claude-code".to_owned(), mode.proxy_value().to_owned())),
         ]
         .into_iter()
         .flatten()
