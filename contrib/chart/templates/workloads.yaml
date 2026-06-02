@@ -115,8 +115,8 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: {{ .Values.api.rollingUpdate.maxSurge | quote }}
-      maxUnavailable: {{ .Values.api.rollingUpdate.maxUnavailable | quote }}
+      maxSurge: {{ .Values.api.rollingUpdate.maxSurge }}
+      maxUnavailable: {{ .Values.api.rollingUpdate.maxUnavailable }}
   selector:
     matchLabels:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "api") | nindent 6 }}

@@ -33,8 +33,6 @@ pub const SESSION_OUTPUT_LINE_EVENT: &str = "session.output.line";
 
 const MAX_SESSION_OUTPUT_LINE_BYTES: usize = 1024 * 1024;
 const EVENT_STREAM_SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(30);
-const PIPE_LEASE_TTL: Duration = Duration::from_secs(45);
-const PIPE_LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(15);
 
 type SandboxSpecFactory = Arc<dyn Fn(&ThreadKey, &str) -> SandboxSpec + Send + Sync>;
 type SessionInputSink = FramedWrite<SandboxWrite, LinesCodec>;
@@ -45,6 +43,7 @@ pub struct SessionRuntime {
     sandbox_runtime: SandboxRuntime,
     sandbox_pipes: Arc<Mutex<HashMap<String, SessionPipe>>>,
     pipe_owner_id: Arc<str>,
+    options: SessionRuntimeOptions,
 }
 
 #[derive(Clone)]
@@ -57,6 +56,8 @@ pub struct SandboxRuntime {
 pub enum SandboxWorkloadMode {
     MockAppServer {
         image: String,
+        turns_per_input: u32,
+        event_delay_ms: u64,
     },
     CodexAppServer {
         image: String,
@@ -71,6 +72,21 @@ pub struct ExecuteSessionInput {
     pub input_lines: Vec<String>,
     pub idle_timeout_ms: Option<u64>,
     pub max_duration_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionRuntimeOptions {
+    pub pipe_lease_ttl: Duration,
+    pub pipe_lease_renew_interval: Duration,
+}
+
+impl Default for SessionRuntimeOptions {
+    fn default() -> Self {
+        Self {
+            pipe_lease_ttl: Duration::from_secs(45),
+            pipe_lease_renew_interval: Duration::from_secs(15),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -115,11 +131,20 @@ struct EventStreamState {
 
 impl SessionRuntime {
     pub fn new(store: PgSessionStore, sandbox_runtime: SandboxRuntime) -> Self {
+        Self::with_options(store, sandbox_runtime, SessionRuntimeOptions::default())
+    }
+
+    pub fn with_options(
+        store: PgSessionStore,
+        sandbox_runtime: SandboxRuntime,
+        options: SessionRuntimeOptions,
+    ) -> Self {
         Self {
             store,
             sandbox_runtime,
             sandbox_pipes: Arc::new(Mutex::new(HashMap::new())),
             pipe_owner_id: Arc::from(default_pipe_owner_id()),
+            options,
         }
     }
 
@@ -251,8 +276,9 @@ impl SessionRuntime {
                     warn!(%sandbox_id, "session pipe is owned by another api replica");
                     let runtime = self.clone();
                     let thread_key = thread_key.clone();
+                    let reclaim_delay = self.options.pipe_lease_ttl;
                     tokio::spawn(async move {
-                        sleep(PIPE_LEASE_TTL).await;
+                        sleep(reclaim_delay).await;
                         match runtime.ensure_session_pipe(&thread_key, &sandbox_id).await {
                             Ok(_) | Err(SessionRuntimeError::PipeLeaseUnavailable { .. }) => {}
                             Err(error) => {
@@ -318,7 +344,12 @@ impl SessionRuntime {
         let owner_id = self.pipe_owner_id.to_string();
         let claimed = self
             .store
-            .try_claim_pipe_lease(thread_key, sandbox_id, &owner_id, PIPE_LEASE_TTL)
+            .try_claim_pipe_lease(
+                thread_key,
+                sandbox_id,
+                &owner_id,
+                self.options.pipe_lease_ttl,
+            )
             .await?;
         if !claimed {
             return Err(SessionRuntimeError::PipeLeaseUnavailable {
@@ -367,6 +398,8 @@ impl SessionRuntime {
         let renew_key = pump_key.clone();
         let renew_owner_id = owner_id.clone();
         let renew_lease = lease.clone();
+        let lease_ttl = self.options.pipe_lease_ttl;
+        let renew_interval = self.options.pipe_lease_renew_interval;
 
         tokio::spawn(async move {
             renew_pipe_lease_until_stopped(
@@ -375,6 +408,8 @@ impl SessionRuntime {
                 renew_key,
                 renew_owner_id,
                 renew_lease,
+                lease_ttl,
+                renew_interval,
             )
             .await;
         });
@@ -448,8 +483,18 @@ impl SandboxRuntime {
 
 impl SandboxWorkloadMode {
     pub fn mock_app_server(image: impl Into<String>) -> Self {
+        Self::mock_app_server_with_options(image, 3, 200)
+    }
+
+    pub fn mock_app_server_with_options(
+        image: impl Into<String>,
+        turns_per_input: u32,
+        event_delay_ms: u64,
+    ) -> Self {
         Self::MockAppServer {
             image: image.into(),
+            turns_per_input,
+            event_delay_ms,
         }
     }
 
@@ -474,9 +519,13 @@ impl SandboxWorkloadMode {
 
     fn spec(&self, thread_key: &ThreadKey) -> SandboxSpec {
         match self {
-            Self::MockAppServer { image } => SandboxSpec::new(image)
+            Self::MockAppServer {
+                image,
+                turns_per_input,
+                event_delay_ms,
+            } => SandboxSpec::new(image)
                 .command(["/bin/sh", "-lc"])
-                .args([mock_app_server_script()]),
+                .args([mock_app_server_script(*turns_per_input, *event_delay_ms)]),
             Self::CodexAppServer { image, env, mounts } => {
                 let mut spec =
                     SandboxSpec::new(image).env("CENTAUR_THREAD_KEY", thread_key.as_str());
@@ -492,26 +541,29 @@ impl SandboxWorkloadMode {
     }
 }
 
-fn mock_app_server_script() -> &'static str {
-    r#"while IFS= read -r line; do
-printf '%s\n' '{"type":"system","subtype":"wrapper_heartbeat","phase":"startup"}'
-sleep 0.2
-printf '%s\n' '{"type":"system","subtype":"wrapper_heartbeat","phase":"app_server_started"}'
-sleep 0.2
-printf '%s\n' '{"type":"thread.started","thread_id":"mock-codex-thread"}'
-sleep 0.2
+fn mock_app_server_script(turns_per_input: u32, event_delay_ms: u64) -> String {
+    let delay_seconds = format!("{}.{:03}", event_delay_ms / 1_000, event_delay_ms % 1_000);
+    format!(
+        r#"while IFS= read -r line; do
+printf '%s\n' '{{"type":"system","subtype":"wrapper_heartbeat","phase":"startup"}}'
+sleep {delay_seconds}
+printf '%s\n' '{{"type":"system","subtype":"wrapper_heartbeat","phase":"app_server_started"}}'
+sleep {delay_seconds}
+printf '%s\n' '{{"type":"thread.started","thread_id":"mock-codex-thread"}}'
+sleep {delay_seconds}
 turn_index=1
-while [ "$turn_index" -le 3 ]; do
+while [ "$turn_index" -le {turns_per_input} ]; do
   turn_id="mock-turn-$turn_index"
-  printf '{"type":"turn.started","turn_id":"%s"}\n' "$turn_id"
-  sleep 0.2
-  printf '{"type":"item.agentMessage.delta","turnId":"%s","session_id":"mock-codex-thread","delta":"PONG %s"}\n' "$turn_id" "$turn_index"
-  sleep 0.2
-  printf '{"type":"turn.completed","turn":{"id":"%s"},"usage":{"input_tokens":0,"output_tokens":1}}\n' "$turn_id"
-  sleep 0.2
+  printf '{{"type":"turn.started","turn_id":"%s"}}\n' "$turn_id"
+  sleep {delay_seconds}
+  printf '{{"type":"item.agentMessage.delta","turnId":"%s","session_id":"mock-codex-thread","delta":"PONG %s"}}\n' "$turn_id" "$turn_index"
+  sleep {delay_seconds}
+  printf '{{"type":"turn.completed","turn":{{"id":"%s"}},"usage":{{"input_tokens":0,"output_tokens":1}}}}\n' "$turn_id"
+  sleep {delay_seconds}
   turn_index=$((turn_index + 1))
 done
 done"#
+    )
 }
 
 fn session_event_stream(
@@ -620,8 +672,10 @@ async fn renew_pipe_lease_until_stopped(
     sandbox_id: String,
     owner_id: String,
     lease: Arc<PipeLeaseState>,
+    lease_ttl: Duration,
+    renew_interval: Duration,
 ) {
-    let mut tick = interval(PIPE_LEASE_RENEW_INTERVAL);
+    let mut tick = interval(renew_interval);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
@@ -630,7 +684,7 @@ async fn renew_pipe_lease_until_stopped(
             return;
         }
         match store
-            .renew_pipe_lease(&thread_key, &sandbox_id, &owner_id, PIPE_LEASE_TTL)
+            .renew_pipe_lease(&thread_key, &sandbox_id, &owner_id, lease_ttl)
             .await
         {
             Ok(true) => {}

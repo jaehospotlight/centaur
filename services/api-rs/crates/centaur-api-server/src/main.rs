@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, env, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use centaur_api_server::{
-    SandboxRuntime, ServerLifecycle, build_router_with_runtime_and_lifecycle,
+    SandboxRuntime, ServerLifecycle, build_router_with_session_runtime_and_lifecycle,
 };
 use centaur_iron_proxy::{SourceKind, SourcePolicy, discover_fragment_files, load_fragment_files};
 use centaur_sandbox_agent_k8s::{
@@ -9,7 +9,7 @@ use centaur_sandbox_agent_k8s::{
 };
 use centaur_sandbox_core::{Mount, MountKind};
 use centaur_sandbox_local::LocalSandboxBackend;
-use centaur_session_runtime::SandboxWorkloadMode;
+use centaur_session_runtime::{SandboxWorkloadMode, SessionRuntime, SessionRuntimeOptions};
 use centaur_session_sqlx::PgSessionStore;
 use clap::{Parser, ValueEnum};
 use thiserror::Error;
@@ -31,6 +31,11 @@ async fn main() -> Result<(), ServerError> {
         store.run_migrations().await?;
     }
     let sandbox_runtime = sandbox_runtime_from_args(&args).await?;
+    let session_runtime = SessionRuntime::with_options(
+        store,
+        sandbox_runtime,
+        session_runtime_options_from_args(&args),
+    );
 
     let lifecycle = ServerLifecycle::new_ready();
     let listener = TcpListener::bind(args.bind_addr).await?;
@@ -38,7 +43,7 @@ async fn main() -> Result<(), ServerError> {
 
     axum::serve(
         listener,
-        build_router_with_runtime_and_lifecycle(store, sandbox_runtime, lifecycle.clone()),
+        build_router_with_session_runtime_and_lifecycle(session_runtime, lifecycle.clone()),
     )
     .with_graceful_shutdown(shutdown_signal(
         lifecycle,
@@ -118,7 +123,8 @@ async fn sandbox_runtime_from_args(args: &Args) -> Result<SandboxRuntime, Server
 
 fn local_workload_mode(args: &Args) -> Result<SandboxWorkloadMode, ServerError> {
     match args.kubernetes_sandbox_workload {
-        SandboxWorkloadKind::Mock => Ok(SandboxWorkloadMode::mock_app_server(
+        SandboxWorkloadKind::Mock => Ok(mock_workload_mode(
+            args,
             args.kubernetes_agent_image
                 .clone()
                 .unwrap_or_else(|| "local-mock-app-server".to_owned()),
@@ -139,7 +145,7 @@ fn container_workload_mode(args: &Args) -> SandboxWorkloadMode {
         .clone()
         .unwrap_or_else(|| default_sandbox_image(args.kubernetes_sandbox_workload).to_owned());
     match args.kubernetes_sandbox_workload {
-        SandboxWorkloadKind::Mock => SandboxWorkloadMode::mock_app_server(image),
+        SandboxWorkloadKind::Mock => mock_workload_mode(args, image),
         SandboxWorkloadKind::CodexAppServer => {
             let mut workload =
                 SandboxWorkloadMode::codex_app_server(image, codex_app_server_env_template(args));
@@ -159,6 +165,21 @@ fn container_workload_mode(args: &Args) -> SandboxWorkloadMode {
     }
 }
 
+fn mock_workload_mode(args: &Args, image: String) -> SandboxWorkloadMode {
+    SandboxWorkloadMode::mock_app_server_with_options(
+        image,
+        args.kubernetes_mock_turns_per_input,
+        args.kubernetes_mock_event_delay_ms,
+    )
+}
+
+fn session_runtime_options_from_args(args: &Args) -> SessionRuntimeOptions {
+    SessionRuntimeOptions {
+        pipe_lease_ttl: Duration::from_secs(args.session_pipe_lease_ttl_s),
+        pipe_lease_renew_interval: Duration::from_secs(args.session_pipe_lease_renew_interval_s),
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(about = "Run the Centaur API Rust control plane")]
 struct Args {
@@ -166,10 +187,29 @@ struct Args {
     database_url: String,
     #[arg(long, env = "BIND_ADDR", default_value = "127.0.0.1:8080")]
     bind_addr: SocketAddr,
-    #[arg(long, env = "RUN_MIGRATIONS", default_value_t = false)]
+    #[arg(
+        long,
+        env = "RUN_MIGRATIONS",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        default_value_t = false
+    )]
     run_migrations: bool,
     #[arg(long, env = "SHUTDOWN_READINESS_DRAIN_DELAY_S", default_value_t = 5)]
     shutdown_readiness_drain_delay_s: u64,
+    #[arg(
+        long,
+        env = "SESSION_PIPE_LEASE_TTL_S",
+        value_parser = clap::value_parser!(u64).range(1..),
+        default_value_t = 45
+    )]
+    session_pipe_lease_ttl_s: u64,
+    #[arg(
+        long,
+        env = "SESSION_PIPE_LEASE_RENEW_INTERVAL_S",
+        value_parser = clap::value_parser!(u64).range(1..),
+        default_value_t = 15
+    )]
+    session_pipe_lease_renew_interval_s: u64,
     #[arg(
         long,
         env = "KUBERNETES_SANDBOX_BACKEND",
@@ -202,6 +242,10 @@ struct Args {
     kubernetes_sandbox_image_pull_secrets: Vec<String>,
     #[arg(long, env = "KUBERNETES_SANDBOX_READY_TIMEOUT_S", default_value_t = 90)]
     kubernetes_sandbox_ready_timeout_s: u64,
+    #[arg(long, env = "KUBERNETES_MOCK_TURNS_PER_INPUT", default_value_t = 3)]
+    kubernetes_mock_turns_per_input: u32,
+    #[arg(long, env = "KUBERNETES_MOCK_EVENT_DELAY_MS", default_value_t = 200)]
+    kubernetes_mock_event_delay_ms: u64,
     #[arg(long, env = "KUBERNETES_CONTEXT")]
     kubernetes_context: Option<String>,
     #[arg(long, env = "KUBERNETES_SANDBOX_RUNTIME_CLASS_NAME")]
@@ -211,6 +255,7 @@ struct Args {
     #[arg(
         long,
         env = "KUBERNETES_SANDBOX_STATE_VOLUME_ENABLED",
+        value_parser = clap::builder::BoolishValueParser::new(),
         default_value_t = false
     )]
     kubernetes_sandbox_state_volume_enabled: bool,

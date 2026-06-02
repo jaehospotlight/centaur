@@ -121,7 +121,7 @@ api:
     namespace: centaur-egress
     clusterDomain: cluster.local
     tailnetFqdnAnnotation: tailscale.com/tailnet-fqdn
-  terminationGracePeriodSeconds: 35
+  terminationGracePeriodSeconds: 600
   shutdownReadinessDrainDelaySeconds: 5
   extraEnv: {}
   resources: {}
