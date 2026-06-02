@@ -70,8 +70,6 @@ pub struct Secret {
     pub inject: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proxy_value: Option<String>,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -85,7 +83,6 @@ impl Secret {
         self.replace
             .as_ref()
             .and_then(|replace| replace.proxy_value.as_deref())
-            .or(self.proxy_value.as_deref())
     }
 
     fn fill_missing_source(&mut self, source_policy: &SourcePolicy) -> Result<()> {

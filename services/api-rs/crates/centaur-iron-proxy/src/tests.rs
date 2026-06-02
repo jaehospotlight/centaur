@@ -183,43 +183,6 @@ transforms:
 }
 
 #[test]
-fn supports_legacy_secret_proxy_value_shape() {
-    let fragment = fragment_yaml(
-        r#"
-transforms:
-  - name: secrets
-    config:
-      secrets:
-        - proxy_value: LEGACY_API_KEY
-          match_headers: ["Authorization"]
-          rules: [{ host: api.example.com }]
-"#,
-    );
-    assert_eq!(
-        placeholder_env(&[fragment.clone()]),
-        BTreeMap::from([("LEGACY_API_KEY".to_owned(), "LEGACY_API_KEY".to_owned())])
-    );
-
-    let rendered = render_proxy_yaml_with_source_policy(
-        None,
-        &[fragment],
-        &SourcePolicy::onepassword_connect("ai-agents", "10m"),
-    )
-    .unwrap();
-    let cfg = parse_rendered(&rendered);
-    let secrets_transform = cfg["transforms"]
-        .as_sequence()
-        .unwrap()
-        .iter()
-        .find(|transform| transform["name"].as_str() == Some("secrets"))
-        .unwrap();
-    assert_eq!(
-        secrets_transform["config"]["secrets"][0]["source"]["secret_ref"],
-        "op://ai-agents/LEGACY_API_KEY/credential"
-    );
-}
-
-#[test]
 fn assigns_stable_unique_secret_ids() {
     let fragment = fragment_yaml(
         r#"
