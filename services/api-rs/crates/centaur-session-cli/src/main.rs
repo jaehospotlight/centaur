@@ -20,7 +20,7 @@ struct Args {
     api_url: ApiBaseUrl,
 
     #[arg(long)]
-    thread_key: Option<ThreadKeyArg>,
+    thread_key: Option<ThreadKey>,
 
     #[arg(long)]
     attach: bool,
@@ -49,8 +49,8 @@ struct Args {
     #[arg(long)]
     exit_on_terminal: bool,
 
-    #[arg(long)]
-    exit_on_output_type: Option<OutputEventType>,
+    #[arg(long, value_parser = non_empty_value)]
+    exit_on_output_type: Option<String>,
 }
 
 #[tokio::main]
@@ -137,7 +137,7 @@ fn validate_mode(args: &Args, attach_mode: bool) -> Result<()> {
 
 fn thread_key_arg(args: &Args, attach_mode: bool) -> Result<(ThreadKey, bool)> {
     match (&args.thread_key, attach_mode) {
-        (Some(thread_key), _) => Ok((thread_key.clone().into_thread_key(), false)),
+        (Some(thread_key), _) => Ok((thread_key.clone(), false)),
         (None, true) => bail!("--attach requires --thread-key"),
         (None, false) => Ok((
             ThreadKey::parse(format!("cli:{}", Uuid::new_v4().simple()))?,
@@ -195,7 +195,7 @@ pub(crate) async fn execute_input_lines(
 struct StreamRunOptions {
     all_events: bool,
     exit_on_terminal: bool,
-    exit_on_output_type: Option<OutputEventType>,
+    exit_on_output_type: Option<String>,
 }
 
 async fn stream_output_lines(mut events: SseEventStream, options: StreamRunOptions) -> Result<()> {
@@ -204,13 +204,7 @@ async fn stream_output_lines(mut events: SseEventStream, options: StreamRunOptio
 
         if event.event == "session.output.line" {
             println!("{}\t{}", event_id_or_unknown(&event.id), event.data);
-            if output_type_matches(
-                &event.data,
-                options
-                    .exit_on_output_type
-                    .as_ref()
-                    .map(|value| value.as_str()),
-            ) {
+            if output_type_matches(&event.data, options.exit_on_output_type.as_deref()) {
                 return Ok(());
             }
         } else if options.all_events {
@@ -309,25 +303,6 @@ impl FromStr for ApiBaseUrl {
     }
 }
 
-#[derive(Clone, Debug)]
-struct ThreadKeyArg(ThreadKey);
-
-impl ThreadKeyArg {
-    fn into_thread_key(self) -> ThreadKey {
-        self.0
-    }
-}
-
-impl FromStr for ThreadKeyArg {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        ThreadKey::parse(value)
-            .map(Self)
-            .map_err(|error| error.to_string())
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum HarnessTypeArg {
     Codex,
@@ -346,22 +321,10 @@ impl From<HarnessTypeArg> for HarnessType {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct OutputEventType(String);
-
-impl OutputEventType {
-    fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl FromStr for OutputEventType {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if value.trim().is_empty() {
-            return Err("output event type must not be empty".to_owned());
-        }
-        Ok(Self(value.to_owned()))
+fn non_empty_value(value: &str) -> std::result::Result<String, String> {
+    if value.trim().is_empty() {
+        Err("value must not be empty".to_owned())
+    } else {
+        Ok(value.to_owned())
     }
 }
