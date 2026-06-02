@@ -6,13 +6,9 @@ use centaur_api_server::{
 };
 use centaur_session_core::{HarnessType, MessageRole, SessionMessageInput, ThreadKey};
 use clap::{Parser, ValueEnum};
-use eyre::{Result, WrapErr, bail, eyre};
+use eyre::{Result, WrapErr, bail};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use tokio::{
-    io::{self, AsyncBufReadExt, BufReader},
-    task::JoinHandle,
-};
 use uuid::Uuid;
 
 const DEFAULT_MESSAGE: &str = "Reply with exactly PONG and nothing else.";
@@ -55,9 +51,6 @@ struct Args {
 
     #[arg(long)]
     exit_on_output_type: Option<OutputEventType>,
-
-    #[arg(long, alias = "stdin")]
-    stdin_events: bool,
 }
 
 #[tokio::main]
@@ -76,13 +69,7 @@ async fn main() -> Result<()> {
             .stream_events(&thread_key, args.after_event_id)
             .await
             .wrap_err("open event stream")?;
-        return run_stream_and_optional_stdin(
-            client,
-            thread_key,
-            events,
-            stream_run_options(&args),
-        )
-        .await;
+        return stream_output_lines(events, stream_run_options(&args)).await;
     }
 
     client
@@ -98,35 +85,28 @@ async fn main() -> Result<()> {
         .await
         .wrap_err("create session")?;
 
-    let initial_input_lines = if should_send_initial_turn(&args) {
-        let input_lines = session_input_lines(&args)?;
-        let message = message_text(&args);
-        append_user_message(&client, &thread_key, message)
-            .await
-            .wrap_err("append message")?;
-        Some(input_lines)
-    } else {
-        None
-    };
+    let input_lines = session_input_lines(&args)?;
+    let message = message_text(&args);
+    append_user_message(&client, &thread_key, message)
+        .await
+        .wrap_err("append message")?;
 
     let events = client
         .stream_events(&thread_key, args.after_event_id)
         .await
         .wrap_err("open event stream")?;
 
-    if let Some(input_lines) = initial_input_lines {
-        execute_input_lines(
-            &client,
-            &thread_key,
-            input_lines,
-            args.idle_timeout_ms,
-            args.max_duration_ms,
-        )
-        .await
-        .wrap_err("execute initial turn")?;
-    }
+    execute_input_lines(
+        &client,
+        &thread_key,
+        input_lines,
+        args.idle_timeout_ms,
+        args.max_duration_ms,
+    )
+    .await
+    .wrap_err("execute initial turn")?;
 
-    run_stream_and_optional_stdin(client, thread_key, events, stream_run_options(&args)).await
+    stream_output_lines(events, stream_run_options(&args)).await
 }
 
 fn stream_run_options(args: &Args) -> StreamRunOptions {
@@ -134,9 +114,6 @@ fn stream_run_options(args: &Args) -> StreamRunOptions {
         all_events: args.all_events,
         exit_on_terminal: args.exit_on_terminal,
         exit_on_output_type: args.exit_on_output_type.clone(),
-        stdin_events: args.stdin_events,
-        idle_timeout_ms: args.idle_timeout_ms,
-        max_duration_ms: args.max_duration_ms,
     }
 }
 
@@ -214,111 +191,14 @@ pub(crate) async fn execute_input_lines(
     Ok(())
 }
 
-async fn run_stream_and_optional_stdin(
-    client: CentaurClient,
-    thread_key: ThreadKey,
-    events: SseEventStream,
-    options: StreamRunOptions,
-) -> Result<()> {
-    let stream_future = stream_output_lines(
-        events,
-        options.all_events,
-        options.exit_on_terminal,
-        options.exit_on_output_type,
-    );
-    tokio::pin!(stream_future);
-
-    if !options.stdin_events {
-        return stream_future.await;
-    }
-
-    let mut stdin_task = spawn_stdin_events(
-        client,
-        thread_key,
-        options.idle_timeout_ms,
-        options.max_duration_ms,
-    );
-
-    tokio::select! {
-        stream_result = &mut stream_future => {
-            stdin_task.abort();
-            stream_result
-        }
-        stdin_result = &mut stdin_task => {
-            stdin_result.wrap_err("join stdin event task")??;
-            stream_future.await
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 struct StreamRunOptions {
     all_events: bool,
     exit_on_terminal: bool,
     exit_on_output_type: Option<OutputEventType>,
-    stdin_events: bool,
-    idle_timeout_ms: u64,
-    max_duration_ms: u64,
 }
 
-fn spawn_stdin_events(
-    client: CentaurClient,
-    thread_key: ThreadKey,
-    idle_timeout_ms: u64,
-    max_duration_ms: u64,
-) -> JoinHandle<Result<()>> {
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(io::stdin()).lines();
-        while let Some(line) = lines.next_line().await.wrap_err("read stdin event")? {
-            let event = match StdinEvent::parse(&line)? {
-                Some(event) => event,
-                None => continue,
-            };
-            match event {
-                StdinEvent::Message(text) => {
-                    append_user_message(&client, &thread_key, &text).await?;
-                    execute_input_lines(
-                        &client,
-                        &thread_key,
-                        vec![user_input_line(&text)?],
-                        idle_timeout_ms,
-                        max_duration_ms,
-                    )
-                    .await?;
-                }
-                StdinEvent::InputLine(line) => {
-                    execute_input_lines(
-                        &client,
-                        &thread_key,
-                        vec![line],
-                        idle_timeout_ms,
-                        max_duration_ms,
-                    )
-                    .await?;
-                }
-                StdinEvent::InputLines(lines) => {
-                    execute_input_lines(
-                        &client,
-                        &thread_key,
-                        lines,
-                        idle_timeout_ms,
-                        max_duration_ms,
-                    )
-                    .await?;
-                }
-                StdinEvent::Quit => break,
-            }
-        }
-        Ok(())
-    })
-}
-
-async fn stream_output_lines(
-    mut events: SseEventStream,
-    all_events: bool,
-    exit_on_terminal: bool,
-    exit_on_output_type: Option<OutputEventType>,
-) -> Result<()> {
+async fn stream_output_lines(mut events: SseEventStream, options: StreamRunOptions) -> Result<()> {
     while let Some(event) = events.next().await {
         let event = event.wrap_err("read event stream")?;
 
@@ -326,11 +206,14 @@ async fn stream_output_lines(
             println!("{}\t{}", event_id_or_unknown(&event.id), event.data);
             if output_type_matches(
                 &event.data,
-                exit_on_output_type.as_ref().map(|value| value.as_str()),
+                options
+                    .exit_on_output_type
+                    .as_ref()
+                    .map(|value| value.as_str()),
             ) {
                 return Ok(());
             }
-        } else if all_events {
+        } else if options.all_events {
             let data = parse_json_or_string(&event.data);
             println!(
                 "{}",
@@ -342,7 +225,7 @@ async fn stream_output_lines(
             );
         }
 
-        if exit_on_terminal && is_terminal_event(&event.event) {
+        if options.exit_on_terminal && is_terminal_event(&event.event) {
             return Ok(());
         }
     }
@@ -381,10 +264,6 @@ fn session_input_lines(args: &Args) -> Result<Vec<String>> {
     Ok(vec![user_input_line(message)?])
 }
 
-fn should_send_initial_turn(args: &Args) -> bool {
-    args.message.is_some() || !args.input_lines.is_empty() || !args.stdin_events
-}
-
 pub(crate) fn user_input_line(text: &str) -> Result<String> {
     Ok(serde_json::to_string(&json!({
         "type": "user",
@@ -407,88 +286,6 @@ pub(crate) fn is_terminal_event(event: &str) -> bool {
         event,
         "session.execution_completed" | "session.execution_failed" | "session.execution_cancelled"
     )
-}
-
-#[derive(Debug)]
-pub(crate) enum StdinEvent {
-    Message(String),
-    InputLine(String),
-    InputLines(Vec<String>),
-    Quit,
-}
-
-impl StdinEvent {
-    pub(crate) fn parse(line: &str) -> Result<Option<Self>> {
-        let line = line.trim();
-        if line.is_empty() {
-            return Ok(None);
-        }
-        if matches!(line, "/quit" | "/exit") {
-            return Ok(Some(Self::Quit));
-        }
-        if let Some(text) = line.strip_prefix("/message ") {
-            return Ok(Some(Self::Message(text.trim().to_owned())));
-        }
-        if let Some(raw_line) = line.strip_prefix("/input ") {
-            return Ok(Some(Self::InputLine(raw_line.trim().to_owned())));
-        }
-        if let Some(raw_lines) = line.strip_prefix("/execute ") {
-            return parse_execute_command(raw_lines.trim()).map(Some);
-        }
-        if line.starts_with('/') {
-            bail!("unknown stdin command: {line}");
-        }
-        if line.starts_with('{') {
-            return parse_json_stdin_event(line).map(Some);
-        }
-        Ok(Some(Self::Message(line.to_owned())))
-    }
-}
-
-fn parse_execute_command(value: &str) -> Result<StdinEvent> {
-    if value.starts_with('[') {
-        let lines =
-            serde_json::from_str::<Vec<String>>(value).wrap_err("parse /execute JSON array")?;
-        return Ok(StdinEvent::InputLines(lines));
-    }
-    Ok(StdinEvent::InputLine(value.to_owned()))
-}
-
-fn parse_json_stdin_event(line: &str) -> Result<StdinEvent> {
-    let value = serde_json::from_str::<Value>(line).wrap_err("parse stdin JSON event")?;
-    match value.get("type").and_then(Value::as_str) {
-        Some("message") => {
-            let text = value
-                .get("text")
-                .and_then(Value::as_str)
-                .ok_or_else(|| eyre!("stdin message event requires string field `text`"))?;
-            Ok(StdinEvent::Message(text.to_owned()))
-        }
-        Some("input_line") => {
-            let raw_line = value
-                .get("line")
-                .and_then(Value::as_str)
-                .ok_or_else(|| eyre!("stdin input_line event requires string field `line`"))?;
-            Ok(StdinEvent::InputLine(raw_line.to_owned()))
-        }
-        Some("execute") => {
-            let lines = value
-                .get("input_lines")
-                .and_then(Value::as_array)
-                .ok_or_else(|| eyre!("stdin execute event requires array field `input_lines`"))?
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .map(ToOwned::to_owned)
-                        .ok_or_else(|| eyre!("stdin execute input_lines must be strings"))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok(StdinEvent::InputLines(lines))
-        }
-        Some("quit" | "exit") => Ok(StdinEvent::Quit),
-        _ => Ok(StdinEvent::InputLine(line.to_owned())),
-    }
 }
 
 #[derive(Clone, Debug)]
