@@ -66,7 +66,7 @@ impl EnvVars {
         })
     }
 
-    fn set(&mut self, name: impl AsRef<str>, value: impl AsRef<str>) {
+    pub(super) fn set(&mut self, name: impl AsRef<str>, value: impl AsRef<str>) {
         self.by_name
             .insert(name.as_ref().to_owned(), value.as_ref().to_owned());
     }

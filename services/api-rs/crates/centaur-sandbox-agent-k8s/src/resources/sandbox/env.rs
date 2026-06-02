@@ -1,13 +1,11 @@
-use centaur_sandbox_core::SandboxSpec;
+use centaur_sandbox_core::{CredentialProfile, CredentialRequest, SandboxSpec};
 use k8s_openapi::api::core::v1::EnvVar;
 
 use super::super::iron_proxy::ResolvedIronProxy;
 
-mod harness;
 mod proxy;
 mod vars;
 
-use harness::harness_auth_env;
 use proxy::proxy_env;
 use vars::EnvVars;
 
@@ -16,7 +14,7 @@ pub(super) fn env_vars(
     resolved_iron_proxy: Option<&ResolvedIronProxy>,
 ) -> Option<Vec<EnvVar>> {
     let mut env = EnvVars::from_spec(spec);
-    env.set_all(harness_auth_env(&spec.credentials));
+    set_harness_auth_env(&mut env, &spec.credentials);
     if let Some(resolved_iron_proxy) = resolved_iron_proxy {
         env.set_missing_all(&resolved_iron_proxy.placeholder_env);
         env.set_missing_all(&resolved_iron_proxy.pg_dsn_env);
@@ -29,4 +27,24 @@ pub(super) fn env_vars(
         ));
     }
     env.into_k8s()
+}
+
+fn set_harness_auth_env(env: &mut EnvVars, credentials: &[CredentialRequest]) {
+    for credential in credentials {
+        let Some(name) = harness_auth_env_name(credential.profile) else {
+            continue;
+        };
+        let Some(auth_mode) = credential.auth_mode else {
+            continue;
+        };
+        env.set(name, auth_mode.as_str());
+    }
+}
+
+fn harness_auth_env_name(profile: CredentialProfile) -> Option<&'static str> {
+    match profile {
+        CredentialProfile::Codex => Some("CODEX_AUTH_MODE"),
+        CredentialProfile::ClaudeCode => Some("CLAUDE_CODE_AUTH_MODE"),
+        CredentialProfile::Amp => None,
+    }
 }

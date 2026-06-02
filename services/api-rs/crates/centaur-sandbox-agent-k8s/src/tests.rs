@@ -84,7 +84,6 @@ fn builds_agent_sandbox_spec_with_limits() {
 #[test]
 fn typed_harness_auth_is_rendered_at_pod_env_edge() {
     let spec = SandboxSpec::new("centaur-agent:latest")
-        .env("CODEX_AUTH_MODE", "api_key")
         .credential(CredentialProfile::Codex, Some(HarnessAuthMode::AccessToken));
     let config = AgentSandboxConfig::new("centaur");
 

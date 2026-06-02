@@ -3,9 +3,9 @@ use clap::{Args as ClapArgs, ValueEnum};
 
 #[derive(Debug, ClapArgs)]
 pub(super) struct HarnessAuthArgs {
-    #[arg(long = "codex-auth-mode", env = "CODEX_AUTH_MODE")]
+    #[arg(long = "codex-auth-mode")]
     codex: Option<HarnessAuthModeArg>,
-    #[arg(long = "claude-code-auth-mode", env = "CLAUDE_CODE_AUTH_MODE")]
+    #[arg(long = "claude-code-auth-mode")]
     claude_code: Option<HarnessAuthModeArg>,
 }
 
