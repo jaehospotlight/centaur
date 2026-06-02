@@ -364,14 +364,35 @@ impl SandboxWorkloadMode {
                 .command(["/bin/sh", "-lc"])
                 .args([mock_app_server_script()]),
             Self::CodexAppServer { image, env } => {
-                let mut spec =
-                    SandboxSpec::new(image).env("CENTAUR_THREAD_KEY", thread_key.as_str());
+                let mut spec = SandboxSpec::new(image)
+                    .env("CENTAUR_THREAD_KEY", thread_key.as_str())
+                    .env("CENTAUR_HARNESS_KIND", "codex");
                 for (name, value) in env {
                     spec = spec.env(name.clone(), value.clone());
                 }
                 spec
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_app_server_marks_harness_kind() {
+        let thread_key = ThreadKey::parse("cli:test").unwrap();
+        let spec =
+            SandboxWorkloadMode::codex_app_server("centaur-agent:test", []).spec(&thread_key);
+        let env = spec
+            .env
+            .iter()
+            .map(|item| (item.name.as_str(), item.value.as_str()))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(env["CENTAUR_THREAD_KEY"], "cli:test");
+        assert_eq!(env["CENTAUR_HARNESS_KIND"], "codex");
     }
 }
 

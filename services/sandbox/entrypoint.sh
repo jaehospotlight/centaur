@@ -74,8 +74,8 @@ fi
 # ── Codex settings ──────────────────────────────────────────────────────────
 # CODEX_AUTH_MODE selects how codex authenticates with the upstream:
 #   - api_key (default): codex uses an OPENAI_API_KEY against api.openai.com.
-#     The entrypoint runs `codex login --with-api-key` below, which overwrites
-#     auth.json.
+#     The entrypoint runs `codex login --with-api-key` below and never installs
+#     the ChatGPT auth stub.
 #   - access_token: codex uses a ChatGPT-style access token against
 #     chatgpt.com. The default auth.json (auth_mode: chatgpt) is always
 #     installed and the api-key login step is skipped so iron-proxy can
@@ -83,9 +83,6 @@ fi
 CODEX_AUTH_MODE="${CODEX_AUTH_MODE:-api_key}"
 mkdir -p "$HOME_DIR/.codex"
 if [ "$CODEX_AUTH_MODE" = "access_token" ] && [ -f /etc/centaur/codex-auth.default.json ]; then
-    cp /etc/centaur/codex-auth.default.json "$HOME_DIR/.codex/auth.json"
-    chmod 600 "$HOME_DIR/.codex/auth.json"
-elif [ ! -f "$HOME_DIR/.codex/auth.json" ] && [ -f /etc/centaur/codex-auth.default.json ]; then
     cp /etc/centaur/codex-auth.default.json "$HOME_DIR/.codex/auth.json"
     chmod 600 "$HOME_DIR/.codex/auth.json"
 fi
