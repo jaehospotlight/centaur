@@ -89,16 +89,14 @@ postgres:
   - name: warehouse
     listen: 0.0.0.0:5432
     upstream:
-      dsn:
-        placeholder: WAREHOUSE_DSN
+      dsn: { placeholder: WAREHOUSE_DSN }
     client:
       user: app_user
       password_env: PG_PROXY_PASSWORD_WAREHOUSE
 mcp:
   servers:
     - name: github
-      auth:
-        placeholder: GITHUB_TOKEN
+      auth: { placeholder: GITHUB_TOKEN }
 "#,
     );
     let (rendered, cfg) =
@@ -122,14 +120,11 @@ postgres:
   - name: warehouse
     listen: 0.0.0.0:5440
     upstream:
-      dsn:
-        placeholder: WAREHOUSE_DSN_UPSTREAM
+      dsn: { placeholder: WAREHOUSE_DSN_UPSTREAM }
     client:
       user: app_user
       password_env: PG_PROXY_PASSWORD_WAREHOUSE
-    sandbox_env:
-      name: WAREHOUSE_DSN
-      database: warehouse
+    sandbox_env: { name: WAREHOUSE_DSN, database: warehouse }
 "#,
     );
 
@@ -287,26 +282,19 @@ fn resolves_placeholders_in_non_secret_managed_transforms() {
 transforms:
   - name: gcp_auth
     config:
-      keyfile:
-        placeholder: GCP_KEYFILE_JSON
+      keyfile: { placeholder: GCP_KEYFILE_JSON }
       scopes: ["https://www.googleapis.com/auth/cloud-platform"]
       rules: [{ host: "*.googleapis.com" }]
   - name: oauth_token
     config:
       tokens:
         - grant: refresh_token
-          client_id:
-            placeholder: GOOGLE_OAUTH_JSON
-            json_key: client_id
-          client_secret:
-            placeholder: GOOGLE_OAUTH_JSON
-            json_key: client_secret
-          refresh_token:
-            placeholder: GOOGLE_REFRESH_TOKEN
+          client_id: { placeholder: GOOGLE_OAUTH_JSON, json_key: client_id }
+          client_secret: { placeholder: GOOGLE_OAUTH_JSON, json_key: client_secret }
+          refresh_token: { placeholder: GOOGLE_REFRESH_TOKEN }
           token_endpoint: https://oauth2.googleapis.com/token
           token_endpoint_headers:
-            x-api-key:
-              placeholder: TOKEN_ENDPOINT_API_KEY
+            x-api-key: { placeholder: TOKEN_ENDPOINT_API_KEY }
           rules: [{ host: gmail.googleapis.com }]
   - name: hmac_sign
     config:
@@ -317,8 +305,7 @@ transforms:
         output_encoding: hex
         message: "{{.Method}}:{{.Path}}"
       credentials:
-        signing_key:
-          placeholder: HMAC_SIGNING_KEY
+        signing_key: { placeholder: HMAC_SIGNING_KEY }
       headers:
         - { name: x-signature, value: "{{.Signature}}" }
       rules: [{ host: signed.example.com }]
@@ -374,20 +361,13 @@ fn renders_token_broker_yaml_from_fragments() {
 broker_credentials:
   - id: okta
     token_endpoint: https://idp.example.com/oauth/token
-    client_id:
-      placeholder: OKTA_BUNDLE
-      json_key: client_id
-    client_secret:
-      placeholder: OKTA_BUNDLE
-      json_key: client_secret
-    store:
-      placeholder: OKTA_BLOB
+    client_id: { placeholder: OKTA_BUNDLE, json_key: client_id }
+    client_secret: { placeholder: OKTA_BUNDLE, json_key: client_secret }
+    store: { placeholder: OKTA_BLOB }
   - id: openai-codex
     token_endpoint: https://duplicate.example.com/token
-    client_id:
-      placeholder: DUPLICATE_CLIENT_ID
-    store:
-      placeholder: DUPLICATE_BLOB
+    client_id: { placeholder: DUPLICATE_CLIENT_ID }
+    store: { placeholder: DUPLICATE_BLOB }
 "#,
     ));
 
@@ -433,10 +413,8 @@ fn rejects_env_backed_token_broker_store() {
 broker_credentials:
   - id: openai-codex
     token_endpoint: https://auth.openai.com/oauth/token
-    client_id:
-      placeholder: OPENAI_CODEX_CLIENT_ID
-    store:
-      placeholder: OPENAI_CODEX_BLOB
+    client_id: { placeholder: OPENAI_CODEX_CLIENT_ID }
+    store: { placeholder: OPENAI_CODEX_BLOB }
 "#,
     );
 
@@ -454,11 +432,8 @@ fn rejects_token_broker_store_json_key() {
 broker_credentials:
   - id: openai-codex
     token_endpoint: https://auth.openai.com/oauth/token
-    client_id:
-      placeholder: OPENAI_CODEX_CLIENT_ID
-    store:
-      placeholder: OPENAI_CODEX_BUNDLE
-      json_key: refresh_token
+    client_id: { placeholder: OPENAI_CODEX_CLIENT_ID }
+    store: { placeholder: OPENAI_CODEX_BUNDLE, json_key: refresh_token }
 "#,
     );
 
