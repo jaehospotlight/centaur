@@ -1,4 +1,4 @@
-use centaur_sandbox_core::{CredentialProfile, EnvVar, HarnessAuthMode, SandboxSpec};
+use centaur_sandbox_core::{CredentialProfile, CredentialRequest, EnvVar, SandboxSpec};
 use centaur_session_core::ThreadKey;
 
 #[derive(Clone, Debug)]
@@ -19,30 +19,24 @@ impl SandboxWorkloadMode {
     pub(crate) fn spec(
         &self,
         thread_key: &ThreadKey,
-        profile: CredentialProfile,
-        auth_mode: Option<HarnessAuthMode>,
+        credential: CredentialRequest,
     ) -> SandboxSpec {
         match self {
             Self::MockAppServer { image } => SandboxSpec::new(image)
                 .command(["/bin/sh", "-lc"])
                 .args([mock_app_server_script()]),
-            Self::CodexAppServer(workload) => workload.spec(thread_key, profile, auth_mode),
+            Self::CodexAppServer(workload) => workload.spec(thread_key, credential),
         }
     }
 }
 
 impl CodexAppServerWorkload {
-    fn spec(
-        &self,
-        thread_key: &ThreadKey,
-        profile: CredentialProfile,
-        auth_mode: Option<HarnessAuthMode>,
-    ) -> SandboxSpec {
+    fn spec(&self, thread_key: &ThreadKey, credential: CredentialRequest) -> SandboxSpec {
         let mut spec = SandboxSpec::new(&self.image)
-            .args(entrypoint_args(profile, auth_mode))
+            .args(entrypoint_args(credential))
             .env("CENTAUR_THREAD_KEY", thread_key.as_str())
             .env("CENTAUR_API_URL", &self.centaur_api_url)
-            .credential(profile, auth_mode);
+            .credential(credential.profile, credential.auth_mode);
         if let Some(api_key) = &self.centaur_api_key {
             spec = spec.env("CENTAUR_API_KEY", api_key);
         }
@@ -51,8 +45,8 @@ impl CodexAppServerWorkload {
     }
 }
 
-fn entrypoint_args(profile: CredentialProfile, auth_mode: Option<HarnessAuthMode>) -> Vec<String> {
-    match (profile, auth_mode) {
+fn entrypoint_args(credential: CredentialRequest) -> Vec<String> {
+    match (credential.profile, credential.auth_mode) {
         (CredentialProfile::Codex, Some(mode)) => vec![
             "--codex-auth-mode".to_owned(),
             mode.as_ref().to_owned(),
@@ -107,8 +101,10 @@ mod tests {
         })
         .spec(
             &thread_key,
-            CredentialProfile::Codex,
-            Some(HarnessAuthMode::AccessToken),
+            CredentialRequest {
+                profile: CredentialProfile::Codex,
+                auth_mode: Some(HarnessAuthMode::AccessToken),
+            },
         );
         let env = spec
             .env

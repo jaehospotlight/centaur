@@ -144,7 +144,8 @@ mod tests {
             cli.sandbox
                 .harness_auth
                 .modes()
-                .mode_for(centaur_sandbox_core::CredentialProfile::Codex),
+                .credential_for(centaur_sandbox_core::CredentialProfile::Codex)
+                .auth_mode,
             Some(centaur_sandbox_core::HarnessAuthMode::AccessToken)
         );
         assert_eq!(

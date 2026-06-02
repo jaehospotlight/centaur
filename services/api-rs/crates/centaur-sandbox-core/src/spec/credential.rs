@@ -24,12 +24,13 @@ pub struct HarnessAuthModes {
 }
 
 impl HarnessAuthModes {
-    pub fn mode_for(&self, profile: CredentialProfile) -> Option<HarnessAuthMode> {
-        match profile {
+    pub fn credential_for(&self, profile: CredentialProfile) -> CredentialRequest {
+        let auth_mode = match profile {
             CredentialProfile::Codex => self.codex,
             CredentialProfile::ClaudeCode => self.claude_code,
             CredentialProfile::Amp => None,
-        }
+        };
+        CredentialRequest { profile, auth_mode }
     }
 }
 

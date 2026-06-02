@@ -31,8 +31,10 @@ impl SandboxRuntime {
         auth_modes: HarnessAuthModes,
     ) -> Self {
         Self::backend_with_spec_factory(backend, move |thread_key, harness_type, _execution_id| {
-            let profile = credential_profile_for(harness_type);
-            workload.spec(thread_key, profile, auth_modes.mode_for(profile))
+            workload.spec(
+                thread_key,
+                auth_modes.credential_for(credential_profile_for(harness_type)),
+            )
         })
     }
 
