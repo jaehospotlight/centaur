@@ -1,7 +1,6 @@
-use std::str::FromStr;
-
 use serde::Serialize;
 use serde_yaml::Value;
+use strum::EnumString;
 
 use crate::{IronProxyConfigError, Result};
 
@@ -78,24 +77,14 @@ impl Default for SourcePolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumString)]
 pub enum SourceKind {
+    #[strum(serialize = "env")]
     Env,
+    #[strum(serialize = "onepassword")]
     OnePassword,
+    #[strum(serialize = "onepassword-connect")]
     OnePasswordConnect,
-}
-
-impl FromStr for SourceKind {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "env" => Ok(Self::Env),
-            "onepassword" => Ok(Self::OnePassword),
-            "onepassword-connect" => Ok(Self::OnePasswordConnect),
-            _ => Err(format!("unsupported secret source {value:?}")),
-        }
-    }
 }
 
 #[derive(Serialize)]

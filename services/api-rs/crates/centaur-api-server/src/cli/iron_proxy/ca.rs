@@ -17,18 +17,11 @@ pub(super) struct IronProxyCaArgs {
 }
 
 impl IronProxyCaArgs {
-    pub(super) fn configured(&self) -> bool {
-        self.cert_secret_name.is_some() && self.key_secret_name.is_some()
-    }
-
-    pub(super) fn required(&self) -> Result<(String, String), ServerError> {
-        Ok((
-            self.cert_secret_name
-                .clone()
-                .ok_or(ServerError::MissingIronProxyCaSecret)?,
-            self.key_secret_name
-                .clone()
-                .ok_or(ServerError::MissingIronProxyCaSecret)?,
-        ))
+    pub(super) fn secrets(&self) -> Result<Option<(String, String)>, ServerError> {
+        match (&self.cert_secret_name, &self.key_secret_name) {
+            (None, None) => Ok(None),
+            (Some(cert), Some(key)) => Ok(Some((cert.clone(), key.clone()))),
+            _ => Err(ServerError::MissingIronProxyCaSecret),
+        }
     }
 }

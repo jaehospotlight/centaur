@@ -58,14 +58,16 @@ impl IronProxyArgs {
         &self,
         sandbox_image_pull: &ImagePullConfig,
     ) -> Result<Option<IronProxyPodConfig>, ServerError> {
-        let fragment_paths = self.fragments.paths()?;
-        if !self
-            .mode
-            .enabled(!fragment_paths.is_empty(), self.ca.configured())
-        {
+        if self.mode == IronProxyMode::Disabled {
             return Ok(None);
         }
-        let (ca_cert_secret_name, ca_key_secret_name) = self.ca.required()?;
+        let fragment_paths = self.fragments.paths()?;
+        let ca = self.ca.secrets()?;
+        if !self.mode.enabled(!fragment_paths.is_empty(), ca.is_some()) {
+            return Ok(None);
+        }
+        let (ca_cert_secret_name, ca_key_secret_name) =
+            ca.ok_or(ServerError::MissingIronProxyCaSecret)?;
 
         let mut config = IronProxyPodConfig::new(
             self.image.image_name.clone(),
