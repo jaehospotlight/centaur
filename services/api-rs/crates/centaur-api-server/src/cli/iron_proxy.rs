@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use centaur_iron_proxy::{SourceKind, load_fragment_files};
+use centaur_iron_proxy::load_fragment_files;
 use centaur_sandbox_agent_k8s::{ImagePullConfig, IronProxyPodConfig};
 use clap::Args as ClapArgs;
 
@@ -59,21 +59,6 @@ pub(super) struct IronProxyArgs {
         env = "KUBERNETES_BOOTSTRAP_SECRET_NAME"
     )]
     bootstrap_secret_name: Option<String>,
-    #[arg(
-        long = "kubernetes-op-connect-host",
-        env = "KUBERNETES_OP_CONNECT_HOST"
-    )]
-    op_connect_host: Option<String>,
-    #[arg(
-        long = "kubernetes-op-connect-app-name",
-        env = "KUBERNETES_OP_CONNECT_APP_NAME"
-    )]
-    op_connect_app_name: Option<String>,
-    #[arg(
-        long = "kubernetes-op-connect-port",
-        env = "KUBERNETES_OP_CONNECT_PORT"
-    )]
-    op_connect_port: Option<u16>,
     #[arg(long = "kubernetes-api-pod-label-selector", env = "KUBERNETES_API_POD_LABEL_SELECTOR", value_parser = parse_label_selector_arg)]
     api_pod_label_selector: Option<BTreeMap<String, String>>,
     #[arg(
@@ -115,26 +100,16 @@ impl IronProxyArgs {
                 .or_else(|| sandbox_image_pull.policy.clone()),
             secrets: sandbox_image_pull.secrets.clone(),
         };
-        config.source_policy = self.source.policy();
+        self.source.apply_to_config(&mut config);
         if let Some(secret_name) = &self.secret_env_name {
             config.secret_env_name = Some(secret_name.clone());
             config.secret_env_prefix = self.secret_env_prefix.clone().unwrap_or_default();
             config.env_from_secret_names.push(secret_name.clone());
         }
-        if matches!(config.source_policy.kind, SourceKind::OnePassword)
+        if self.source.uses_bootstrap_secret()
             && let Some(secret_name) = &self.bootstrap_secret_name
         {
             config.env_from_secret_names.push(secret_name.clone());
-        }
-        if let Some(app_name) = &self.op_connect_app_name {
-            config.op_connect_app_name = app_name.clone();
-        }
-        config.op_connect_port = self
-            .op_connect_port
-            .or_else(|| self.op_connect_host.as_deref().and_then(parse_host_port))
-            .unwrap_or(config.op_connect_port);
-        if let Some(host) = &self.op_connect_host {
-            config.extra_env = BTreeMap::from([("OP_CONNECT_HOST".to_owned(), host.clone())]);
         }
         config.token_broker_name = self.token_broker_name.clone();
         config.token_broker_configmap_name = self.token_broker_configmap_name.clone();
@@ -147,8 +122,4 @@ impl IronProxyArgs {
         }
         Ok(Some(config))
     }
-}
-
-fn parse_host_port(value: &str) -> Option<u16> {
-    value.rsplit_once(':')?.1.parse().ok()
 }
