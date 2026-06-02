@@ -13,6 +13,12 @@ fn parse_rendered(rendered: &str) -> Value {
     serde_yaml::from_str(rendered).unwrap()
 }
 
+fn render_proxy_cfg(fragments: &[ProxyFragment], policy: SourcePolicy) -> (String, Value) {
+    let rendered = render_proxy_yaml_with_source_policy(None, fragments, &policy).unwrap();
+    let cfg = parse_rendered(&rendered);
+    (rendered, cfg)
+}
+
 fn transform_names(cfg: &Value) -> Vec<&str> {
     cfg["transforms"]
         .as_sequence()
@@ -95,13 +101,8 @@ mcp:
         placeholder: GITHUB_TOKEN
 "#,
     );
-    let rendered = render_proxy_yaml_with_source_policy(
-        None,
-        &[fragment],
-        &SourcePolicy::onepassword("ai-agents", "10m"),
-    )
-    .unwrap();
-    let cfg = parse_rendered(&rendered);
+    let (rendered, cfg) =
+        render_proxy_cfg(&[fragment], SourcePolicy::onepassword("ai-agents", "10m"));
     assert_eq!(
         cfg["postgres"][0]["upstream"]["dsn"]["secret_ref"],
         "op://ai-agents/WAREHOUSE_DSN/credential"
@@ -142,13 +143,7 @@ postgres:
         }]
     );
 
-    let rendered = render_proxy_yaml_with_source_policy(
-        None,
-        &[fragment],
-        &SourcePolicy::onepassword("ai-agents", "10m"),
-    )
-    .unwrap();
-    let cfg = parse_rendered(&rendered);
+    let (_, cfg) = render_proxy_cfg(&[fragment], SourcePolicy::onepassword("ai-agents", "10m"));
     assert!(cfg["postgres"][0]["sandbox_env"].is_null());
     assert_eq!(
         cfg["postgres"][0]["upstream"]["dsn"]["secret_ref"],
@@ -329,13 +324,8 @@ transforms:
       rules: [{ host: signed.example.com }]
 "#,
     );
-    let rendered = render_proxy_yaml_with_source_policy(
-        None,
-        &[fragment],
-        &SourcePolicy::onepassword("ai-agents", "10m"),
-    )
-    .unwrap();
-    let cfg = parse_rendered(&rendered);
+    let (rendered, cfg) =
+        render_proxy_cfg(&[fragment], SourcePolicy::onepassword("ai-agents", "10m"));
     assert_eq!(cfg["transforms"][1]["name"], "gcp_auth");
     assert_eq!(
         cfg["transforms"][1]["config"]["keyfile"]["secret_ref"],
@@ -366,12 +356,10 @@ fn loads_builtin_harness_fragments() {
         BTreeMap::from([("OPENAI_API_KEY".to_owned(), "OPENAI_API_KEY".to_owned())])
     );
     let codex_access = harness_fragment("codex", "access_token").unwrap().unwrap();
-    let rendered = render_proxy_yaml_with_source_policy(
-        None,
+    let (rendered, _) = render_proxy_cfg(
         &[codex_access],
-        &SourcePolicy::onepassword("ai-agents", "10m"),
-    )
-    .unwrap();
+        SourcePolicy::onepassword("ai-agents", "10m"),
+    );
     assert!(rendered.contains("token_broker"));
     assert!(rendered.contains("ttl: 1m"));
     assert!(rendered.contains("chatgpt-account-id"));

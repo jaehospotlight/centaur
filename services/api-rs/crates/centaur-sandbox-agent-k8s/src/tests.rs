@@ -20,13 +20,38 @@ fn env_values(env: &[EnvVar]) -> BTreeMap<&str, &str> {
         .collect()
 }
 
-#[test]
-fn codex_credential_profile_adds_openai_placeholder() {
-    let iron_proxy = IronProxyPodConfig::new(
+fn iron_proxy_config() -> IronProxyPodConfig {
+    IronProxyPodConfig::new(
         "centaur-iron-proxy:latest",
         "firewall-ca-cert",
         "firewall-ca-key",
-    );
+    )
+}
+
+fn managed_broker_iron_proxy() -> IronProxyPodConfig {
+    let mut config = iron_proxy_config();
+    config.secret_env_name = Some("centaur-infra-env".to_owned());
+    config.secret_env_prefix = "CENT_".to_owned();
+    config.token_broker_name = Some("centaur-token-broker".to_owned());
+    config
+}
+
+fn resolved_iron_proxy() -> ResolvedIronProxy {
+    ResolvedIronProxy {
+        config_yaml: "transforms: []\n".to_owned(),
+        placeholder_env: BTreeMap::new(),
+        proxy_host: "asbx-sec-proxy".to_owned(),
+        proxy_pod_name: "asbx-sec-proxy-123".to_owned(),
+        proxy_port: 18080,
+        listen_ports: vec![18080],
+        pg_dsn_env: BTreeMap::new(),
+        pg_proxy_password_env: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn codex_credential_profile_adds_openai_placeholder() {
+    let iron_proxy = iron_proxy_config();
     let spec = SandboxSpec::new("centaur-agent:latest").credential(CredentialProfile::Codex, None);
 
     let fragments = iron_proxy_fragments_for_spec(&iron_proxy, &spec).unwrap();
@@ -81,27 +106,15 @@ fn builds_agent_sandbox_spec_with_limits() {
 
 #[test]
 fn security_model_agent_pod_gets_placeholders_not_proxy_secrets() {
-    let mut iron_proxy = IronProxyPodConfig::new(
-        "centaur-iron-proxy:latest",
-        "firewall-ca-cert",
-        "firewall-ca-key",
-    );
+    let mut iron_proxy = managed_broker_iron_proxy();
     iron_proxy.source_policy = SourcePolicy::onepassword_connect("ai-agents", "10m");
-    iron_proxy.secret_env_name = Some("centaur-infra-env".to_owned());
-    iron_proxy.secret_env_prefix = "CENT_".to_owned();
-    iron_proxy.token_broker_name = Some("centaur-token-broker".to_owned());
     let mut config = AgentSandboxConfig::new("centaur");
     config.iron_proxy = Some(iron_proxy);
     let resolved = ResolvedIronProxy {
-        config_yaml: "transforms: []\n".to_owned(),
         placeholder_env: BTreeMap::from([
             ("OPENAI_API_KEY".to_owned(), "OPENAI_API_KEY".to_owned()),
             ("GITHUB_TOKEN".to_owned(), "GITHUB_TOKEN".to_owned()),
         ]),
-        proxy_host: "asbx-sec-proxy".to_owned(),
-        proxy_pod_name: "asbx-sec-proxy-123".to_owned(),
-        proxy_port: 18080,
-        listen_ports: vec![18080],
         pg_dsn_env: BTreeMap::from([(
             "WAREHOUSE_DSN".to_owned(),
             "postgresql://app_user:pg-pass@asbx-sec-proxy:5440/warehouse".to_owned(),
@@ -110,6 +123,7 @@ fn security_model_agent_pod_gets_placeholders_not_proxy_secrets() {
             "PG_PROXY_PASSWORD_WAREHOUSE".to_owned(),
             "pg-pass".to_owned(),
         )]),
+        ..resolved_iron_proxy()
     };
     let spec = SandboxSpec::new("centaur-agent:latest")
         .env("CENTAUR_API_URL", "http://api:8000")
@@ -180,28 +194,12 @@ fn security_model_agent_pod_gets_placeholders_not_proxy_secrets() {
 
 #[test]
 fn builds_iron_proxy_pod_with_managed_token_broker() {
-    let mut iron_proxy = IronProxyPodConfig::new(
-        "centaur-iron-proxy:latest",
-        "firewall-ca-cert",
-        "firewall-ca-key",
-    );
-    iron_proxy.secret_env_name = Some("centaur-infra-env".to_owned());
-    iron_proxy.secret_env_prefix = "CENT_".to_owned();
-    iron_proxy.token_broker_name = Some("centaur-token-broker".to_owned());
+    let iron_proxy = managed_broker_iron_proxy();
     assert_eq!(
         iron_token_broker_configmap_name(&iron_proxy).unwrap(),
         "centaur-token-broker-config"
     );
-    let resolved = ResolvedIronProxy {
-        config_yaml: "transforms: []\n".to_owned(),
-        placeholder_env: BTreeMap::new(),
-        proxy_host: "asbx-sec-proxy".to_owned(),
-        proxy_pod_name: "asbx-sec-proxy-123".to_owned(),
-        proxy_port: 18080,
-        listen_ports: vec![18080],
-        pg_dsn_env: BTreeMap::new(),
-        pg_proxy_password_env: BTreeMap::new(),
-    };
+    let resolved = resolved_iron_proxy();
 
     let pod = build_iron_proxy_pod(
         &SandboxId::new("asbx-sec"),
