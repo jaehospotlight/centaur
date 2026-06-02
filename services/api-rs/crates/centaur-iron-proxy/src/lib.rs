@@ -69,26 +69,20 @@ pub struct SourcePolicy {
 
 impl SourcePolicy {
     pub fn env() -> Self {
-        Self {
-            kind: SourceKind::Env,
-            op_vault: "ai-agents".to_owned(),
-            ttl: "10m".to_owned(),
-            token_broker_ttl: "1m".to_owned(),
-        }
+        Self::new(SourceKind::Env, "ai-agents", "10m")
     }
 
     pub fn onepassword(op_vault: impl Into<String>, ttl: impl Into<String>) -> Self {
-        Self {
-            kind: SourceKind::OnePassword,
-            op_vault: op_vault.into(),
-            ttl: ttl.into(),
-            token_broker_ttl: "1m".to_owned(),
-        }
+        Self::new(SourceKind::OnePassword, op_vault, ttl)
     }
 
     pub fn onepassword_connect(op_vault: impl Into<String>, ttl: impl Into<String>) -> Self {
+        Self::new(SourceKind::OnePasswordConnect, op_vault, ttl)
+    }
+
+    fn new(kind: SourceKind, op_vault: impl Into<String>, ttl: impl Into<String>) -> Self {
         Self {
-            kind: SourceKind::OnePasswordConnect,
+            kind,
             op_vault: op_vault.into(),
             ttl: ttl.into(),
             token_broker_ttl: "1m".to_owned(),
@@ -187,15 +181,6 @@ pub struct ProxyFragment {
     pub top_level: BTreeMap<String, Value>,
 }
 
-impl ProxyFragment {
-    pub fn is_empty(&self) -> bool {
-        self.transforms.is_empty()
-            && self.postgres.is_empty()
-            && self.broker_credentials.is_empty()
-            && self.top_level.is_empty()
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct ProxyConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -286,10 +271,7 @@ pub struct Secret {
 
 impl Secret {
     fn explicit_id(&self) -> Option<&str> {
-        self.id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+        non_empty(self.id.as_deref())
     }
 
     fn proxy_value(&self) -> Option<&str> {
@@ -631,32 +613,21 @@ pub fn pg_dsn_envs(fragments: &[ProxyFragment]) -> Vec<PgDsnEnv> {
         let Some(sandbox_env) = &listener.sandbox_env else {
             continue;
         };
-        let Some(env_name) = sandbox_env
-            .name
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(env_name) = non_empty(sandbox_env.name.as_deref()) else {
             continue;
         };
-        let Some(database) = sandbox_env
-            .database
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(database) = non_empty(sandbox_env.database.as_deref()) else {
             continue;
         };
         let Some(port) = listener.listen.as_deref().and_then(listen_port) else {
             continue;
         };
-        let Some(password_env) = listener
-            .client
-            .as_ref()
-            .and_then(|client| client.password_env.as_deref())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(password_env) = non_empty(
+            listener
+                .client
+                .as_ref()
+                .and_then(|client| client.password_env.as_deref()),
+        ) else {
             continue;
         };
         entries.entry(env_name.to_owned()).or_insert(PgDsnEnv {
@@ -804,6 +775,16 @@ fn value_field_str<'a>(value: Option<&'a Value>, key: &str) -> Option<&'a str> {
         .as_str()
 }
 
+fn value_has_field(value: &Value, key: &str) -> bool {
+    value
+        .as_mapping()
+        .is_some_and(|map| map.contains_key(&Value::String(key.to_owned())))
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 fn slugify_id_component(value: &str) -> String {
     let mut slug = String::new();
     let mut previous_dash = false;
@@ -854,24 +835,15 @@ fn resolve_source_values<'a>(
 }
 
 fn resolve_broker_store_source(value: &mut Value, source_policy: &SourcePolicy) -> Result<()> {
-    let Some(map) = value.as_mapping_mut() else {
-        return Ok(());
-    };
-    if let Some(placeholder) = map
-        .get(&string_value("placeholder"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-    {
-        if map.contains_key(&string_value("json_key")) {
+    if let Some(placeholder) = value_field_str(Some(value), "placeholder").map(ToOwned::to_owned) {
+        if value_has_field(value, "json_key") {
             return Err(IronProxyConfigError::BrokerStoreJsonKey { placeholder });
         }
         *value = source_policy.store_source_for(&placeholder)?;
         return Ok(());
     }
-    if map.get(&string_value("type")).and_then(Value::as_str) == Some("env") {
-        let placeholder = map
-            .get(&string_value("var"))
-            .and_then(Value::as_str)
+    if value_field_str(Some(value), "type") == Some("env") {
+        let placeholder = value_field_str(Some(value), "var")
             .unwrap_or("store")
             .to_owned();
         return Err(IronProxyConfigError::BrokerStoreEnv { placeholder });
@@ -883,11 +855,10 @@ fn resolve_placeholder_source_values(
     value: &mut Value,
     source_policy: &SourcePolicy,
 ) -> Result<()> {
-    if let Some(source_ref) = SourceReference::from_value(value) {
-        if let Some(placeholder) = source_ref.placeholder {
-            *value = source_policy.source_for(&placeholder, source_ref.json_key.as_deref())?;
-            return Ok(());
-        }
+    if let Some(placeholder) = value_field_str(Some(value), "placeholder").map(ToOwned::to_owned) {
+        let json_key = value_field_str(Some(value), "json_key").map(ToOwned::to_owned);
+        *value = source_policy.source_for(&placeholder, json_key.as_deref())?;
+        return Ok(());
     }
 
     match value {
@@ -912,20 +883,6 @@ fn resolve_placeholder_source_values(
         _ => {}
     }
     Ok(())
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct SourceReference {
-    #[serde(default)]
-    placeholder: Option<String>,
-    #[serde(default)]
-    json_key: Option<String>,
-}
-
-impl SourceReference {
-    fn from_value(value: &Value) -> Option<Self> {
-        serde_yaml::from_value(value.clone()).ok()
-    }
 }
 
 fn existing_unmanaged_transforms(transforms: Vec<Transform>) -> Vec<Transform> {

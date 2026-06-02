@@ -15,11 +15,24 @@ use centaur_sandbox_core::{
     SandboxResult, SandboxSpec, SandboxStatus,
 };
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{ConfigMap, Pod, Service};
-use k8s_openapi::api::networking::v1::NetworkPolicy;
+use k8s_openapi::api::core::v1::{
+    Capabilities, ConfigMap, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource,
+    EnvFromSource, EnvVar, EnvVarSource, HTTPGetAction, HostPathVolumeSource, LocalObjectReference,
+    PersistentVolumeClaimVolumeSource, Pod, PodSpec, Probe, ResourceRequirements, SeccompProfile,
+    SecretEnvSource, SecretKeySelector, SecretVolumeSource, SecurityContext, Service, ServicePort,
+    ServiceSpec, Volume, VolumeMount,
+};
+use k8s_openapi::api::networking::v1::{
+    NetworkPolicy, NetworkPolicyEgressRule, NetworkPolicyIngressRule, NetworkPolicyPeer,
+    NetworkPolicyPort, NetworkPolicySpec,
+};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
+use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{AttachParams, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, Client, Error};
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, sleep};
@@ -280,11 +293,7 @@ impl AgentSandboxBackend {
         let name = iron_proxy_configmap_name(id);
         let _ = self.delete_iron_proxy_configmap(id).await;
         let body = ConfigMap {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some(name),
-                labels: Some(iron_proxy_labels(id)),
-                ..Default::default()
-            },
+            metadata: object_meta(name, iron_proxy_labels(id)),
             data: Some(BTreeMap::from([(
                 "proxy.yaml".to_owned(),
                 resolved.config_yaml.clone(),
@@ -365,11 +374,7 @@ impl AgentSandboxBackend {
             }
             Err(err) if is_not_found(&err) => {
                 let body = ConfigMap {
-                    metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                        name: Some(name),
-                        labels: Some(token_broker_labels()),
-                        ..Default::default()
-                    },
+                    metadata: object_meta(name, token_broker_labels()),
                     data: Some(data),
                     ..Default::default()
                 };
@@ -435,7 +440,7 @@ impl AgentSandboxBackend {
         id: &SandboxId,
         resolved: &ResolvedIronProxy,
     ) -> SandboxResult<()> {
-        let service = build_iron_proxy_service(id, resolved)?;
+        let service = build_iron_proxy_service(id, resolved);
         self.services()
             .create(&PostParams::default(), &service)
             .await
@@ -451,7 +456,7 @@ impl AgentSandboxBackend {
         let Some(iron_proxy) = &self.config.iron_proxy else {
             return Ok(());
         };
-        let pod = build_iron_proxy_pod(id, &resolved.proxy_pod_name, iron_proxy, resolved)?;
+        let pod = build_iron_proxy_pod(id, &resolved.proxy_pod_name, iron_proxy, resolved);
         self.pods()
             .create(&PostParams::default(), &pod)
             .await
@@ -467,7 +472,7 @@ impl AgentSandboxBackend {
         let Some(iron_proxy) = &self.config.iron_proxy else {
             return Ok(());
         };
-        for policy in build_iron_proxy_network_policies(id, resolved, iron_proxy)? {
+        for policy in build_iron_proxy_network_policies(id, resolved, iron_proxy) {
             self.network_policies()
                 .create(&PostParams::default(), &policy)
                 .await
@@ -762,130 +767,124 @@ fn build_agent_sandbox(
         "centaur-sandbox".to_owned(),
     );
 
-    let mut container = json!({
-        "name": config.container_name,
-        "image": spec.image,
-        "stdin": true,
-        "stdinOnce": false,
-        "tty": false,
-    });
-    insert_optional(
-        &mut container,
-        "imagePullPolicy",
-        config.image_pull_policy.clone(),
-    );
-    insert_optional(&mut container, "command", spec.command.clone());
-    insert_optional(
-        &mut container,
-        "args",
-        (!spec.args.is_empty()).then(|| spec.args.clone()),
-    );
-    insert_optional(
-        &mut container,
-        "env",
-        (!spec.env.is_empty() || resolved_iron_proxy.is_some())
-            .then(|| env_json(spec, resolved_iron_proxy)),
-    );
-    insert_optional(&mut container, "workingDir", spec.working_dir.clone());
-    insert_optional(&mut container, "resources", resources_json(spec));
-
-    let (mut volumes, mut volume_mounts) = mount_json(spec);
+    let (mut volumes, mut volume_mounts) = mounts(spec);
     if let Some(iron_proxy) = &config.iron_proxy {
-        volume_mounts.push(json!({
-            "name": "iron-proxy-ca-cert",
-            "mountPath": "/firewall-certs",
-            "readOnly": true,
-        }));
-        volumes.push(json!({
-            "name": "iron-proxy-ca-cert",
-            "secret": {"secretName": iron_proxy.ca_cert_secret_name}
-        }));
+        volume_mounts.push(volume_mount("iron-proxy-ca-cert", "/firewall-certs", true));
+        volumes.push(secret_volume(
+            "iron-proxy-ca-cert",
+            iron_proxy.ca_cert_secret_name.clone(),
+        ));
     }
-    insert_optional(
-        &mut container,
-        "volumeMounts",
-        (!volume_mounts.is_empty()).then_some(volume_mounts),
-    );
-    let mut pod_spec = json!({
-        "containers": [container],
-        "restartPolicy": "Never",
-        "automountServiceAccountToken": false,
-    });
-    insert_optional(
-        &mut pod_spec,
-        "imagePullSecrets",
-        image_pull_secret_refs(&config.image_pull_secrets),
-    );
-    insert_optional(
-        &mut pod_spec,
-        "runtimeClassName",
-        config.runtime_class_name.clone(),
-    );
-    insert_optional(
-        &mut pod_spec,
-        "serviceAccountName",
-        config.service_account_name.clone(),
-    );
-    insert_optional(
-        &mut pod_spec,
-        "volumes",
-        (!volumes.is_empty()).then(|| std::mem::take(&mut volumes)),
-    );
 
-    let agent_spec = json!({
-        "replicas": 1,
-        "service": false,
-        "shutdownPolicy": "Retain",
-        "podTemplate": {
-            "metadata": {
-                "labels": pod_labels,
-                "annotations": config.annotations,
+    let container = Container {
+        name: config.container_name.clone(),
+        image: Some(spec.image.clone()),
+        image_pull_policy: config.image_pull_policy.clone(),
+        command: spec.command.clone(),
+        args: (!spec.args.is_empty()).then(|| spec.args.clone()),
+        env: env_vars(spec, resolved_iron_proxy),
+        working_dir: spec.working_dir.clone(),
+        resources: resources(spec),
+        stdin: Some(true),
+        stdin_once: Some(false),
+        tty: Some(false),
+        volume_mounts: (!volume_mounts.is_empty()).then_some(volume_mounts),
+        ..Default::default()
+    };
+
+    let crd_spec = agent_sandbox_spec_from(AgentSandboxSpec {
+        replicas: Some(1),
+        service: Some(false),
+        shutdown_policy: Some(crd::SandboxShutdownPolicy::Retain),
+        pod_template: AgentPodTemplate {
+            metadata: AgentPodTemplateMetadata {
+                labels: Some(pod_labels),
+                annotations: Some(config.annotations.clone()),
             },
-            "spec": pod_spec,
+            spec: PodSpec {
+                containers: vec![container],
+                restart_policy: Some("Never".to_owned()),
+                automount_service_account_token: Some(false),
+                image_pull_secrets: image_pull_secret_refs(&config.image_pull_secrets),
+                runtime_class_name: config.runtime_class_name.clone(),
+                service_account_name: config.service_account_name.clone(),
+                volumes: (!volumes.is_empty()).then_some(volumes),
+                ..Default::default()
+            },
         },
-    });
-    let spec = serde_json::from_value(agent_spec)
-        .map_err(|err| SandboxError::InvalidSpec(format!("invalid Agent Sandbox spec: {err}")))?;
-    let mut sandbox = crd::Sandbox::new(id.as_str(), spec);
+    })?;
+    let mut sandbox = crd::Sandbox::new(id.as_str(), crd_spec);
     sandbox.metadata.labels = Some(labels);
     sandbox.metadata.annotations = Some(config.annotations.clone());
     Ok(sandbox)
 }
 
-fn mount_json(spec: &SandboxSpec) -> (Vec<Value>, Vec<Value>) {
+#[derive(Serialize)]
+struct AgentSandboxSpec {
+    #[serde(rename = "podTemplate")]
+    pod_template: AgentPodTemplate,
+    replicas: Option<i32>,
+    service: Option<bool>,
+    #[serde(rename = "shutdownPolicy")]
+    shutdown_policy: Option<crd::SandboxShutdownPolicy>,
+}
+
+#[derive(Serialize)]
+struct AgentPodTemplate {
+    metadata: AgentPodTemplateMetadata,
+    spec: PodSpec,
+}
+
+#[derive(Serialize)]
+struct AgentPodTemplateMetadata {
+    labels: Option<BTreeMap<String, String>>,
+    annotations: Option<BTreeMap<String, String>>,
+}
+
+fn agent_sandbox_spec_from(spec: AgentSandboxSpec) -> SandboxResult<crd::SandboxSpec> {
+    serde_json::to_value(spec)
+        .and_then(serde_json::from_value)
+        .map_err(|err| SandboxError::InvalidSpec(format!("invalid Agent Sandbox spec: {err}")))
+}
+
+fn mounts(spec: &SandboxSpec) -> (Vec<Volume>, Vec<VolumeMount>) {
     let mut volumes = Vec::with_capacity(spec.mounts.len());
     let mut mounts = Vec::with_capacity(spec.mounts.len());
     for (index, mount) in spec.mounts.iter().enumerate() {
         let name = format!("mount-{index}");
-        mounts.push(json!({
-            "name": name,
-            "mountPath": mount.target_path,
-            "readOnly": mount.read_only,
-        }));
+        mounts.push(VolumeMount {
+            name: name.clone(),
+            mount_path: mount.target_path.clone(),
+            read_only: Some(mount.read_only),
+            ..Default::default()
+        });
         volumes.push(match &mount.kind {
-            MountKind::EmptyDir => json!({
-                "name": name,
-                "emptyDir": {},
-            }),
-            MountKind::NamedVolume(claim_name) => json!({
-                "name": name,
-                "persistentVolumeClaim": {
-                    "claimName": claim_name,
-                    "readOnly": mount.read_only,
-                },
-            }),
-            MountKind::Bind { source_path } => json!({
-                "name": name,
-                "hostPath": {
-                    "path": source_path,
-                },
-            }),
+            MountKind::EmptyDir => empty_dir_volume(&name),
+            MountKind::NamedVolume(claim_name) => Volume {
+                name,
+                persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                    claim_name: claim_name.clone(),
+                    read_only: Some(mount.read_only),
+                }),
+                ..Default::default()
+            },
+            MountKind::Bind { source_path } => Volume {
+                name,
+                host_path: Some(HostPathVolumeSource {
+                    path: source_path.clone(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
         });
     }
     (volumes, mounts)
 }
 
-fn env_json(spec: &SandboxSpec, resolved_iron_proxy: Option<&ResolvedIronProxy>) -> Vec<Value> {
+fn env_vars(
+    spec: &SandboxSpec,
+    resolved_iron_proxy: Option<&ResolvedIronProxy>,
+) -> Option<Vec<EnvVar>> {
     let mut env = BTreeMap::<String, String>::new();
     for item in &spec.env {
         env.insert(item.name.clone(), item.value.clone());
@@ -913,9 +912,11 @@ fn env_json(spec: &SandboxSpec, resolved_iron_proxy: Option<&ResolvedIronProxy>)
             env.insert(name, value);
         }
     }
-    env.into_iter()
-        .map(|(name, value)| json!({ "name": name, "value": value }))
-        .collect()
+    (!env.is_empty()).then(|| {
+        env.into_iter()
+            .map(|(name, value)| env_var(&name, &value))
+            .collect()
+    })
 }
 
 fn proxy_env(
@@ -1023,8 +1024,11 @@ fn spec_env<'a>(spec: &'a SandboxSpec, name: &str) -> Option<&'a str> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn iron_proxy_container(iron_proxy: &IronProxyPodConfig, resolved: &ResolvedIronProxy) -> Value {
-    let mut env = BTreeMap::<String, Value>::new();
+fn iron_proxy_container(
+    iron_proxy: &IronProxyPodConfig,
+    resolved: &ResolvedIronProxy,
+) -> Container {
+    let mut env = BTreeMap::<String, EnvVar>::new();
     if let Some(secret_name) = &iron_proxy.secret_env_name {
         insert_env_secret_ref(
             &mut env,
@@ -1074,9 +1078,9 @@ fn iron_proxy_container(iron_proxy: &IronProxyPodConfig, resolved: &ResolvedIron
         }
     }
     let mut container_ports = vec![
-        json!({"containerPort": resolved.proxy_port, "name": "proxy"}),
-        json!({"containerPort": 9092, "name": "management"}),
-        json!({"containerPort": 9090, "name": "health"}),
+        container_port("proxy", resolved.proxy_port),
+        container_port("management", 9092),
+        container_port("health", 9090),
     ];
     for port in resolved
         .listen_ports
@@ -1084,116 +1088,97 @@ fn iron_proxy_container(iron_proxy: &IronProxyPodConfig, resolved: &ResolvedIron
         .copied()
         .filter(|port| ![resolved.proxy_port, 9092, 9090].contains(port))
     {
-        container_ports.push(json!({"containerPort": port, "name": format!("tcp-{port}")}));
+        container_ports.push(container_port(format!("tcp-{port}"), port));
     }
 
-    let mut container = json!({
-        "name": "iron-proxy",
-        "image": iron_proxy.image,
-        "env": env.into_values().collect::<Vec<_>>(),
-        "ports": container_ports,
-        "readinessProbe": {
-            "httpGet": {
-                "path": "/healthz",
-                "port": 9090
-            },
-            "periodSeconds": 5,
-            "failureThreshold": 30
-        },
-        "livenessProbe": {
-            "httpGet": {
-                "path": "/healthz",
-                "port": 9090
-            }
-        },
-        "securityContext": {
-            "allowPrivilegeEscalation": false,
-            "capabilities": {"drop": ["ALL"]},
-            "seccompProfile": {"type": "RuntimeDefault"}
-        },
-        "volumeMounts": [
-            {
-                "name": "iron-proxy-config-rendered",
-                "mountPath": "/etc/iron-proxy-rendered",
-                "readOnly": true
-            },
-            {
-                "name": "iron-proxy-config",
-                "mountPath": "/etc/iron-proxy"
-            },
-            {
-                "name": "iron-proxy-certs",
-                "mountPath": "/certs"
-            },
-            {
-                "name": "iron-proxy-ca",
-                "mountPath": "/etc/iron-proxy-ca",
-                "readOnly": true
-            }
-        ],
-        "command": ["/bin/sh", "-ec"],
-        "args": [
-            "cp /etc/iron-proxy-rendered/proxy.yaml /etc/iron-proxy/proxy.yaml && exec /entrypoint.sh"
-        ]
-    });
-    insert_optional(
-        &mut container,
-        "imagePullPolicy",
-        iron_proxy.image_pull_policy.clone(),
-    );
-    insert_optional(
-        &mut container,
-        "envFrom",
-        (!iron_proxy.env_from_secret_names.is_empty()).then(|| {
+    Container {
+        name: "iron-proxy".to_owned(),
+        image: Some(iron_proxy.image.clone()),
+        image_pull_policy: iron_proxy.image_pull_policy.clone(),
+        env: Some(env.into_values().collect()),
+        env_from: (!iron_proxy.env_from_secret_names.is_empty()).then(|| {
             iron_proxy
                 .env_from_secret_names
                 .iter()
-                .map(|name| json!({ "secretRef": { "name": name } }))
-                .collect::<Vec<_>>()
+                .map(|name| EnvFromSource {
+                    secret_ref: Some(SecretEnvSource {
+                        name: name.clone(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .collect()
         }),
-    );
-    container
+        ports: Some(container_ports),
+        readiness_probe: Some(health_probe(Some(5), Some(30))),
+        liveness_probe: Some(health_probe(None, None)),
+        security_context: Some(SecurityContext {
+            allow_privilege_escalation: Some(false),
+            capabilities: Some(Capabilities {
+                drop: Some(vec!["ALL".to_owned()]),
+                ..Default::default()
+            }),
+            seccomp_profile: Some(SeccompProfile {
+                type_: "RuntimeDefault".to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        volume_mounts: Some(vec![
+            volume_mount("iron-proxy-config-rendered", "/etc/iron-proxy-rendered", true),
+            volume_mount("iron-proxy-config", "/etc/iron-proxy", false),
+            volume_mount("iron-proxy-certs", "/certs", false),
+            volume_mount("iron-proxy-ca", "/etc/iron-proxy-ca", true),
+        ]),
+        command: Some(vec!["/bin/sh".to_owned(), "-ec".to_owned()]),
+        args: Some(vec![
+            "cp /etc/iron-proxy-rendered/proxy.yaml /etc/iron-proxy/proxy.yaml && exec /entrypoint.sh"
+                .to_owned(),
+        ]),
+        ..Default::default()
+    }
 }
 
-fn insert_env_value(env: &mut BTreeMap<String, Value>, name: &str, value: impl AsRef<str>) {
-    env.insert(
-        name.to_owned(),
-        json!({"name": name, "value": value.as_ref()}),
-    );
+fn insert_env_value(env: &mut BTreeMap<String, EnvVar>, name: &str, value: impl AsRef<str>) {
+    env.insert(name.to_owned(), env_var(name, value.as_ref()));
 }
 
 fn insert_env_secret_ref(
-    env: &mut BTreeMap<String, Value>,
+    env: &mut BTreeMap<String, EnvVar>,
     name: &str,
     secret_name: &str,
     secret_prefix: &str,
 ) {
     env.insert(
         name.to_owned(),
-        json!({
-            "name": name,
-            "valueFrom": {
-                "secretKeyRef": {
-                    "name": secret_name,
-                    "key": format!("{secret_prefix}{name}"),
-                }
-            }
-        }),
+        EnvVar {
+            name: name.to_owned(),
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: secret_name.to_owned(),
+                    key: format!("{secret_prefix}{name}"),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
     );
 }
 
-fn iron_proxy_volumes(id: &SandboxId, iron_proxy: &IronProxyPodConfig) -> Vec<Value> {
+fn iron_proxy_volumes(id: &SandboxId, iron_proxy: &IronProxyPodConfig) -> Vec<Volume> {
     vec![
-        json!({
-            "name": "iron-proxy-config-rendered",
-            "configMap": {"name": iron_proxy_configmap_name(id)}
-        }),
-        json!({"name": "iron-proxy-config", "emptyDir": {}}),
-        json!({"name": "iron-proxy-certs", "emptyDir": {}}),
-        json!({
-            "name": "iron-proxy-ca",
-            "secret": {"secretName": iron_proxy.ca_key_secret_name}
-        }),
+        Volume {
+            name: "iron-proxy-config-rendered".to_owned(),
+            config_map: Some(ConfigMapVolumeSource {
+                name: iron_proxy_configmap_name(id),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        empty_dir_volume("iron-proxy-config"),
+        empty_dir_volume("iron-proxy-certs"),
+        secret_volume("iron-proxy-ca", iron_proxy.ca_key_secret_name.clone()),
     ]
 }
 
@@ -1202,196 +1187,262 @@ fn build_iron_proxy_pod(
     pod_name: &str,
     iron_proxy: &IronProxyPodConfig,
     resolved: &ResolvedIronProxy,
-) -> SandboxResult<Pod> {
+) -> Pod {
     let labels = iron_proxy_labels(id);
-    let mut pod_spec = json!({
-        "automountServiceAccountToken": false,
-        "restartPolicy": "Never",
-        "containers": [iron_proxy_container(iron_proxy, resolved)],
-        "volumes": iron_proxy_volumes(id, iron_proxy),
-    });
-    insert_optional(
-        &mut pod_spec,
-        "imagePullSecrets",
-        image_pull_secret_refs(&iron_proxy.image_pull_secrets),
-    );
-    let pod = json!({
-        "apiVersion": "v1",
-        "kind": "Pod",
-        "metadata": {
-            "name": pod_name,
-            "labels": labels,
-        },
-        "spec": pod_spec,
-    });
-    serde_json::from_value(pod)
-        .map_err(|err| SandboxError::InvalidSpec(format!("invalid iron-proxy pod: {err}")))
+    Pod {
+        metadata: object_meta(pod_name, labels),
+        spec: Some(PodSpec {
+            automount_service_account_token: Some(false),
+            restart_policy: Some("Never".to_owned()),
+            containers: vec![iron_proxy_container(iron_proxy, resolved)],
+            volumes: Some(iron_proxy_volumes(id, iron_proxy)),
+            image_pull_secrets: image_pull_secret_refs(&iron_proxy.image_pull_secrets),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
-fn build_iron_proxy_service(
-    id: &SandboxId,
-    resolved: &ResolvedIronProxy,
-) -> SandboxResult<Service> {
-    let mut ports = vec![json!({
-        "name": "proxy",
-        "port": resolved.proxy_port,
-        "targetPort": resolved.proxy_port,
-        "protocol": "TCP",
-    })];
+fn build_iron_proxy_service(id: &SandboxId, resolved: &ResolvedIronProxy) -> Service {
+    let mut ports = vec![service_port("proxy", resolved.proxy_port)];
     for port in resolved
         .listen_ports
         .iter()
         .copied()
         .filter(|port| *port != resolved.proxy_port)
     {
-        ports.push(json!({
-            "name": format!("tcp-{port}"),
-            "port": port,
-            "targetPort": port,
-            "protocol": "TCP",
-        }));
+        ports.push(service_port(format!("tcp-{port}"), port));
     }
-    let service = json!({
-        "apiVersion": "v1",
-        "kind": "Service",
-        "metadata": {
-            "name": iron_proxy_service_name(id),
-            "labels": iron_proxy_labels(id),
-        },
-        "spec": {
-            "selector": iron_proxy_labels(id),
-            "ports": ports,
-        },
-    });
-    serde_json::from_value(service)
-        .map_err(|err| SandboxError::InvalidSpec(format!("invalid iron-proxy service: {err}")))
+    Service {
+        metadata: object_meta(iron_proxy_service_name(id), iron_proxy_labels(id)),
+        spec: Some(ServiceSpec {
+            selector: Some(iron_proxy_labels(id)),
+            ports: Some(ports),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 fn build_iron_proxy_network_policies(
     id: &SandboxId,
     resolved: &ResolvedIronProxy,
     iron_proxy: &IronProxyPodConfig,
-) -> SandboxResult<Vec<NetworkPolicy>> {
-    let mut sandbox_to_proxy_ports = vec![json!({"protocol": "TCP", "port": resolved.proxy_port})];
+) -> Vec<NetworkPolicy> {
+    let mut sandbox_to_proxy_ports = vec![network_port(resolved.proxy_port)];
     for port in resolved
         .listen_ports
         .iter()
         .copied()
         .filter(|port| *port != resolved.proxy_port)
     {
-        sandbox_to_proxy_ports.push(json!({"protocol": "TCP", "port": port}));
+        sandbox_to_proxy_ports.push(network_port(port));
     }
-    let sandbox_policy = json!({
-        "apiVersion": "networking.k8s.io/v1",
-        "kind": "NetworkPolicy",
-        "metadata": {
-            "name": iron_proxy_sandbox_egress_policy_name(id),
-            "labels": sandbox_labels(id),
-        },
-        "spec": {
-            "podSelector": {"matchLabels": sandbox_labels(id)},
-            "policyTypes": ["Egress"],
-            "egress": [
-                {
-                    "to": [{"podSelector": {"matchLabels": iron_proxy_labels(id)}}],
-                    "ports": sandbox_to_proxy_ports.clone(),
-                },
-                {
-                    "to": [{"podSelector": {"matchLabels": iron_proxy.api_pod_labels.clone()}}],
-                    "ports": [{"protocol": "TCP", "port": 8000}],
-                },
+    let sandbox_policy = NetworkPolicy {
+        metadata: object_meta(
+            iron_proxy_sandbox_egress_policy_name(id),
+            sandbox_labels(id),
+        ),
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(label_selector(sandbox_labels(id))),
+            policy_types: Some(vec!["Egress".to_owned()]),
+            egress: Some(vec![
+                egress_to(
+                    vec![pod_peer(iron_proxy_labels(id))],
+                    sandbox_to_proxy_ports.clone(),
+                ),
+                egress_to(
+                    vec![pod_peer(iron_proxy.api_pod_labels.clone())],
+                    vec![network_port(8000)],
+                ),
                 dns_egress_rule(),
-            ],
-        },
-    });
+            ]),
+            ..Default::default()
+        }),
+    };
     let mut proxy_egress = vec![
         dns_egress_rule(),
-        json!({
-            "to": [{"podSelector": {"matchLabels": iron_proxy.api_pod_labels.clone()}}],
-            "ports": [{"protocol": "TCP", "port": 8000}],
-        }),
-        json!({
-            "ports": [
-                {"protocol": "TCP", "port": 443},
-                {"protocol": "TCP", "port": 5432},
-            ],
-        }),
+        egress_to(
+            vec![pod_peer(iron_proxy.api_pod_labels.clone())],
+            vec![network_port(8000)],
+        ),
+        NetworkPolicyEgressRule {
+            ports: Some(vec![network_port(443), network_port(5432)]),
+            ..Default::default()
+        },
     ];
-    if let Some(broker_port) = iron_proxy_broker_port(iron_proxy) {
-        proxy_egress.push(json!({
-            "to": [{"podSelector": {"matchLabels": token_broker_pod_labels()}}],
-            "ports": [{"protocol": "TCP", "port": broker_port}],
-        }));
+    if iron_proxy.token_broker_name.is_some() {
+        proxy_egress.push(egress_to(
+            vec![pod_peer(token_broker_pod_labels())],
+            vec![network_port(centaur_iron_proxy::DEFAULT_BROKER_LISTEN_PORT)],
+        ));
     }
     if matches!(
         iron_proxy.source_policy.kind,
         SourceKind::OnePasswordConnect
     ) {
-        proxy_egress.push(json!({
-            "to": [{"podSelector": {"matchLabels": {"app": iron_proxy.op_connect_app_name}}}],
-            "ports": [{"protocol": "TCP", "port": iron_proxy.op_connect_port}],
-        }));
+        proxy_egress.push(egress_to(
+            vec![pod_peer(BTreeMap::from([(
+                "app".to_owned(),
+                iron_proxy.op_connect_app_name.clone(),
+            )]))],
+            vec![network_port(iron_proxy.op_connect_port)],
+        ));
     }
-    let proxy_policy = json!({
-        "apiVersion": "networking.k8s.io/v1",
-        "kind": "NetworkPolicy",
-        "metadata": {
-            "name": iron_proxy_policy_name(id),
-            "labels": iron_proxy_labels(id),
-        },
-        "spec": {
-            "podSelector": {"matchLabels": iron_proxy_labels(id)},
-            "policyTypes": ["Ingress", "Egress"],
-            "ingress": [
-                {
-                    "from": [{"podSelector": {"matchLabels": sandbox_labels(id)}}],
-                    "ports": sandbox_to_proxy_ports,
-                }
-            ],
-            "egress": proxy_egress,
-        },
-    });
-    [sandbox_policy, proxy_policy]
-        .into_iter()
-        .map(|policy| {
-            serde_json::from_value(policy).map_err(|err| {
-                SandboxError::InvalidSpec(format!("invalid iron-proxy network policy: {err}"))
-            })
-        })
-        .collect()
+    let proxy_policy = NetworkPolicy {
+        metadata: object_meta(iron_proxy_policy_name(id), iron_proxy_labels(id)),
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(label_selector(iron_proxy_labels(id))),
+            policy_types: Some(vec!["Ingress".to_owned(), "Egress".to_owned()]),
+            ingress: Some(vec![NetworkPolicyIngressRule {
+                from: Some(vec![pod_peer(sandbox_labels(id))]),
+                ports: Some(sandbox_to_proxy_ports),
+            }]),
+            egress: Some(proxy_egress),
+        }),
+    };
+    vec![sandbox_policy, proxy_policy]
 }
 
-fn dns_egress_rule() -> Value {
-    json!({
-        "to": [{
-            "namespaceSelector": {
-                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
-            },
+fn dns_egress_rule() -> NetworkPolicyEgressRule {
+    egress_to(
+        vec![NetworkPolicyPeer {
+            namespace_selector: Some(label_selector(BTreeMap::from([(
+                "kubernetes.io/metadata.name".to_owned(),
+                "kube-system".to_owned(),
+            )]))),
+            ..Default::default()
         }],
-        "ports": [
-            {"protocol": "UDP", "port": 53},
-            {"protocol": "TCP", "port": 53},
-        ],
-    })
+        vec![udp_port(53), network_port(53)],
+    )
 }
 
-fn iron_proxy_broker_port(iron_proxy: &IronProxyPodConfig) -> Option<u16> {
-    iron_proxy
-        .token_broker_name
-        .as_ref()
-        .map(|_| centaur_iron_proxy::DEFAULT_BROKER_LISTEN_PORT)
+fn object_meta(name: impl Into<String>, labels: BTreeMap<String, String>) -> ObjectMeta {
+    ObjectMeta {
+        name: Some(name.into()),
+        labels: Some(labels),
+        ..Default::default()
+    }
 }
 
-fn resources_json(spec: &SandboxSpec) -> Option<Value> {
+fn env_var(name: &str, value: &str) -> EnvVar {
+    EnvVar {
+        name: name.to_owned(),
+        value: Some(value.to_owned()),
+        ..Default::default()
+    }
+}
+
+fn container_port(name: impl Into<String>, port: u16) -> ContainerPort {
+    ContainerPort {
+        name: Some(name.into()),
+        container_port: i32::from(port),
+        ..Default::default()
+    }
+}
+
+fn service_port(name: impl Into<String>, port: u16) -> ServicePort {
+    let port = i32::from(port);
+    ServicePort {
+        name: Some(name.into()),
+        port,
+        target_port: Some(IntOrString::Int(port)),
+        protocol: Some("TCP".to_owned()),
+        ..Default::default()
+    }
+}
+
+fn network_port(port: u16) -> NetworkPolicyPort {
+    policy_port("TCP", port)
+}
+
+fn udp_port(port: u16) -> NetworkPolicyPort {
+    policy_port("UDP", port)
+}
+
+fn policy_port(protocol: &str, port: u16) -> NetworkPolicyPort {
+    NetworkPolicyPort {
+        port: Some(IntOrString::Int(i32::from(port))),
+        protocol: Some(protocol.to_owned()),
+        ..Default::default()
+    }
+}
+
+fn health_probe(period_seconds: Option<i32>, failure_threshold: Option<i32>) -> Probe {
+    Probe {
+        http_get: Some(HTTPGetAction {
+            path: Some("/healthz".to_owned()),
+            port: IntOrString::Int(9090),
+            ..Default::default()
+        }),
+        period_seconds,
+        failure_threshold,
+        ..Default::default()
+    }
+}
+
+fn volume_mount(name: &str, mount_path: &str, read_only: bool) -> VolumeMount {
+    VolumeMount {
+        name: name.to_owned(),
+        mount_path: mount_path.to_owned(),
+        read_only: read_only.then_some(true),
+        ..Default::default()
+    }
+}
+
+fn empty_dir_volume(name: &str) -> Volume {
+    Volume {
+        name: name.to_owned(),
+        empty_dir: Some(EmptyDirVolumeSource::default()),
+        ..Default::default()
+    }
+}
+
+fn secret_volume(name: &str, secret_name: impl Into<String>) -> Volume {
+    Volume {
+        name: name.to_owned(),
+        secret: Some(SecretVolumeSource {
+            secret_name: Some(secret_name.into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn label_selector(match_labels: BTreeMap<String, String>) -> LabelSelector {
+    LabelSelector {
+        match_labels: Some(match_labels),
+        ..Default::default()
+    }
+}
+
+fn pod_peer(match_labels: BTreeMap<String, String>) -> NetworkPolicyPeer {
+    NetworkPolicyPeer {
+        pod_selector: Some(label_selector(match_labels)),
+        ..Default::default()
+    }
+}
+
+fn egress_to(to: Vec<NetworkPolicyPeer>, ports: Vec<NetworkPolicyPort>) -> NetworkPolicyEgressRule {
+    NetworkPolicyEgressRule {
+        to: Some(to),
+        ports: Some(ports),
+    }
+}
+
+fn resources(spec: &SandboxSpec) -> Option<ResourceRequirements> {
     let resources = spec.resources.as_ref()?;
-    let mut limits = serde_json::Map::new();
+    let mut limits = BTreeMap::new();
     if let Some(cpu_millis) = resources.cpu_millis {
-        limits.insert("cpu".to_owned(), json!(format!("{cpu_millis}m")));
+        limits.insert("cpu".to_owned(), Quantity(format!("{cpu_millis}m")));
     }
     if let Some(memory_bytes) = resources.memory_bytes {
-        limits.insert("memory".to_owned(), json!(format!("{memory_bytes}")));
+        limits.insert("memory".to_owned(), Quantity(memory_bytes.to_string()));
     }
-    (!limits.is_empty()).then(|| json!({ "limits": limits }))
+    (!limits.is_empty()).then(|| ResourceRequirements {
+        limits: Some(limits),
+        ..Default::default()
+    })
 }
 
 fn iron_proxy_configmap_name(id: &SandboxId) -> String {
@@ -1479,20 +1530,11 @@ fn short_sha256(value: &str) -> String {
         .collect()
 }
 
-fn insert_optional<T>(target: &mut Value, key: &str, value: Option<T>)
-where
-    T: serde::Serialize,
-{
-    if let Some(value) = value {
-        target[key] = json!(value);
-    }
-}
-
-fn image_pull_secret_refs(names: &[String]) -> Option<Vec<Value>> {
+fn image_pull_secret_refs(names: &[String]) -> Option<Vec<LocalObjectReference>> {
     (!names.is_empty()).then(|| {
         names
             .iter()
-            .map(|name| json!({ "name": name }))
+            .map(|name| LocalObjectReference { name: name.clone() })
             .collect::<Vec<_>>()
     })
 }
@@ -1789,8 +1831,7 @@ mod tests {
             "asbx-sec-proxy-123",
             &iron_proxy,
             &resolved,
-        )
-        .unwrap();
+        );
         let container = &pod.spec.as_ref().unwrap().containers[0];
         let env = container
             .env
@@ -1817,8 +1858,7 @@ mod tests {
         );
 
         let policies =
-            build_iron_proxy_network_policies(&SandboxId::new("asbx-sec"), &resolved, &iron_proxy)
-                .unwrap();
+            build_iron_proxy_network_policies(&SandboxId::new("asbx-sec"), &resolved, &iron_proxy);
         let proxy_policy = policies
             .iter()
             .find(|policy| policy.metadata.name.as_deref() == Some("asbx-sec-proxy-net"))
