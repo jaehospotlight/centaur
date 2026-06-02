@@ -13,7 +13,6 @@ mod mode;
 mod op_connect;
 mod secret_env;
 mod source;
-mod token_broker;
 
 use ca::IronProxyCaArgs;
 use fragments::IronProxyFragmentsArgs;
@@ -22,7 +21,6 @@ use mode::IronProxyMode;
 use op_connect::OnePasswordConnectArgs;
 use secret_env::SecretEnvArgs;
 use source::IronProxySourceArgs;
-use token_broker::TokenBrokerArgs;
 
 #[derive(Debug, ClapArgs)]
 pub(super) struct IronProxyArgs {
@@ -56,8 +54,16 @@ pub(super) struct IronProxyArgs {
     op_connect: OnePasswordConnectArgs,
     #[arg(long = "kubernetes-api-pod-label-selector", env = "KUBERNETES_API_POD_LABEL_SELECTOR", value_parser = parse_label_selector_arg)]
     api_pod_label_selector: Option<BTreeMap<String, String>>,
-    #[command(flatten)]
-    token_broker: TokenBrokerArgs,
+    #[arg(
+        long = "kubernetes-token-broker-name",
+        env = "KUBERNETES_TOKEN_BROKER_NAME"
+    )]
+    token_broker_name: Option<String>,
+    #[arg(
+        long = "kubernetes-token-broker-configmap-name",
+        env = "KUBERNETES_TOKEN_BROKER_CONFIGMAP_NAME"
+    )]
+    token_broker_configmap_name: Option<String>,
 }
 
 impl IronProxyArgs {
@@ -90,7 +96,8 @@ impl IronProxyArgs {
         config.source_policy = self.source.policy();
         self.secret_env.apply_to(&mut config);
         self.op_connect.apply_to(&mut config);
-        self.token_broker.apply_to(&mut config);
+        config.token_broker_name = self.token_broker_name.clone();
+        config.token_broker_configmap_name = self.token_broker_configmap_name.clone();
         if let Some(labels) = self
             .api_pod_label_selector
             .as_ref()
