@@ -1,5 +1,10 @@
 {{- if .Values.repoCache.enabled }}
-{{- if not .Values.repoCache.repositories }}
+{{- $overlayRepo := default "" .Values.overlay.repo -}}
+{{- $repositories := .Values.repoCache.repositories -}}
+{{- if $overlayRepo }}
+{{- $repositories = append $repositories $overlayRepo | uniq -}}
+{{- end }}
+{{- if not $repositories }}
 {{- fail "repoCache.repositories must contain at least one owner/repo entry when repoCache.enabled=true" }}
 {{- end }}
 {{- $authMode := default "iron-proxy" .Values.repoCache.authMode -}}
@@ -136,7 +141,7 @@ spec:
               done
           env:
             - name: REPOSITORIES
-              value: {{ join " " .Values.repoCache.repositories | quote }}
+              value: {{ join " " $repositories | quote }}
             - name: SYNC_INTERVAL_SECONDS
               value: {{ .Values.repoCache.syncIntervalSeconds | quote }}
             - name: GIT_TERMINAL_PROMPT

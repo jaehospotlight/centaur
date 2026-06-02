@@ -5,16 +5,24 @@ description: Add Centaur tool plugins with client.py, pyproject metadata, and ty
 
 # Creating Tools
 
-Tools are Python plugins that Centaur discovers at API startup and exposes as
-REST endpoints at `/tools/{name}/{method}`. Put organization-specific tools in
-an overlay repo under `tools/` so the base Centaur repo stays generic. See
+Tools can be source-mounted CLIs for sandbox agents and Python plugins for the
+REST `/tools/{name}/{method}` surface. Put organization-specific tools in an
+overlay repo under `tools/` so the base Centaur repo stays generic. See
 [Using an overlay](/extend/overlay) for packaging, mount paths, and chart
 configuration.
 
-Tools are loaded from `TOOL_DIRS`. In an overlay deployment, the tool must exist
-under `/app/overlay/org/tools` in the API container. Later tool directories can
-shadow earlier tools with the same name, so an overlay can replace a base tool
-intentionally.
+Sandbox agents discover CLI tools with `centaur-tools list`. In repo-cache
+overlay mode, tools live under `/home/agent/github/<owner>/<repo>/tools` and
+are run from source with persistent Python, Rust, and Go build caches. In image
+mode, they live under `/home/agent/overlay/org/tools`.
+
+API-side Python plugins are loaded from `TOOL_DIRS`. In repo-cache overlay
+mode, the API path is `/var/lib/centaur/repos/<owner>/<repo>/tools`; in image
+mode it is `/app/overlay/org/tools`. Later tool directories can shadow earlier
+tools with the same name, so an overlay can replace a base tool intentionally.
+
+See the [Tool Directory](/reference/tool-directory) for the integrations that
+ship with Centaur.
 
 ## Define metadata
 
@@ -47,11 +55,25 @@ Each entry in `secrets` declares one credential the tool can request with
   `secret("...")`; iron-proxy swaps that placeholder for the real value at the
   network boundary.
 - `type = "oauth_token"` is for OAuth2 APIs. iron-proxy resolves the declared
-  `fields`, runs a `refresh_token`, `client_credentials`, or `password` exchange,
-  caches and refreshes the access token, then injects `Authorization: Bearer ...`
-  for the configured `hosts`. Set `token_endpoint_headers` to send extra headers
-  on the token POST itself (for endpoints that require an API key alongside the
-  standard form-body client auth).
+  `fields`, runs a `refresh_token`, `client_credentials`, `password`, or
+  `jwt_bearer` exchange, caches and refreshes the access token, then injects
+  `Authorization: Bearer ...` for the configured `hosts`. Set
+  `token_endpoint_headers` to send extra headers on the token POST itself (for
+  endpoints that require an API key alongside the standard form-body client
+  auth). For `jwt_bearer` (RFC 7523), supply `issuer`, `subject`, and
+  `private_key` (an RSA PEM) in `fields`, plus a top-level `audience`; an
+  optional `private_key_id` field is emitted as the JWT `kid` header.
+- `type = "brokered_token"` routes OAuth2 refresh-token rotation through
+  iron-token-broker instead of iron-proxy. Use this when the upstream IdP
+  rotates refresh tokens with strict reuse detection (OpenAI Codex, Anthropic
+  Claude Code OAuth, modern Okta or Auth0 with rotation enabled) and more
+  than one proxy shares the credential. Required `fields`: `client_id`,
+  `refresh_token`. Optional: `client_secret`. The `refresh_token` field names
+  the writable credential blob the broker rewrites on every rotation; the
+  other fields are read-only. Read-side fields and `token_endpoint_headers`
+  entries accept `json_key` to pluck a value out of a JSON-encoded secret;
+  the `refresh_token` field does not (the broker rewrites the whole
+  document).
 - `type = "gcp_auth"` is for Google service-account JSON. iron-proxy resolves
   the keyfile, mints Google OAuth tokens for `scopes`, and injects them for the
   configured Google API `hosts`. If omitted, hosts default to

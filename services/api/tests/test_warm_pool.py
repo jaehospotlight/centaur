@@ -108,3 +108,64 @@ async def test_claim_container_refreshes_trace_id(
             {"TRACE_ID": "00000000-0000-0000-0000-000000000123"},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_claim_container_refreshes_repo_cache_overlay_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    overlay_root = tmp_path / "repos" / "paradigmxyz" / "centaur-overlay"
+    overlay_prompt_dir = overlay_root / "services" / "sandbox"
+    overlay_prompt_dir.mkdir(parents=True)
+    (overlay_prompt_dir / "SYSTEM_PROMPT.md").write_text("fresh overlay guidance")
+
+    class FakeBackend:
+        name = "fake"
+        supports_warm_pool = True
+
+        def __init__(self) -> None:
+            self.exec_calls: list[tuple[str, list[str], dict | None]] = []
+
+        async def status_by_id(self, _sandbox_id: str) -> str:
+            return "running"
+
+        async def refresh_token_by_id(self, _sandbox_id: str, _new_token: str) -> None:
+            return None
+
+        async def exec_run(
+            self,
+            sandbox_id: str,
+            cmd: list[str],
+            *,
+            environment: dict | None = None,
+            user: str = "",
+        ) -> tuple[int, bytes]:
+            self.exec_calls.append((sandbox_id, cmd, environment))
+            assert user == "agent"
+            return 0, b""
+
+    backend = FakeBackend()
+    monkeypatch.setattr("api.warm_pool.get_backend", lambda: backend)
+    monkeypatch.setattr(
+        "api.warm_pool.mint_sandbox_token", lambda _thread_key, _sandbox_id: "token"
+    )
+    monkeypatch.setenv("CENTAUR_OVERLAY_DIR", str(overlay_root))
+    monkeypatch.setenv("CENTAUR_OVERLAY_REPO", "paradigmxyz/centaur-overlay")
+    monkeypatch.delenv("CENTAUR_OVERLAY_IMAGE", raising=False)
+    warm_pool._pool.append(
+        warm_pool.WarmContainer(sandbox_id="sandbox-1", harness="codex", engine="codex")
+    )
+
+    claimed = await warm_pool.claim_container("thread-1", "codex")
+
+    assert claimed is not None
+    assert len(backend.exec_calls) == 2
+    assert "OVERLAY_TREE_SKILLS" in backend.exec_calls[0][1][2]
+    prompt_env = backend.exec_calls[1][2]
+    assert prompt_env is not None
+    assert "fresh overlay guidance" in prompt_env["_CONTENT"]
+    assert (
+        "|Overlay mount (sandbox): /home/agent/github/paradigmxyz/centaur-overlay"
+        in prompt_env["_CONTENT"]
+    )

@@ -178,29 +178,47 @@ fi
 mkdir -p "$HOME_DIR/uploads"
 
 # ── Copy project skills into workspace (so `skill` tool discovers them) ──────
-BAKED_IN_CENTAUR_SKILLS="$HOME_DIR/.agents/skills"
-MOUNTED_CENTAUR_SKILLS="$HOME_DIR/centaur-skills"
-MOUNTED_ORG_SKILLS="$HOME_DIR/centaur-overlay-skills"
-OVERLAY_TREE_SKILLS=""
-if [ -n "${CENTAUR_OVERLAY_DIR:-}" ] && [ -d "${CENTAUR_OVERLAY_DIR}/.agents/skills" ]; then
-    OVERLAY_TREE_SKILLS="${CENTAUR_OVERLAY_DIR}/.agents/skills"
-fi
-CENTAUR_SKILLS=""
-if [ -d "$HOME_DIR/github" ]; then
-    CENTAUR_SKILLS="$(find "$HOME_DIR/github" -path '*/centaur/.agents/skills' -type d -print -quit 2>/dev/null || true)"
-fi
 WS_SKILLS="$WORKSPACE_DIR/.agents/skills"
-for SKILLS_SRC in "$BAKED_IN_CENTAUR_SKILLS" "$MOUNTED_CENTAUR_SKILLS" "$CENTAUR_SKILLS" "$MOUNTED_ORG_SKILLS" "$OVERLAY_TREE_SKILLS"; do
-    if [ -d "$SKILLS_SRC" ]; then
-        mkdir -p "$WS_SKILLS"
-        cp -r "$SKILLS_SRC"/. "$WS_SKILLS"/
-    fi
-done
+sync_centaur_skills() {
+    local baked_skills="$HOME_DIR/.agents/skills"
+    local mounted_centaur_skills="$HOME_DIR/centaur-skills"
+    local mounted_org_skills="$HOME_DIR/centaur-overlay-skills"
+    local overlay_tree_skills=""
+    local centaur_skills=""
+    local next_skills="${WS_SKILLS}.next.$$"
 
-if [ -d "$WS_SKILLS" ]; then
+    if [ -n "${CENTAUR_OVERLAY_DIR:-}" ] && [ -d "${CENTAUR_OVERLAY_DIR}/.agents/skills" ]; then
+        overlay_tree_skills="${CENTAUR_OVERLAY_DIR}/.agents/skills"
+    fi
+
+    if [ -d "$HOME_DIR/github" ]; then
+        centaur_skills="$(find "$HOME_DIR/github" -path '*/centaur/.agents/skills' -type d -print -quit 2>/dev/null || true)"
+    fi
+
+    rm -rf "$next_skills"
+    mkdir -p "$next_skills"
+    for skills_src in "$baked_skills" "$mounted_centaur_skills" "$centaur_skills" "$mounted_org_skills" "$overlay_tree_skills"; do
+        if [ -d "$skills_src" ]; then
+            cp -r "$skills_src"/. "$next_skills"/
+        fi
+    done
+
+    mkdir -p "$(dirname "$WS_SKILLS")"
+    rm -rf "$WS_SKILLS"
+    mv "$next_skills" "$WS_SKILLS"
     mkdir -p "$WORKSPACE_DIR/.claude"
     rm -rf "$WORKSPACE_DIR/.claude/skills"
     ln -sf "$WS_SKILLS" "$WORKSPACE_DIR/.claude/skills"
+}
+
+sync_centaur_skills
+if [[ "${CENTAUR_SKILLS_REFRESH_SECONDS:-30}" =~ ^[0-9]+$ ]] && [ "${CENTAUR_SKILLS_REFRESH_SECONDS:-30}" -gt 0 ]; then
+    {
+        while true; do
+            sleep "${CENTAUR_SKILLS_REFRESH_SECONDS:-30}"
+            sync_centaur_skills || true
+        done
+    } &
 fi
 
 # ── Assemble system prompt from bind mounts ──────────────────────────────────

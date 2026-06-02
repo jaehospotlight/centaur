@@ -71,6 +71,8 @@ _API_PROXY_SANDBOX_ID = "api"
 # Helm upgrade. The label keeps the chart-side NetworkPolicy selector
 # wired up.
 _TOKEN_BROKER_LABEL = "centaur.ai/iron-token-broker"
+
+
 def _get_rt(session: SandboxSession):
     return runtime_for_session(session)
 
@@ -211,8 +213,9 @@ def _tool_server_tool_dirs() -> str:
     if value:
         return value
     dirs = ["/app/tools"]
-    if _overlay_image():
-        dirs.append(f"{_SANDBOX_OVERLAY_DIR}/tools")
+    sandbox_overlay_dir = _sandbox_overlay_dir()
+    if sandbox_overlay_dir:
+        dirs.append(f"{sandbox_overlay_dir}/tools")
     return ":".join(dirs)
 
 
@@ -455,14 +458,18 @@ def _append_tool_build_cache_volume(
     host_path = _tool_build_cache_host_path()
     if not host_path:
         return
-    if not any(mount.get("name") == _TOOL_BUILD_CACHE_VOLUME_NAME for mount in volume_mounts):
+    if not any(
+        mount.get("name") == _TOOL_BUILD_CACHE_VOLUME_NAME for mount in volume_mounts
+    ):
         volume_mounts.append(
             {
                 "name": _TOOL_BUILD_CACHE_VOLUME_NAME,
                 "mountPath": _tool_build_cache_mount_path(),
             }
         )
-    if not any(volume.get("name") == _TOOL_BUILD_CACHE_VOLUME_NAME for volume in volumes):
+    if not any(
+        volume.get("name") == _TOOL_BUILD_CACHE_VOLUME_NAME for volume in volumes
+    ):
         volumes.append(
             {
                 "name": _TOOL_BUILD_CACHE_VOLUME_NAME,
@@ -477,6 +484,20 @@ def _append_tool_build_cache_volume(
 def _overlay_image() -> str | None:
     value = (os.getenv("CENTAUR_OVERLAY_IMAGE") or "").strip()
     return value or None
+
+
+def _overlay_repo() -> str | None:
+    value = (os.getenv("CENTAUR_OVERLAY_REPO") or "").strip().strip("/")
+    return value or None
+
+
+def _sandbox_overlay_dir() -> str | None:
+    if _overlay_image():
+        return _SANDBOX_OVERLAY_DIR
+    overlay_repo = _overlay_repo()
+    if overlay_repo:
+        return f"/home/agent/github/{overlay_repo}"
+    return None
 
 
 def _overlay_image_pull_policy() -> str:
@@ -522,6 +543,7 @@ def _build_tool_server_container(
     api_url: str,
     overlay_mount: str | None,
     database_url: str,
+    repos_mount: str | None = None,
     pg_dsns: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build the tool-server sidecar container spec.
@@ -586,12 +608,17 @@ def _build_tool_server_container(
         {"name": "SSL_CERT_FILE", "value": "/firewall-certs/ca-cert.pem"},
         {"name": "NODE_EXTRA_CA_CERTS", "value": "/firewall-certs/ca-cert.pem"},
         {"name": "CENTAUR_API_URL", "value": api_url},
-        {"name": "CENTAUR_API_KEY", "value": mint_sandbox_token(thread_key, container_name)},
+        {
+            "name": "CENTAUR_API_KEY",
+            "value": mint_sandbox_token(thread_key, container_name),
+        },
         {"name": "TOOL_DIRS", "value": _tool_server_tool_dirs()},
         {"name": "PLUGIN_WATCHER_ENABLED", "value": "0"},
     ]
     if _tool_build_cache_host_path():
-        env.extend({"name": name, "value": value} for name, value in _tool_build_cache_env())
+        env.extend(
+            {"name": name, "value": value} for name, value in _tool_build_cache_env()
+        )
     # pg_dsn secrets reach tool code as env vars (see docstring). Add them
     # before operator extra-env so an operator override still wins, matching
     # the agent container's ordering in ``container_env``.
@@ -611,6 +638,14 @@ def _build_tool_server_container(
             {
                 "name": "overlay-root",
                 "mountPath": overlay_mount,
+                "readOnly": True,
+            }
+        )
+    if repos_mount:
+        volume_mounts.append(
+            {
+                "name": "repos",
+                "mountPath": repos_mount,
                 "readOnly": True,
             }
         )
@@ -665,7 +700,9 @@ def _build_tool_server_container(
     }
 
 
-def _apply_tool_server_extra_env(env: list[dict[str, Any]], computed_no_proxy: str) -> None:
+def _apply_tool_server_extra_env(
+    env: list[dict[str, Any]], computed_no_proxy: str
+) -> None:
     """Let the sidecar see operator sandbox env without breaking its wiring."""
     pinned = {
         "DATABASE_URL",
@@ -810,7 +847,7 @@ def _prompt_bundle(persona: str | None) -> str:
         overlay_prompt_path=overlay_prompt,
         persona_info=persona_info,
         api_overlay_dir=overlay_root,
-        sandbox_overlay_dir=_SANDBOX_OVERLAY_DIR if _overlay_image() else None,
+        sandbox_overlay_dir=_sandbox_overlay_dir(),
     )
 
 
@@ -1578,8 +1615,16 @@ class KubernetesExecutorBackend(SandboxBackend):
             pg_dsns=sandbox_pg_dsns,
         )
         overlay_image = _overlay_image()
-        if overlay_image:
-            env.append(f"CENTAUR_OVERLAY_DIR={_SANDBOX_OVERLAY_DIR}")
+        overlay_repo = _overlay_repo()
+        if overlay_image and overlay_repo:
+            raise ValueError(
+                "CENTAUR_OVERLAY_IMAGE and CENTAUR_OVERLAY_REPO are mutually exclusive"
+            )
+        if overlay_repo and not repos_path:
+            raise ValueError("REPOS_PATH is required when CENTAUR_OVERLAY_REPO is set")
+        sandbox_overlay_dir = _sandbox_overlay_dir()
+        if sandbox_overlay_dir:
+            env.append(f"CENTAUR_OVERLAY_DIR={sandbox_overlay_dir}")
         if engine == "claude-code" and model:
             env.append(f"CLAUDE_MODEL={model}")
         if engine == "claude-code" and resume_thread_id:
@@ -1728,10 +1773,9 @@ class KubernetesExecutorBackend(SandboxBackend):
                     container_name=pod_name,
                     firewall_host=firewall_host,
                     api_url=os.getenv("AGENT_API_URL", "http://api:8000"),
-                    overlay_mount=(
-                        _SANDBOX_OVERLAY_ROOT if overlay_image else None
-                    ),
+                    overlay_mount=(_SANDBOX_OVERLAY_ROOT if overlay_image else None),
                     database_url=core_pg["dsn"],
+                    repos_mount="/home/agent/github" if repos_path else None,
                     pg_dsns=sandbox_pg_dsns,
                 )
             )
@@ -2132,9 +2176,7 @@ class KubernetesExecutorBackend(SandboxBackend):
         clones the API container's runtime config — same secrets, same
         ``HTTPS_PROXY`` pointing at the shared API iron-proxy, same CA mount.
         """
-        selector = ",".join(
-            f"{k}={v}" for k, v in _api_pod_match_labels().items()
-        )
+        selector = ",".join(f"{k}={v}" for k, v in _api_pod_match_labels().items())
         pods = await self._core_api().list_namespaced_pod(
             _namespace(), label_selector=selector
         )
@@ -2188,8 +2230,14 @@ class KubernetesExecutorBackend(SandboxBackend):
         # disabling them defensively makes the env unambiguous if a handler
         # imports module-level code that reads these.
         overrides: dict[str, dict[str, Any]] = {
-            "EXECUTION_WORKER_ENABLED": {"name": "EXECUTION_WORKER_ENABLED", "value": "0"},
-            "WORKFLOW_WORKER_ENABLED": {"name": "WORKFLOW_WORKER_ENABLED", "value": "0"},
+            "EXECUTION_WORKER_ENABLED": {
+                "name": "EXECUTION_WORKER_ENABLED",
+                "value": "0",
+            },
+            "WORKFLOW_WORKER_ENABLED": {
+                "name": "WORKFLOW_WORKER_ENABLED",
+                "value": "0",
+            },
             "WARM_POOL_ENABLED": {"name": "WARM_POOL_ENABLED", "value": "0"},
             "PLUGIN_WATCHER_ENABLED": {"name": "PLUGIN_WATCHER_ENABLED", "value": "0"},
             # Already running inside the per-run pod; never recurse.
@@ -2243,7 +2291,9 @@ class KubernetesExecutorBackend(SandboxBackend):
             "containers": [container],
             "volumes": api_template["volumes"],
         }
-        service_account = api_template.get("serviceAccountName") or _service_account_name()
+        service_account = (
+            api_template.get("serviceAccountName") or _service_account_name()
+        )
         if service_account:
             spec["serviceAccountName"] = service_account
 
@@ -2274,9 +2324,7 @@ class KubernetesExecutorBackend(SandboxBackend):
         await self._ensure_clients()
         pod_name = _workflow_run_pod_name(run_id)
         api_template = await self._load_api_container_template()
-        pod_spec = self._build_workflow_run_pod_spec(
-            run_id, api_template=api_template
-        )
+        pod_spec = self._build_workflow_run_pod_spec(run_id, api_template=api_template)
 
         # If a previous attempt for this run_id left a pod behind, clear it.
         await self._delete_pod(pod_name)
@@ -2296,9 +2344,7 @@ class KubernetesExecutorBackend(SandboxBackend):
         backoff = 0.5
         while True:
             try:
-                pod = await self._core_api().read_namespaced_pod(
-                    pod_name, _namespace()
-                )
+                pod = await self._core_api().read_namespaced_pod(pod_name, _namespace())
             except Exception as exc:
                 if self._is_not_found(exc):
                     return "gone"

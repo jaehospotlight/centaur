@@ -76,6 +76,7 @@
     "overlay": {
       "type": "object",
       "properties": {
+        "repo": { "type": "string" },
         "mountPath": { "type": "string" },
         "systemPrompt": { "type": "string" },
         "image": {

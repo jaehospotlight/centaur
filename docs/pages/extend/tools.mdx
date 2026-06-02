@@ -5,16 +5,21 @@ description: Add Centaur tool plugins with client.py, pyproject metadata, and ty
 
 # Creating Tools
 
-Tools are Python plugins that Centaur discovers at API startup and exposes as
-REST endpoints at `/tools/{name}/{method}`. Put organization-specific tools in
-an overlay repo under `tools/` so the base Centaur repo stays generic. See
+Tools can be source-mounted CLIs for sandbox agents and Python plugins for the
+REST `/tools/{name}/{method}` surface. Put organization-specific tools in an
+overlay repo under `tools/` so the base Centaur repo stays generic. See
 [Using an overlay](/extend/overlay) for packaging, mount paths, and chart
 configuration.
 
-Tools are loaded from `TOOL_DIRS`. In an overlay deployment, the tool must exist
-under `/app/overlay/org/tools` in the API container. Later tool directories can
-shadow earlier tools with the same name, so an overlay can replace a base tool
-intentionally.
+Sandbox agents discover CLI tools with `centaur-tools list`. In repo-cache
+overlay mode, tools live under `/home/agent/github/<owner>/<repo>/tools` and
+are run from source with persistent Python, Rust, and Go build caches. In image
+mode, they live under `/home/agent/overlay/org/tools`.
+
+API-side Python plugins are loaded from `TOOL_DIRS`. In repo-cache overlay
+mode, the API path is `/var/lib/centaur/repos/<owner>/<repo>/tools`; in image
+mode it is `/app/overlay/org/tools`. Later tool directories can shadow earlier
+tools with the same name, so an overlay can replace a base tool intentionally.
 
 See the [Tool Directory](/reference/tool-directory) for the integrations that
 ship with Centaur.

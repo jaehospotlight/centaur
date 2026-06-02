@@ -74,6 +74,15 @@ def _overlay_root() -> Path | None:
     return path if path.exists() else None
 
 
+def _sandbox_overlay_dir() -> str | None:
+    if (os.getenv("CENTAUR_OVERLAY_IMAGE") or "").strip():
+        return "/home/agent/overlay/org"
+    overlay_repo = (os.getenv("CENTAUR_OVERLAY_REPO") or "").strip().strip("/")
+    if overlay_repo:
+        return f"/home/agent/github/{overlay_repo}"
+    return None
+
+
 def pool_status() -> dict:
     """Return pool diagnostics (sync-safe: no awaits, reads only)."""
     containers = [
@@ -189,30 +198,46 @@ fi
             ],
             user="agent",
         )
-        # Copy project skills
-        await backend.exec_run(
-            sandbox_id,
-            [
-                "sh",
-                "-c",
-                """
+
+    # Copy project and overlay skills from the current mounted trees. Warm pods
+    # can sit idle while repo-cache advances, so claim-time refresh keeps
+    # follow-on turns from seeing stale skill definitions.
+    await backend.exec_run(
+        sandbox_id,
+        [
+            "sh",
+            "-c",
+            """
+BAKED_IN_CENTAUR_SKILLS="/home/agent/.agents/skills"
 MOUNTED_CENTAUR_SKILLS="/home/agent/centaur-skills"
 MOUNTED_ORG_SKILLS="/home/agent/centaur-overlay-skills"
+OVERLAY_TREE_SKILLS=""
+if [ -n "${CENTAUR_OVERLAY_DIR:-}" ] && [ -d "${CENTAUR_OVERLAY_DIR}/.agents/skills" ]; then
+    OVERLAY_TREE_SKILLS="${CENTAUR_OVERLAY_DIR}/.agents/skills"
+fi
 CENTAUR_SKILLS=""
 if [ -d /home/agent/github ]; then
     CENTAUR_SKILLS="$(find /home/agent/github -path '*/centaur/.agents/skills' -type d -print -quit 2>/dev/null || true)"
 fi
 WS_SKILLS="/home/agent/workspace/.agents/skills"
-for SKILLS_SRC in "$MOUNTED_CENTAUR_SKILLS" "$CENTAUR_SKILLS" "$MOUNTED_ORG_SKILLS"; do
+NEXT_SKILLS="${WS_SKILLS}.next.$$"
+rm -rf "$NEXT_SKILLS"
+mkdir -p "$NEXT_SKILLS"
+for SKILLS_SRC in "$BAKED_IN_CENTAUR_SKILLS" "$MOUNTED_CENTAUR_SKILLS" "$CENTAUR_SKILLS" "$MOUNTED_ORG_SKILLS" "$OVERLAY_TREE_SKILLS"; do
     if [ -d "$SKILLS_SRC" ]; then
-        mkdir -p "$WS_SKILLS"
-        cp -r "$SKILLS_SRC"/. "$WS_SKILLS"/
+        cp -r "$SKILLS_SRC"/. "$NEXT_SKILLS"/
     fi
 done
+rm -rf "$WS_SKILLS"
+mv "$NEXT_SKILLS" "$WS_SKILLS"
+mkdir -p /home/agent/workspace/.claude
+rm -rf /home/agent/workspace/.claude/skills
+ln -sf "$WS_SKILLS" /home/agent/workspace/.claude/skills
 """,
-            ],
-            user="agent",
-        )
+        ],
+        user="agent",
+    )
+    if repo:
         # Re-copy base system prompt
         await backend.exec_run(
             sandbox_id,
@@ -254,9 +279,7 @@ fi
         overlay_prompt_path=overlay_prompt,
         persona_info=persona_info,
         api_overlay_dir=overlay_root,
-        sandbox_overlay_dir="/home/agent/overlay/org"
-        if (os.getenv("CENTAUR_OVERLAY_IMAGE") or "").strip()
-        else None,
+        sandbox_overlay_dir=_sandbox_overlay_dir(),
     )
     await backend.exec_run(
         sandbox_id,
@@ -361,7 +384,7 @@ async def claim_container(
         except Exception:
             log.warning("warm_claim_trace_refresh_failed", sandbox=warm.sandbox_id[:12])
 
-    if persona or repo:
+    if persona or repo or _overlay_root() is not None:
         await _inject_persona(warm.sandbox_id, persona, repo)
 
     session = SandboxSession(

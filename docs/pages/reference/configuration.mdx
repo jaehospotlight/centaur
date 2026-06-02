@@ -62,7 +62,8 @@ Optional required-by-mode variables:
 | `PLUGIN_WATCHER_ENABLED` | `api.pluginWatcherEnabled`. | Enables tool and workflow hot-reload watchers. |
 | `TOOL_DIRS`, `PLUGINS_DIR` | Chart-rendered from base tools and overlay; fallback to `PLUGINS_DIR`. | Tool discovery paths. |
 | `WORKFLOW_DIRS` | Chart-rendered from base workflows and overlay. | Workflow discovery paths. |
-| `CENTAUR_OVERLAY_DIR` | `overlay.mountPath`. | Mounted overlay root for tools, workflows, prompts, migrations, and skills. |
+| `CENTAUR_OVERLAY_DIR` | `overlay.repo`, `overlay.mountPath`, or `overlay.systemPrompt`. | Mounted overlay root for tools, workflows, prompts, migrations, and skills. Repo-cache mode uses the live checkout path. |
+| `CENTAUR_OVERLAY_REPO` | `overlay.repo`. | Owner/repo slug for live repo-cache overlays mounted into sandboxes. |
 | `CENTAUR_OVERLAY_IMAGE`, `CENTAUR_OVERLAY_IMAGE_PULL_POLICY`, `CENTAUR_OVERLAY_IMAGE_SOURCE_PATH` | `overlay.image.*`. | Overlay image copied into sandbox pods. |
 | `SLACKBOT_URL` | Chart-rendered Slackbot service URL. | API callback target for Slack delivery. |
 | `FINAL_DELIVERY_MAX_ATTEMPTS`, `FINAL_DELIVERY_READY_GRACE_S` | `api.extraEnv`. | Final-delivery retry and claim timing. |

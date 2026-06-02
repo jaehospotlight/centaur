@@ -122,6 +122,10 @@ api:
   resources: {}
 
 overlay:
+  # Optional owner/repo slug for a live overlay cloned by repoCache. When set,
+  # repoCache keeps the repo current and Centaur mounts the live checkout into
+  # the API and sandbox pods instead of requiring an overlay image rebuild.
+  repo: ""
   mountPath: /app/overlay/org
   systemPrompt: ""
   image:

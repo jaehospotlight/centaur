@@ -124,6 +124,23 @@ def _plugin_watcher_enabled() -> bool:
     }
 
 
+def _watchable_dirs(paths: list[Path]) -> list[Path]:
+    """Return existing watch roots, falling back to parents for late-mounted repos."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        candidate = path
+        while not candidate.exists() and candidate != candidate.parent:
+            candidate = candidate.parent
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        key = str(candidate.resolve())
+        if key not in seen:
+            seen.add(key)
+            out.append(candidate)
+    return out
+
+
 async def _watch_tools(pm: ToolManager) -> None:
     """Watch all plugin directories and auto-reload when files change."""
     if not _plugin_watcher_enabled():
@@ -132,7 +149,9 @@ async def _watch_tools(pm: ToolManager) -> None:
     from starlette.concurrency import run_in_threadpool
     from watchfiles import awatch
 
-    watch_dirs = [d for d in pm.tools_dirs if d.exists()]
+    watch_dirs = _watchable_dirs(pm.tools_dirs)
+    if not watch_dirs:
+        return
     log.info("tool_watcher_started", paths=[str(d) for d in watch_dirs])
     async for changes in awatch(*watch_dirs):
         changed_files = [str(p) for _, p in changes]
@@ -151,7 +170,7 @@ async def _watch_workflows() -> None:
         return
     from watchfiles import awatch
 
-    watch_dirs = [d for d in get_workflow_dirs() if d.exists()]
+    watch_dirs = _watchable_dirs(get_workflow_dirs())
     if not watch_dirs:
         return
     log.info("workflow_watcher_started", paths=[str(d) for d in watch_dirs])

@@ -16,6 +16,7 @@ from api.sandbox.kubernetes import (
     STDOUT_CHANNEL,
     _OVERLAY_TOOL_DEPS_DIR,
     _build_tool_server_container,
+    _sandbox_overlay_dir,
     _tool_server_tool_dirs,
 )
 from api.sandbox.kubernetes_agent_sandbox import KubernetesAgentSandboxBackend
@@ -494,6 +495,31 @@ def test_prompt_bundle_starts_with_active_deployment_block(
     assert "fallback guidance" not in prompt
 
 
+def test_prompt_bundle_reports_repo_cache_overlay_mount(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from api.sandbox.kubernetes import _prompt_bundle
+
+    overlay_root = tmp_path / "repos" / "paradigmxyz" / "centaur-overlay"
+    overlay_prompt_dir = overlay_root / "services" / "sandbox"
+    overlay_prompt_dir.mkdir(parents=True)
+    (overlay_prompt_dir / "SYSTEM_PROMPT.md").write_text("repo overlay guidance")
+
+    monkeypatch.setenv("CENTAUR_OVERLAY_DIR", str(overlay_root))
+    monkeypatch.setenv("CENTAUR_OVERLAY_REPO", "paradigmxyz/centaur-overlay")
+    monkeypatch.delenv("CENTAUR_OVERLAY_IMAGE", raising=False)
+
+    prompt = _prompt_bundle(None)
+
+    assert "|Overlay loaded: yes" in prompt
+    assert (
+        "|Overlay mount (sandbox): /home/agent/github/paradigmxyz/centaur-overlay"
+        in prompt
+    )
+    assert "repo overlay guidance" in prompt
+
+
 @pytest.mark.asyncio
 async def test_ensure_clients_disables_proxy_env(
     monkeypatch: pytest.MonkeyPatch,
@@ -727,9 +753,20 @@ def test_tool_server_tool_dirs_points_overlay_at_sandbox_mount(
     monkeypatch.delenv("KUBERNETES_TOOL_SERVER_TOOL_DIRS", raising=False)
     monkeypatch.setenv("CENTAUR_OVERLAY_IMAGE", "centaur-overlay:test")
 
+    assert _tool_server_tool_dirs() == "/app/tools:/home/agent/overlay/org/tools"
+
+
+def test_tool_server_tool_dirs_points_overlay_repo_at_repo_cache_mount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KUBERNETES_TOOL_SERVER_TOOL_DIRS", raising=False)
+    monkeypatch.delenv("CENTAUR_OVERLAY_IMAGE", raising=False)
+    monkeypatch.setenv("CENTAUR_OVERLAY_REPO", "paradigmxyz/centaur-overlay")
+
+    assert _sandbox_overlay_dir() == "/home/agent/github/paradigmxyz/centaur-overlay"
     assert (
         _tool_server_tool_dirs()
-        == "/app/tools:/home/agent/overlay/org/tools"
+        == "/app/tools:/home/agent/github/paradigmxyz/centaur-overlay/tools"
     )
 
 
@@ -738,6 +775,7 @@ def test_tool_server_tool_dirs_without_overlay_is_base_only(
 ) -> None:
     monkeypatch.delenv("KUBERNETES_TOOL_SERVER_TOOL_DIRS", raising=False)
     monkeypatch.delenv("CENTAUR_OVERLAY_IMAGE", raising=False)
+    monkeypatch.delenv("CENTAUR_OVERLAY_REPO", raising=False)
 
     assert _tool_server_tool_dirs() == "/app/tools"
 
@@ -752,6 +790,29 @@ def test_tool_server_tool_dirs_explicit_override_wins(
     monkeypatch.setenv("CENTAUR_OVERLAY_IMAGE", "centaur-overlay:test")
 
     assert _tool_server_tool_dirs() == "/custom/tools"
+
+
+def test_tool_server_container_mounts_repo_cache_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SANDBOX_SIGNING_KEY", "test-signing-key")
+    monkeypatch.setenv("KUBERNETES_TOOL_SERVER_IMAGE", "centaur-tools:test")
+
+    container = _build_tool_server_container(
+        thread_key="slack:C123:123.456",
+        container_name="centaur-sandbox-pod-abc",
+        firewall_host="firewall.internal",
+        api_url="http://api.internal:8000",
+        overlay_mount=None,
+        database_url="postgres://app_user@firewall.internal:5433/centaur",
+        repos_mount="/home/agent/github",
+    )
+
+    assert {
+        "name": "repos",
+        "mountPath": "/home/agent/github",
+        "readOnly": True,
+    } in container["volumeMounts"]
 
 
 @pytest.mark.asyncio
@@ -896,6 +957,68 @@ async def test_create_builds_pod_and_prompt_secret(
 
 
 @pytest.mark.asyncio
+async def test_create_uses_repo_cache_overlay_without_overlay_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = KubernetesExecutorBackend()
+    fake_core = FakeCoreApi()
+    fake_networking = FakeNetworkingApi()
+    backend._core = fake_core
+    backend._networking = fake_networking
+
+    monkeypatch.setenv("AGENT_API_URL", "http://api.internal:8000")
+    monkeypatch.setenv("FIREWALL_HOST", "firewall.internal")
+    monkeypatch.setenv("KUBERNETES_FIREWALL_CA_SECRET_NAME", "firewall-ca")
+    monkeypatch.setenv("REPOS_PATH", "/var/lib/centaur/repos")
+    monkeypatch.setenv("CENTAUR_OVERLAY_REPO", "paradigmxyz/centaur-overlay")
+    monkeypatch.delenv("CENTAUR_OVERLAY_IMAGE", raising=False)
+    monkeypatch.setattr(
+        "api.sandbox.kubernetes._prompt_bundle",
+        lambda persona: f"prompt:{persona}",
+    )
+    monkeypatch.setattr(
+        "api.sandbox.kubernetes.container_env",
+        lambda *_args, **_kwargs: [
+            "CENTAUR_API_URL=http://api.internal:8000",
+            "CENTAUR_API_KEY=sandbox-token",
+        ],
+    )
+    monkeypatch.setattr(
+        "api.sandbox.kubernetes.build_harness_cmd", lambda *_args: ["amp-wrapper"]
+    )
+    monkeypatch.setattr("api.sandbox.kubernetes.image", lambda: "centaur-agent:test")
+
+    async def fake_ensure_clients() -> None:
+        return None
+
+    async def fake_wait_ready(_pod_name: str) -> float:
+        return 0.01
+
+    monkeypatch.setattr(backend, "_ensure_clients", fake_ensure_clients)
+    monkeypatch.setattr(backend, "_wait_pod_ready", fake_wait_ready)
+    monkeypatch.setattr(backend, "_wait_ready", fake_wait_ready)
+
+    await backend.create("slack:C123:123.456", "amp", "amp")
+
+    pod_body = fake_core.created_pods[1][1]
+    container = pod_body["spec"]["containers"][0]
+    env = {item["name"]: item["value"] for item in container["env"]}
+
+    assert env["CENTAUR_OVERLAY_DIR"] == (
+        "/home/agent/github/paradigmxyz/centaur-overlay"
+    )
+    assert pod_body["spec"]["initContainers"] == []
+    assert {
+        "name": "repos",
+        "hostPath": {"path": "/var/lib/centaur/repos", "type": "Directory"},
+    } in pod_body["spec"]["volumes"]
+    assert any(
+        mount["name"] == "repos" and mount["mountPath"] == "/home/agent/github"
+        for mount in container["volumeMounts"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_builds_per_sandbox_proxy_resources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1024,9 +1147,7 @@ class FakeAppsApi:
 
     async def read_namespaced_deployment(self, name: str, namespace: str):  # noqa: ANN201, ARG002
         if not self.deployments_to_read:
-            raise AssertionError(
-                f"unexpected read_namespaced_deployment({name})"
-            )
+            raise AssertionError(f"unexpected read_namespaced_deployment({name})")
         item = self.deployments_to_read.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -1054,9 +1175,7 @@ async def test_ensure_token_broker_writes_configmap_and_patches_deployment(
     from api.tool_manager import BrokeredTokenSecret, OAuthFieldSource
 
     monkeypatch.setenv("KUBERNETES_NAMESPACE", "centaur")
-    monkeypatch.setenv(
-        "KUBERNETES_TOKEN_BROKER_NAME", "centaur-centaur-token-broker"
-    )
+    monkeypatch.setenv("KUBERNETES_TOKEN_BROKER_NAME", "centaur-centaur-token-broker")
     monkeypatch.setenv("FIREWALL_MANAGER_SECRET_SOURCE", "onepassword")
 
     backend = KubernetesExecutorBackend()
@@ -1117,9 +1236,7 @@ async def test_ensure_token_broker_skips_rollout_when_config_unchanged(
     from api.tool_manager import BrokeredTokenSecret, OAuthFieldSource
 
     monkeypatch.setenv("KUBERNETES_NAMESPACE", "centaur")
-    monkeypatch.setenv(
-        "KUBERNETES_TOKEN_BROKER_NAME", "centaur-centaur-token-broker"
-    )
+    monkeypatch.setenv("KUBERNETES_TOKEN_BROKER_NAME", "centaur-centaur-token-broker")
     monkeypatch.setenv("FIREWALL_MANAGER_SECRET_SOURCE", "onepassword")
 
     secrets = [
@@ -1170,9 +1287,7 @@ async def test_ensure_token_broker_tolerates_missing_deployment(
     from api.tool_manager import BrokeredTokenSecret, OAuthFieldSource
 
     monkeypatch.setenv("KUBERNETES_NAMESPACE", "centaur")
-    monkeypatch.setenv(
-        "KUBERNETES_TOKEN_BROKER_NAME", "centaur-centaur-token-broker"
-    )
+    monkeypatch.setenv("KUBERNETES_TOKEN_BROKER_NAME", "centaur-centaur-token-broker")
     monkeypatch.setenv("FIREWALL_MANAGER_SECRET_SOURCE", "onepassword")
 
     backend = KubernetesExecutorBackend()
@@ -1239,9 +1354,7 @@ def test_proxy_iron_env_injects_broker_when_url_set(
     )
     env = _proxy_iron_env("centaur-infra-env", [])
     by_name = {e["name"]: e for e in env}
-    assert by_name["IRON_BROKER_URL"]["value"] == (
-        "http://centaur-token-broker:8181"
-    )
+    assert by_name["IRON_BROKER_URL"]["value"] == ("http://centaur-token-broker:8181")
     assert by_name["IRON_BROKER_TOKEN"]["valueFrom"]["secretKeyRef"] == {
         "name": "centaur-infra-env",
         "key": "IRON_BROKER_TOKEN",

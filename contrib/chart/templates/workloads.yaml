@@ -3,6 +3,27 @@
 {{- if and .Values.repoCache.enabled (not $reposPath) -}}
 {{- $reposPath = .Values.repoCache.hostPath -}}
 {{- end -}}
+{{- $overlayRepo := default "" .Values.overlay.repo -}}
+{{- if and $overlayRepo .Values.overlay.image.repository -}}
+{{- fail "overlay.repo and overlay.image.repository are mutually exclusive" -}}
+{{- end -}}
+{{- if and $overlayRepo .Values.overlay.systemPrompt -}}
+{{- fail "overlay.repo and overlay.systemPrompt are mutually exclusive; put services/sandbox/SYSTEM_PROMPT.md in the overlay repo" -}}
+{{- end -}}
+{{- if and $overlayRepo (not .Values.repoCache.enabled) -}}
+{{- fail "overlay.repo requires repoCache.enabled=true" -}}
+{{- end -}}
+{{- if and $overlayRepo (not $reposPath) -}}
+{{- fail "overlay.repo requires a repo cache path from repoCache.hostPath or sandbox.reposPath" -}}
+{{- end -}}
+{{- $apiOverlayPath := "" -}}
+{{- if .Values.overlay.image.repository -}}
+{{- $apiOverlayPath = .Values.overlay.mountPath -}}
+{{- else if $overlayRepo -}}
+{{- $apiOverlayPath = printf "%s/%s" $reposPath $overlayRepo -}}
+{{- else if .Values.overlay.systemPrompt -}}
+{{- $apiOverlayPath = .Values.overlay.mountPath -}}
+{{- end -}}
 {{- if and .Values.sandbox.toolBuildCache.enabled (not .Values.sandbox.toolBuildCache.hostPath) -}}
 {{- fail "sandbox.toolBuildCache.hostPath is required when sandbox.toolBuildCache.enabled=true" -}}
 {{- end -}}
@@ -193,20 +214,24 @@ spec:
             - name: CENTAUR_DEFAULT_HARNESS
               value: {{ .Values.api.defaultHarness | quote }}
             - name: TOOL_DIRS
-{{- if .Values.overlay.image.repository }}
-              value: {{ printf "/app/tools:%s/tools" .Values.overlay.mountPath | quote }}
+{{- if or .Values.overlay.image.repository $overlayRepo }}
+              value: {{ printf "/app/tools:%s/tools" $apiOverlayPath | quote }}
 {{- else }}
               value: /app/tools
 {{- end }}
             - name: WORKFLOW_DIRS
-{{- if .Values.overlay.image.repository }}
-              value: {{ printf "/app/workflows:%s/workflows" .Values.overlay.mountPath | quote }}
+{{- if or .Values.overlay.image.repository $overlayRepo }}
+              value: {{ printf "/app/workflows:%s/workflows" $apiOverlayPath | quote }}
 {{- else }}
               value: /app/workflows
 {{- end }}
-{{- if or .Values.overlay.systemPrompt .Values.overlay.image.repository }}
+{{- if $apiOverlayPath }}
             - name: CENTAUR_OVERLAY_DIR
-              value: {{ .Values.overlay.mountPath | quote }}
+              value: {{ $apiOverlayPath | quote }}
+{{- end }}
+{{- if $overlayRepo }}
+            - name: CENTAUR_OVERLAY_REPO
+              value: {{ $overlayRepo | quote }}
 {{- end }}
 {{- if .Values.overlay.image.repository }}
             - name: CENTAUR_OVERLAY_IMAGE
@@ -449,6 +474,11 @@ spec:
               mountPath: {{ .Values.overlay.mountPath | quote }}
               readOnly: true
 {{- end }}
+{{- if $overlayRepo }}
+            - name: repos
+              mountPath: {{ $reposPath | quote }}
+              readOnly: true
+{{- end }}
           securityContext:
 {{ toYaml .Values.containerSecurityContext | nindent 12 }}
           resources:
@@ -467,6 +497,12 @@ spec:
             items:
               - key: SYSTEM_PROMPT.md
                 path: services/sandbox/SYSTEM_PROMPT.md
+{{- end }}
+{{- if $overlayRepo }}
+        - name: repos
+          hostPath:
+            path: {{ $reposPath | quote }}
+            type: DirectoryOrCreate
 {{- end }}
 ---
 {{- if .Values.slackbot.enabled }}

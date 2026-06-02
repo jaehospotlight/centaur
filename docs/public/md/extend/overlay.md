@@ -9,18 +9,21 @@ Use an overlay when your deployment needs organization-specific tools,
 workflows, skills, personas, prompts, or sandbox files without turning the base
 Centaur repo into a fork.
 
-An overlay is a separate repo packaged as an image. The Helm chart mounts that
-image into the API and into sandbox pods. API-loaded extension points, such as
-tools and workflows, use the API mount. Sandbox-loaded extension points, such
-as skills and prompts, use the sandbox mount.
+An overlay is a separate repo that can either be mounted live from
+`repoCache` or packaged as an image. The live `repoCache` mode is the preferred
+path for organization-owned skills and CLI tools because new commits become
+available without rebuilding the sandbox image or redeploying the API.
+API-loaded extension points, such as tools and workflows, use the API overlay
+path. Sandbox-loaded extension points, such as skills and CLI tools, use the
+sandbox overlay path.
 
 ## Overlay layout
 
 ```text
 centaur-overlay/
-├── Dockerfile
 ├── tools/
 │   └── warehouse/
+│       ├── cli.py
 │       ├── client.py
 │       └── pyproject.toml
 ├── workflows/
@@ -38,7 +41,14 @@ Only include the directories your deployment needs.
 
 ## Mount paths
 
-The same overlay image is mounted in two places:
+In live repo-cache mode, the same checkout is mounted at different paths:
+
+| Runtime | Mount | Used for |
+|---------|-------|----------|
+| API | `/var/lib/centaur/repos/<owner>/<repo>` | Tool discovery, workflow discovery, overlay migrations, API-side prompt assembly. |
+| Sandbox | `/home/agent/github/<owner>/<repo>` | CLI tools, skills, persona files, sandbox prompt overlay, runtime files available to agents. |
+
+In image mode, the image payload is mounted in two places:
 
 | Runtime | Mount | Used for |
 |---------|-------|----------|
@@ -46,13 +56,20 @@ The same overlay image is mounted in two places:
 | Sandbox | `/home/agent/overlay/org` | Skills, persona files, sandbox prompt overlay, runtime files available to agents. |
 
 Do not use the sandbox path when debugging API discovery. If a tool or workflow
-is missing, inspect `/app/overlay/org` in the API container. If a skill or prompt
-overlay is missing, inspect `/home/agent/overlay/org` in the sandbox.
+is missing, inspect the API overlay path. If a skill or CLI tool is missing,
+inspect the sandbox overlay path.
 
 ## Discovery paths
 
-When `overlay.image.repository` is configured, the chart adds the overlay to the
-API discovery paths:
+When `overlay.repo` is configured, the chart adds the live checkout to the API
+discovery paths:
+
+```text
+TOOL_DIRS=/app/tools:/var/lib/centaur/repos/<owner>/<repo>/tools
+WORKFLOW_DIRS=/app/workflows:/var/lib/centaur/repos/<owner>/<repo>/workflows
+```
+
+When `overlay.image.repository` is configured, the image mount is used instead:
 
 ```text
 TOOL_DIRS=/app/tools:/app/overlay/org/tools
@@ -65,17 +82,52 @@ intentionally replace a base tool or workflow with the same name.
 Sandbox pods receive:
 
 ```text
-CENTAUR_OVERLAY_DIR=/home/agent/overlay/org
+CENTAUR_OVERLAY_DIR=/home/agent/github/<owner>/<repo>   # repo-cache mode
+CENTAUR_OVERLAY_DIR=/home/agent/overlay/org             # image mode
 ```
 
 The sandbox entrypoint copies overlay skills from
-`$CENTAUR_OVERLAY_DIR/.agents/skills` into the agent workspace during startup.
-The active deployment block in the sandbox prompt also states whether an overlay
-is loaded and where it is mounted.
+`$CENTAUR_OVERLAY_DIR/.agents/skills` into the agent workspace during startup
+and refreshes them periodically while the sandbox is running. The
+`centaur-tools` CLI discovers source-mounted tools from the overlay repo and
+uses the shared tool build cache for Python, Rust, and Go tools.
+
+## Live repo-cache overlay
+
+Configure `overlay.repo` with the owner/repo slug. The chart automatically adds
+that repo to the repo-cache daemon's `REPOSITORIES` list, so
+`repoCache.repositories` can stay empty when the overlay is the only cached
+repo.
+
+```yaml
+repoCache:
+  enabled: true
+  authMode: iron-proxy
+  syncIntervalSeconds: 60
+
+sandbox:
+  toolBuildCache:
+    enabled: true
+
+overlay:
+  repo: your-org/centaur-overlay
+```
+
+With `authMode: iron-proxy`, repo-cache uses `gh auth` and the shared Centaur
+GitHub credential through iron-proxy. Use `authMode: github-token` only when
+you intentionally want to mount a PAT Secret into the repo-cache pod.
+
+The repo-cache daemon performs shallow default-branch syncs. When a PR merges
+into the overlay repo, the next sync updates the node cache. New sandboxes and
+warm-pool claims see the latest overlay prompt and skills; running sandboxes
+refresh overlay skills in-place, and `centaur-tools` reads the current mounted
+source on each invocation.
 
 ## Package the image
 
-Use an image that copies the overlay repo into `/overlay`:
+Use image mode for immutable release artifacts or when the cluster cannot mount
+a hostPath repo cache. Use an image that copies the overlay repo into
+`/overlay`:
 
 ```dockerfile
 FROM alpine:3.20
@@ -107,7 +159,7 @@ For API-loaded extensions, verify from the API deployment:
 
 ```bash
 kubectl exec -n centaur-system deploy/centaur-centaur-api -- \
-  sh -lc 'echo "$TOOL_DIRS"; echo "$WORKFLOW_DIRS"; ls -la /app/overlay/org'
+  sh -lc 'echo "$TOOL_DIRS"; echo "$WORKFLOW_DIRS"; ls -la "$CENTAUR_OVERLAY_DIR"'
 ```
 
 For sandbox-loaded extensions, verify from a sandbox or ask the running agent to
@@ -117,8 +169,10 @@ inspect:
 echo "$CENTAUR_OVERLAY_DIR"
 ls "$CENTAUR_OVERLAY_DIR"
 ls "$CENTAUR_OVERLAY_DIR/.agents/skills"
+centaur-tools list
 ```
 
-If something is missing, check the overlay image contents first, then the chart
-values, image tag, `sourcePath`, and the API or sandbox mount path relevant to
-the extension type.
+If something is missing in repo-cache mode, check the repo-cache daemon logs,
+`REPOSITORIES`, the default branch, and the API or sandbox mount path relevant
+to the extension type. In image mode, check the overlay image contents, image
+tag, `sourcePath`, and mount path.
