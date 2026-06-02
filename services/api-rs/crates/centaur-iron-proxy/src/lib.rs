@@ -21,7 +21,7 @@ pub use model::{
     BrokerCredential, PgDsnEnv, PostgresClient, PostgresListener, PostgresUpstream, ProxyFragment,
     SandboxEnv, Secret, SecretReplace, Transform, TransformConfig,
 };
-pub use ports::{listen_ports_from_yaml, pg_dsn_envs, proxy_listen_port_from_yaml};
+pub use ports::{ListenPorts, listen_ports_from_yaml, pg_dsn_envs};
 pub use render::{render_proxy_yaml, render_proxy_yaml_with_source_policy};
 pub use source::{SourceKind, SourcePolicy};
 

@@ -22,10 +22,10 @@ impl AgentSandboxBackend {
         )
         .map_err(|err| SandboxError::InvalidSpec(format!("iron-proxy config: {err}")))?;
         let placeholder_env = centaur_iron_proxy::placeholder_env(&fragments);
-        let proxy_port = centaur_iron_proxy::proxy_listen_port_from_yaml(&config_yaml)
-            .map_err(|err| SandboxError::InvalidSpec(format!("iron-proxy proxy port: {err}")))?;
-        let listen_ports = centaur_iron_proxy::listen_ports_from_yaml(&config_yaml)
+        let ports = centaur_iron_proxy::listen_ports_from_yaml(&config_yaml)
             .map_err(|err| SandboxError::InvalidSpec(format!("iron-proxy listen ports: {err}")))?;
+        let proxy_port = ports.proxy;
+        let listen_ports = ports.all;
         let proxy_host = iron_proxy_service_name(id);
         let mut pg_dsn_env = BTreeMap::new();
         let mut pg_proxy_password_env = BTreeMap::new();

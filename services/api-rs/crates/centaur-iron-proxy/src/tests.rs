@@ -266,8 +266,9 @@ postgres:
         )],
     )
     .unwrap();
-    assert_eq!(listen_ports_from_yaml(&rendered).unwrap(), vec![5432, 8080]);
-    assert_eq!(proxy_listen_port_from_yaml(&rendered).unwrap(), 8080);
+    let ports = listen_ports_from_yaml(&rendered).unwrap();
+    assert_eq!(ports.all, vec![5432, 8080]);
+    assert_eq!(ports.proxy, 8080);
     let rendered = render_proxy_yaml(
         Some(
             r#"
@@ -279,8 +280,9 @@ transforms: []
         &[],
     )
     .unwrap();
-    assert_eq!(listen_ports_from_yaml(&rendered).unwrap(), vec![18080]);
-    assert_eq!(proxy_listen_port_from_yaml(&rendered).unwrap(), 18080);
+    let ports = listen_ports_from_yaml(&rendered).unwrap();
+    assert_eq!(ports.all, vec![18080]);
+    assert_eq!(ports.proxy, 18080);
 }
 
 #[test]
