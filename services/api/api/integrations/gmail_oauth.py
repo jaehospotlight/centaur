@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import time
 import uuid
@@ -28,6 +29,8 @@ GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 STATE_TTL_S = 10 * 60
 CONNECT_PAIRING_TTL_S = 10 * 60
 CONFIRMATION_TTL_S = 5 * 60
+MAX_ATTACHMENTS = 10
+MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 log = structlog.get_logger().bind(component="gmail_oauth")
 
@@ -450,7 +453,7 @@ async def handle_confirmation_action(
     await check_rate(pool, "send_global_hour", slack_team_id, "*", int(os.environ.get("GMAIL_SEND_GLOBAL_HOURLY_LIMIT", "500")), 3600)
     draft = CryptoBox.from_env().decrypt_json(bytes(row["draft_ciphertext"]), bytes(row["draft_nonce"]))
     access_token = await refresh_access_token(pool, slack_team_id, payload_user_id)
-    await send_gmail(access_token, draft)
+    await send_gmail(access_token, draft, pool=pool)
     await pool.execute("UPDATE gmail_send_confirmations SET status = 'sent', updated_at = NOW() WHERE id = $1", row["id"])
     await audit(pool, slack_team_id, payload_user_id, row["channel_id"], row["message_ts"], _draft_recipients(draft), str(draft.get("subject") or ""), "success")
     return {"result": "sent"}
@@ -482,7 +485,7 @@ async def audit(
     )
 
 
-async def send_gmail(access_token: str, draft: dict[str, Any]) -> None:
+async def send_gmail(access_token: str, draft: dict[str, Any], *, pool: Any | None = None) -> None:
     msg = EmailMessage()
     msg["To"] = ", ".join(draft.get("to") or [])
     if draft.get("cc"):
@@ -491,6 +494,14 @@ async def send_gmail(access_token: str, draft: dict[str, Any]) -> None:
         msg["Bcc"] = ", ".join(draft["bcc"])
     msg["Subject"] = str(draft.get("subject") or "")
     msg.set_content(str(draft.get("body") or ""))
+    for attachment in await resolve_attachments(pool, draft.get("attachments") or []):
+        maintype, subtype = _split_mime_type(attachment["mime_type"], attachment["name"])
+        msg.add_attachment(
+            attachment["data"],
+            maintype=maintype,
+            subtype=subtype,
+            filename=attachment["name"],
+        )
     raw = _b64(msg.as_bytes())
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.post(
@@ -500,3 +511,41 @@ async def send_gmail(access_token: str, draft: dict[str, Any]) -> None:
         )
     if response.status_code >= 400:
         raise GmailOAuthError("gmail_send_failed")
+
+
+async def resolve_attachments(pool: Any | None, attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(attachments) > MAX_ATTACHMENTS:
+        raise GmailOAuthError("too_many_attachments")
+    resolved: list[dict[str, Any]] = []
+    total_bytes = 0
+    for attachment in attachments:
+        if attachment.get("attachment_id"):
+            if pool is None:
+                raise GmailOAuthError("attachment_store_unavailable")
+            row = await pool.fetchrow(
+                "SELECT name, mime_type, data FROM attachments WHERE id = $1",
+                str(attachment["attachment_id"]),
+            )
+            if not row:
+                raise GmailOAuthError("attachment_not_found")
+            data = bytes(row["data"])
+            name = str(row["name"] or attachment["attachment_id"])
+            mime_type = str(row["mime_type"] or "application/octet-stream")
+        else:
+            try:
+                data = base64.b64decode(str(attachment.get("data_base64") or ""), validate=True)
+            except Exception as exc:
+                raise GmailOAuthError("invalid_attachment_data") from exc
+            name = str(attachment.get("name") or "attachment.bin")
+            mime_type = str(attachment.get("mime_type") or "application/octet-stream")
+        total_bytes += len(data)
+        if total_bytes > MAX_ATTACHMENT_BYTES:
+            raise GmailOAuthError("attachments_too_large")
+        resolved.append({"name": name, "mime_type": mime_type, "data": data})
+    return resolved
+
+
+def _split_mime_type(mime_type: str, name: str) -> tuple[str, str]:
+    guessed = mime_type if "/" in mime_type else (mimetypes.guess_type(name)[0] or "application/octet-stream")
+    maintype, subtype = guessed.split("/", 1)
+    return maintype or "application", subtype or "octet-stream"

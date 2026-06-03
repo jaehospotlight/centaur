@@ -48,6 +48,7 @@ class SendEmailToolRequest(BaseModel):
     bcc: list[str] = []
     subject: str
     body: str
+    attachments: list[dict[str, Any]] = []
 
 
 @internal_router.post("/pairing")
@@ -95,6 +96,7 @@ async def create_confirmation(request: Request, body: ConfirmationRequest) -> di
         "bcc": [str(x) for x in body.draft.get("bcc", [])],
         "subject": str(body.draft.get("subject") or ""),
         "body": str(body.draft.get("body") or ""),
+        "attachments": _clean_attachments(body.draft.get("attachments") or []),
     }
     result = await svc.create_confirmation(
         request.app.state.db_pool,
@@ -149,6 +151,7 @@ async def send_email_tool(request: Request, body: SendEmailToolRequest) -> dict[
         "bcc": body.bcc,
         "subject": body.subject,
         "body": body.body,
+        "attachments": _clean_attachments(body.attachments),
     }
     confirmation = await svc.create_confirmation(
         request.app.state.db_pool,
@@ -174,12 +177,17 @@ async def send_email_tool(request: Request, body: SendEmailToolRequest) -> dict[
 
 
 def _confirmation_blocks(draft: dict[str, Any], send_value: str, cancel_value: str) -> list[dict[str, Any]]:
+    attachments = draft.get("attachments") or []
+    attachment_names = [
+        str(item.get("name") or item.get("attachment_id") or "attachment") for item in attachments
+    ]
     preview = "\n".join(
         [
             f"*To:* {', '.join(draft['to'])}",
             f"*Cc:* {', '.join(draft['cc']) if draft['cc'] else '-'}",
             f"*Bcc:* {', '.join(draft['bcc']) if draft['bcc'] else '-'}",
             f"*Subject:* {draft['subject']}",
+            f"*Attachments:* {', '.join(attachment_names) if attachment_names else '-'}",
             "",
             draft["body"],
         ]
@@ -206,6 +214,36 @@ def _confirmation_blocks(draft: dict[str, Any], send_value: str, cancel_value: s
             ],
         },
     ]
+
+
+def _clean_attachments(raw_attachments: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_attachments, list):
+        raise HTTPException(status_code=400, detail="invalid_attachments")
+    clean: list[dict[str, Any]] = []
+    for raw in raw_attachments:
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="invalid_attachments")
+        attachment_id = raw.get("attachment_id") or raw.get("id")
+        if attachment_id:
+            clean.append(
+                {
+                    "attachment_id": str(attachment_id),
+                    "name": str(raw.get("name") or attachment_id),
+                    "mime_type": str(raw.get("mime_type") or "application/octet-stream"),
+                }
+            )
+            continue
+        data_base64 = raw.get("data_base64")
+        if data_base64 is None:
+            raise HTTPException(status_code=400, detail="invalid_attachments")
+        clean.append(
+            {
+                "name": str(raw.get("name") or "attachment.bin"),
+                "mime_type": str(raw.get("mime_type") or "application/octet-stream"),
+                "data_base64": str(data_base64),
+            }
+        )
+    return clean
 
 
 @router.get("/callback")

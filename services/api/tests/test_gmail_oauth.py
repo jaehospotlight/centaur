@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from email import message_from_bytes
+from email.policy import default
 import os
 import time
 import uuid
@@ -122,6 +124,82 @@ async def test_send_email_tool_resolves_exact_trigger_message_under_interleaved_
 
     assert result["result"] == "confirmation_posted"
     assert pool.fetchrow_calls[0][1:] == ("slack:T1:C1:1.0", "msg:slack:T1:C1:1.0:slack:T1:C1:1.0")
+
+
+@pytest.mark.asyncio
+async def test_send_email_tool_includes_attachment_ids_in_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = FakePool(fetchrow_result={"user_id": "U1", "id": "msg:slack:T1:C1:1.0:slack:T1:C1:1.0"})
+    confirmations: list[dict] = []
+
+    async def capture_confirmation(*args):
+        confirmations.append(args[-1])
+        return {"confirmation_id": str(uuid.uuid4())}
+
+    monkeypatch.setattr(gmail_router.svc, "status", async_return({"state": "connected", "email": "u1@example.com"}))
+    monkeypatch.setattr(gmail_router.svc, "create_confirmation", capture_confirmation)
+    monkeypatch.setattr(gmail_router.slackbot_client, "post", async_return({"ok": True}))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db_pool=pool)))
+    body = gmail_router.SendEmailToolRequest(
+        thread_key="slack:T1:C1:1.0",
+        trigger_message_ts="1.0",
+        to=["a@example.com"],
+        subject="Subject",
+        body="Body",
+        attachments=[
+            {"attachment_id": "att-1", "name": "report.pdf", "mime_type": "application/pdf"}
+        ],
+    )
+
+    await gmail_router.send_email_tool(request, body)
+
+    assert confirmations[0]["attachments"] == [
+        {"attachment_id": "att-1", "name": "report.pdf", "mime_type": "application/pdf"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_gmail_builds_mime_with_stored_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = FakePool(fetchrow_result={"name": "report.txt", "mime_type": "text/plain", "data": b"hello report"})
+    sent: list[dict] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, _url: str, headers: dict[str, str], json: dict[str, str]):
+            sent.append({"headers": headers, "json": json})
+            return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(gmail_oauth.httpx, "AsyncClient", FakeClient)
+
+    await gmail_oauth.send_gmail(
+        "access-token",
+        {
+            "to": ["a@example.com"],
+            "cc": [],
+            "bcc": [],
+            "subject": "Subject",
+            "body": "Body",
+            "attachments": [{"attachment_id": "att-1"}],
+        },
+        pool=pool,
+    )
+
+    raw = base64.urlsafe_b64decode(sent[0]["json"]["raw"] + "=" * (-len(sent[0]["json"]["raw"]) % 4))
+    message = message_from_bytes(raw, policy=default)
+    attachment = next(part for part in message.iter_attachments())
+    assert sent[0]["headers"] == {"Authorization": "Bearer access-token"}
+    assert attachment.get_filename() == "report.txt"
+    assert attachment.get_content() == "hello report"
+    assert pool.fetchrow_calls[0][1:] == ("att-1",)
 
 
 @pytest.mark.asyncio
