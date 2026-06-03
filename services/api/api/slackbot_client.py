@@ -27,6 +27,12 @@ def _api_key() -> str:
     return os.getenv("SLACKBOT_API_KEY", "").strip()
 
 
+def _api_key_for_path(path: str) -> str:
+    if path == "/api/slack/ephemeral":
+        return os.getenv("SLACKBOT_EPHEMERAL_API_KEY", "").strip() or _api_key()
+    return _api_key()
+
+
 def enabled() -> bool:
     return bool(_base_url() and _api_key())
 
@@ -39,7 +45,7 @@ async def post(
     suppress_http_span: bool = False,
 ) -> dict[str, Any] | None:
     base_url = _base_url()
-    api_key = _api_key()
+    api_key = _api_key_for_path(path)
     if not base_url or not api_key:
         return None
     request_timeout = timeout or httpx.Timeout(8.0, connect=2.0)

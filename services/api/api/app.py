@@ -43,6 +43,7 @@ from api.routers import (
     admin,
     attachments as attachments_mod,
     deprecated,
+    gmail_oauth as gmail_oauth_mod,
     health,
     webhooks as webhooks_mod,
 )
@@ -480,6 +481,8 @@ app.include_router(agent_router_mod.router)
 app.include_router(workflow_router_mod.router)
 app.include_router(webhooks_mod.router)
 app.include_router(attachments_mod.router)
+app.include_router(gmail_oauth_mod.router)
+app.include_router(gmail_oauth_mod.internal_router)
 app.include_router(admin.router)
 app.include_router(deprecated.router)
 

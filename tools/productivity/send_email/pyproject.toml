@@ -1,0 +1,13 @@
+[project]
+name = "send-email"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["httpx>=0.28.0", "typer>=0.15.0"]
+
+[project.scripts]
+send-email = "cli:app"
+
+[tool.ai-v2]
+name = "send_email"
+description = "Stage an email confirmation for the verified Slack requester. This does not send email; Gmail send happens only after the user clicks the ephemeral Send button. Sender is derived server-side from the exact trigger_message_ts; no sender override is accepted."
+secrets = []

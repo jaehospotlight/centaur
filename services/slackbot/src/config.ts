@@ -13,6 +13,7 @@ const EnvSchema = z.object({
   // bot lives so replies open directly in the Slack desktop/mobile app.
   SLACK_TEAM_ID: z.string().optional(),
   SLACKBOT_API_KEY: z.string().optional(),
+  SLACKBOT_EPHEMERAL_API_KEY: z.string().optional(),
   CENTAUR_API_URL: z.string().url().default('http://localhost:8000'),
   CENTAUR_API_KEY: z.string().optional(),
   CENTAUR_SLACK_EVENTS_PATH: z.string().default('/api/webhooks/slack'),
@@ -31,6 +32,15 @@ const EnvSchema = z.object({
   SLACK_FEEDBACK_COMMANDS: z
     .string()
     .default('/website-feedback')
+    .transform(value =>
+      value
+        .split(/[\s,]+/)
+        .map(part => part.trim())
+        .filter(Boolean)
+    ),
+  SLACK_EMAIL_COMMANDS: z
+    .string()
+    .default('/ai-email-connect /ai-email-status /ai-email-disconnect')
     .transform(value =>
       value
         .split(/[\s,]+/)

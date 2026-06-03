@@ -6,7 +6,7 @@ import { requestId } from 'hono/request-id'
 import { prettyJSON } from 'hono/pretty-json'
 import { startFinalDeliveryPoller } from './centaur/final-delivery'
 import { CentaurHandoff } from './centaur/handoff'
-import { loadConfig } from './config'
+import { centaurApiKey, loadConfig } from './config'
 import { logError, logInfo, logWarn, sanitizeLogValue } from './logging'
 import {
   clientSpanOptions,
@@ -120,6 +120,17 @@ const apiKeyMiddleware: MiddlewareHandler<{ Variables: Variables }> = async (c, 
   await next()
 }
 
+const ephemeralApiKeyMiddleware: MiddlewareHandler<{ Variables: Variables }> = async (c, next) => {
+  if (!config.SLACKBOT_EPHEMERAL_API_KEY) {
+    return apiKeyMiddleware(c, next)
+  }
+  const authorization = c.req.header('authorization') ?? ''
+  if (authorization !== `Bearer ${config.SLACKBOT_EPHEMERAL_API_KEY}`) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401)
+  }
+  await next()
+}
+
 const slackSignatureMiddleware: MiddlewareHandler<{ Variables: Variables }> = async (c, next) => {
   const rawBody = await c.req.raw.text()
   const verification = verifySlackSignature({
@@ -139,6 +150,7 @@ const slackSignatureMiddleware: MiddlewareHandler<{ Variables: Variables }> = as
 const slackHandler = async (c: Context<{ Variables: Variables }>) => {
   const envelope = parseSlackBody(c.get('slackRawBody'), c.req.header('content-type'))
   if (!envelope) return c.json({ ok: false, error: 'invalid_slack_payload' }, 400)
+  if (isSlackInteraction(envelope)) return handleSlackInteraction(c, envelope)
   if (envelope.type === 'url_verification') return c.json({ challenge: envelope.challenge })
 
   const event = envelope.event
@@ -169,6 +181,66 @@ const slackHandler = async (c: Context<{ Variables: Variables }>) => {
   return c.json({ ok: true })
 }
 
+async function handleSlackInteraction(c: Context, payload: any) {
+  const action = payload.actions?.[0]
+  const actionId = String(action?.action_id ?? '')
+  const value = String(action?.value ?? '')
+  const teamId = String(payload.team?.id ?? payload.team_id ?? '')
+  const userId = String(payload.user?.id ?? '')
+  const channelId = String(payload.channel?.id ?? '')
+
+  try {
+    if (actionId === 'gmail_begin_connection') {
+      const url = await gmailApi('/internal/gmail-oauth/begin', {
+        slack_team_id: teamId,
+        slack_user_id: userId,
+        pairing_token: value,
+        pairing_code: String(payload.state?.values?.gmail_pairing?.gmail_pairing_code?.value ?? '')
+      })
+      return c.json({
+        response_type: 'ephemeral',
+        replace_original: false,
+        text: `Open this Gmail OAuth link to finish connecting: ${url.url}`
+      })
+    }
+    if (actionId === 'gmail_send_confirm' || actionId === 'gmail_cancel_confirm') {
+      const result = await gmailApi('/internal/gmail-oauth/actions', {
+        slack_team_id: teamId,
+        payload_user_id: userId,
+        signed_value: value
+      })
+      return c.json({
+        response_type: 'ephemeral',
+        replace_original: true,
+        text:
+          result.result === 'sent'
+            ? 'Email sent.'
+            : result.result === 'connection_invalid'
+              ? 'Gmail connection is invalid. Run /ai-email-connect again.'
+              : 'Email cancelled.'
+      })
+    }
+  } catch (error) {
+    logWarn('gmail_oauth_interaction_failed', {
+      action_id: actionId,
+      channel_id: channelId,
+      team_id: teamId,
+      user_id: userId,
+      error: error instanceof Error ? error.message : String(error)
+    })
+    return c.json({
+      response_type: 'ephemeral',
+      replace_original: false,
+      text: 'Could not complete that Gmail action. It may be expired or no longer valid.'
+    })
+  }
+  return c.json({ ok: true })
+}
+
+function isSlackInteraction(value: any): boolean {
+  return value?.type === 'block_actions' || value?.type === 'interactive_message'
+}
+
 app.post(config.CENTAUR_SLACK_EVENTS_PATH, slackSignatureMiddleware, slackHandler)
 app.post('/api/slack/events', slackSignatureMiddleware, slackHandler)
 app.post('/api/slack/actions', slackSignatureMiddleware, slackHandler)
@@ -192,6 +264,30 @@ app.post('/api/slack/messages', apiKeyMiddleware, async c => {
   })
   if (!response.ok) return c.json(response, 502)
   return c.json({ ok: true, channel: response.channel, ts: response.ts })
+})
+
+app.post('/api/slack/ephemeral', ephemeralApiKeyMiddleware, async c => {
+  const body = await c.req.json<{
+    channel: string
+    user: string
+    thread_ts?: string
+    text: string
+    blocks?: AnyBlock[]
+  }>()
+  const { client } = await resolver.resolve({})
+  try {
+    const response = await client.chat.postEphemeral({
+      channel: body.channel,
+      user: body.user,
+      thread_ts: body.thread_ts,
+      text: body.text,
+      blocks: body.blocks
+    })
+    if (!response.ok) return c.json(response, 502)
+    return c.json({ ok: true, message_ts: response.message_ts })
+  } catch (error) {
+    return slackApiErrorResponse(c, error)
+  }
 })
 
 app.patch('/api/slack/messages', apiKeyMiddleware, async c => {
@@ -601,6 +697,36 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
         return
       }
 
+      if (looksLikeEmailSendRequest(normalized.parts)) {
+        const status = await gmailApi('/internal/gmail-oauth/status', {
+          slack_team_id: envelope.team_id,
+          slack_user_id: normalized.user_id
+        })
+        if (status?.state !== 'connected') {
+          const pairing = await gmailApi('/internal/gmail-oauth/pairing', {
+            slack_team_id: envelope.team_id,
+            slack_user_id: normalized.user_id
+          })
+          await client.chat.postEphemeral({
+            channel: normalized.channel_id,
+            user: normalized.user_id,
+            thread_ts: normalized.thread_ts,
+            text: [
+              status?.state === 'connection_invalid'
+                ? 'Your Gmail connection is invalid. Reconnect before sending email.'
+                : 'Connect Gmail before sending email through Centaur.',
+              'Scope requested: https://www.googleapis.com/auth/gmail.send',
+              `Pairing code: ${pairing.pairing_code}`
+            ].join('\n'),
+            blocks: connectBlocks(pairing.pairing_code, pairing.pairing_token)
+          })
+          spanAttributes(span, {
+            'centaur.slackbot.event_action': 'gmail_connect_ephemeral'
+          })
+          return
+        }
+      }
+
       spanAttributes(span, {
         'centaur.slackbot.event_action': 'handoff'
       })
@@ -618,6 +744,11 @@ async function processSlackEvent(envelope: SlackEnvelope): Promise<void> {
       }
     }
   )
+}
+
+function looksLikeEmailSendRequest(parts: unknown[]): boolean {
+  const text = JSON.stringify(parts).toLowerCase()
+  return /\b(email|send mail|gmail)\b/.test(text) && /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/.test(text)
 }
 
 const TRIVIAL_ACK_REACTION = 'ok_hand'
@@ -668,11 +799,15 @@ type SlackCommandPayload = {
   channel_id?: string
   channel_name?: string
   team_id?: string
+  trigger_id?: string
 }
 
 async function slackCommandHandler(c: Context<{ Variables: Variables }>) {
   const payload = parseSlackCommandBody(c.get('slackRawBody'))
   if (!payload?.command) return c.json({ ok: false, error: 'invalid_slack_command' }, 400)
+  if (config.SLACK_EMAIL_COMMANDS.includes(payload.command)) {
+    return handleEmailCommand(payload)
+  }
   if (!config.SLACK_FEEDBACK_COMMANDS.includes(payload.command)) {
     return c.json({ response_type: 'ephemeral', text: `Unsupported command: ${payload.command}` })
   }
@@ -717,6 +852,105 @@ async function slackCommandHandler(c: Context<{ Variables: Variables }>) {
       200
     )
   }
+}
+
+async function handleEmailCommand(payload: SlackCommandPayload): Promise<Response> {
+  const identity = slackCommandIdentity(payload)
+  if (!identity) {
+    return Response.json({ response_type: 'ephemeral', text: 'Slack identity missing from command.' })
+  }
+  try {
+    if (payload.command === '/ai-email-connect') {
+      const pairing = await gmailApi('/internal/gmail-oauth/pairing', identity)
+      return Response.json({
+        response_type: 'ephemeral',
+        text: [
+          'Connect Gmail to let Centaur send emails only after your ephemeral confirmation.',
+          'Scope requested: https://www.googleapis.com/auth/gmail.send',
+          `Pairing code: ${pairing.pairing_code}`,
+          'Click Begin connection, then enter this pairing code. The link expires in 10 minutes.'
+        ].join('\n'),
+        blocks: connectBlocks(pairing.pairing_code, pairing.pairing_token)
+      })
+    }
+    if (payload.command === '/ai-email-status') {
+      const status = await gmailApi('/internal/gmail-oauth/status', identity)
+      return Response.json({ response_type: 'ephemeral', text: statusText(status) })
+    }
+    if (payload.command === '/ai-email-disconnect') {
+      await gmailApi('/internal/gmail-oauth/disconnect', identity)
+      return Response.json({
+        response_type: 'ephemeral',
+        text: 'Gmail disconnected. Google token revocation was requested and pending confirmations were invalidated.'
+      })
+    }
+  } catch (error) {
+    logError('gmail_oauth_command_failed', error)
+    return Response.json({
+      response_type: 'ephemeral',
+      text: 'Gmail email capability is not available right now. The error was logged.'
+    })
+  }
+  return Response.json({ response_type: 'ephemeral', text: `Unsupported command: ${payload.command}` })
+}
+
+function slackCommandIdentity(payload: SlackCommandPayload): { slack_team_id: string; slack_user_id: string } | null {
+  if (!payload.team_id || !payload.user_id) return null
+  return { slack_team_id: payload.team_id, slack_user_id: payload.user_id }
+}
+
+async function gmailApi(path: string, body: Record<string, unknown>): Promise<any> {
+  const key = centaurApiKey(config)
+  if (!key) throw new Error('centaur_api_key_not_configured')
+  const response = await fetch(`${config.CENTAUR_API_URL}${path}`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(`gmail_api_failed:${response.status}:${JSON.stringify(data)}`)
+  return data
+}
+
+function statusText(status: any): string {
+  if (status?.state === 'connected') return `Gmail connected as ${status.email ?? 'an authorized Google account'}.`
+  if (status?.state === 'connection_invalid') {
+    return `Gmail connection invalid${status.email ? ` for ${status.email}` : ''}. Run /ai-email-connect again.`
+  }
+  return 'Gmail is not connected.'
+}
+
+function connectBlocks(pairingCode: string, pairingToken: string): AnyBlock[] {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `Connect Gmail with scope \`${'https://www.googleapis.com/auth/gmail.send'}\` only.\nPairing code: *${pairingCode}*`
+      }
+    },
+    {
+      type: 'input',
+      block_id: 'gmail_pairing',
+      element: {
+        type: 'plain_text_input',
+        action_id: 'gmail_pairing_code',
+        placeholder: { type: 'plain_text', text: 'Enter pairing code' }
+      },
+      label: { type: 'plain_text', text: 'Pairing code' }
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Begin connection' },
+          action_id: 'gmail_begin_connection',
+          value: pairingToken
+        }
+      ]
+    }
+  ] as AnyBlock[]
 }
 
 async function createLinearFeedbackIssue(

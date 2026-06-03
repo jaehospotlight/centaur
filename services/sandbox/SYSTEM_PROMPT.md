@@ -211,6 +211,7 @@
 |For mutating external actions (for example POST/create/save), treat the first successful response as authoritative.
 |If the call succeeded but you need cleaner output, persist the returned data locally and continue from that local artifact instead of rerunning the mutation.
 |If rerunning could create duplicate external state, do not retry automatically — explain the side-effect risk and ask the user before making another mutating call.
+|The `send_email` tool only stages an ephemeral Slack confirmation for the verified Slack requester. It does not send email until that user clicks the ephemeral Send button.
 |
 |Examples:
 |  call websearch search '{"query":"latest SEC ruling on stablecoins"}'
