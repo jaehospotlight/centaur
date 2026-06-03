@@ -15,10 +15,11 @@ use centaur_sandbox_manager::{
 };
 use centaur_session_core::{
     ExecutionStatus, HarnessType, MessageRole, Session, SessionEvent, SessionExecution,
-    SessionMessageInput, ThreadKey,
+    SessionMessage, SessionMessageInput, ThreadKey,
 };
 use centaur_session_sqlx::{
-    PgSessionStore, SessionEventListener, SessionStoreError, default_metadata,
+    CreateFeedbackInput, PgSessionStore, SessionEventListener, SessionStoreError, UserFeedback,
+    default_metadata,
 };
 use centaur_telemetry::{
     record_sandbox_warm_pool_claim, record_session_execution_finished,
@@ -44,7 +45,8 @@ const STEERING_STARTUP_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const STEERING_STARTUP_RETRY_TIMEOUT: Duration = Duration::from_secs(15);
 const COMPONENT_SESSION_RUNTIME: &str = "session_runtime";
 
-type SandboxSpecFactory = Arc<dyn Fn(&ThreadKey, &str) -> SandboxSpec + Send + Sync>;
+type SandboxSpecFactory =
+    Arc<dyn Fn(&ThreadKey, &str, &HarnessType, Option<&str>) -> SandboxSpec + Send + Sync>;
 type SessionInputSink = FramedWrite<SandboxWrite, LinesCodec>;
 type ExecutionSpanRegistry = Arc<Mutex<HashMap<String, Span>>>;
 
@@ -391,6 +393,71 @@ impl SessionRuntime {
         Ok(report)
     }
 
+    pub async fn create_feedback(
+        &self,
+        input: CreateFeedbackInput,
+    ) -> Result<UserFeedback, SessionRuntimeError> {
+        Ok(self.store.create_feedback(input).await?)
+    }
+
+    pub async fn get_session(
+        &self,
+        thread_key: &ThreadKey,
+    ) -> Result<Session, SessionRuntimeError> {
+        Ok(self.store.get_session(thread_key).await?)
+    }
+
+    pub async fn list_messages(
+        &self,
+        thread_key: &ThreadKey,
+    ) -> Result<Vec<SessionMessage>, SessionRuntimeError> {
+        Ok(self.store.list_messages(thread_key).await?)
+    }
+
+    pub async fn list_events_after(
+        &self,
+        thread_key: &ThreadKey,
+        after_event_id: i64,
+        limit: i64,
+    ) -> Result<Vec<SessionEvent>, SessionRuntimeError> {
+        self.store.get_session(thread_key).await?;
+        Ok(self
+            .store
+            .list_events_after(thread_key, after_event_id, None, limit)
+            .await?)
+    }
+
+    pub async fn append_thread_title_update(
+        &self,
+        thread_key: &ThreadKey,
+        title: &str,
+        metadata: Option<Value>,
+    ) -> Result<SessionEvent, SessionRuntimeError> {
+        self.store.get_session(thread_key).await?;
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(SessionRuntimeError::BadRequest(
+                "title must not be empty".to_owned(),
+            ));
+        }
+        Ok(self
+            .store
+            .append_event(
+                thread_key,
+                None,
+                SESSION_OUTPUT_LINE_EVENT,
+                Value::String(
+                    json!({
+                        "type": "thread/name/updated",
+                        "name": title,
+                        "metadata": default_metadata(metadata),
+                    })
+                    .to_string(),
+                ),
+            )
+            .await?)
+    }
+
     pub async fn execute_session(
         &self,
         thread_key: &ThreadKey,
@@ -505,6 +572,7 @@ impl SessionRuntime {
                         "input_line_count": input_line_count,
                         "idle_timeout_ms": idle_timeout_ms,
                         "max_duration_ms": max_duration_ms,
+                        "metadata": execution.metadata.clone(),
                     }),
                 )
                 .await?;
@@ -515,6 +583,8 @@ impl SessionRuntime {
                     session.sandbox_id.as_deref(),
                     session.iron_control_principal.as_deref(),
                     &execution.execution_id,
+                    &session.harness_type,
+                    session.persona_id.as_deref(),
                 )
                 .await
             {
@@ -820,6 +890,8 @@ impl SessionRuntime {
         existing_sandbox_id: Option<&str>,
         iron_control_principal: Option<&str>,
         execution_id: &str,
+        harness_type: &HarnessType,
+        persona_id: Option<&str>,
     ) -> Result<String, SessionRuntimeError> {
         let span = info_span!(
             "centaur.api_rs.sandbox.ensure",
@@ -975,7 +1047,12 @@ impl SessionRuntime {
                 }
             }
 
-            let mut spec = (self.sandbox_runtime.spec_factory)(thread_key, execution_id);
+            let mut spec = (self.sandbox_runtime.spec_factory)(
+                thread_key,
+                execution_id,
+                harness_type,
+                persona_id,
+            );
             if let Some(principal) = iron_control_principal {
                 spec.iron_control_principal = Some(principal.to_owned());
             }
@@ -1390,7 +1467,10 @@ impl SandboxRuntime {
 
     pub fn backend(backend: Arc<dyn SandboxBackend>, spec: SandboxSpec) -> Self {
         let warm_spec = spec.clone();
-        let spec_factory = move |_thread_key: &ThreadKey, _execution_id: &str| spec.clone();
+        let spec_factory = move |_thread_key: &ThreadKey,
+                                 _execution_id: &str,
+                                 _harness_type: &HarnessType,
+                                 _persona_id: Option<&str>| { spec.clone() };
         let warm_spec_factory = move || warm_spec.clone();
         Self::backend_with_warm_spec_factory(backend, spec_factory, warm_spec_factory)
     }
@@ -1402,14 +1482,16 @@ impl SandboxRuntime {
         let warm_workload = workload.clone();
         Self::backend_with_warm_spec_factory(
             backend,
-            move |thread_key, _execution_id| workload.spec(thread_key),
+            move |thread_key, _execution_id, harness_type, persona_id| {
+                workload.spec(thread_key, harness_type, persona_id)
+            },
             move || warm_workload.warm_spec(),
         )
     }
 
     pub fn backend_with_spec_factory<F>(backend: Arc<dyn SandboxBackend>, spec_factory: F) -> Self
     where
-        F: Fn(&ThreadKey, &str) -> SandboxSpec + Send + Sync + 'static,
+        F: Fn(&ThreadKey, &str, &HarnessType, Option<&str>) -> SandboxSpec + Send + Sync + 'static,
     {
         Self {
             manager: Arc::new(SandboxManager::new(backend)),
@@ -1425,7 +1507,7 @@ impl SandboxRuntime {
         warm_spec_factory: W,
     ) -> Self
     where
-        F: Fn(&ThreadKey, &str) -> SandboxSpec + Send + Sync + 'static,
+        F: Fn(&ThreadKey, &str, &HarnessType, Option<&str>) -> SandboxSpec + Send + Sync + 'static,
         W: Fn() -> SandboxSpec + Send + Sync + 'static,
     {
         let warm_spec_factory: WarmSandboxSpecFactory = Arc::new(warm_spec_factory);
@@ -1467,23 +1549,41 @@ impl SandboxWorkloadMode {
         self
     }
 
-    fn spec(&self, thread_key: &ThreadKey) -> SandboxSpec {
-        self.spec_with_thread_key(Some(thread_key))
+    fn spec(
+        &self,
+        thread_key: &ThreadKey,
+        harness_type: &HarnessType,
+        persona_id: Option<&str>,
+    ) -> SandboxSpec {
+        self.spec_with_thread_key(Some(thread_key), Some(harness_type), persona_id)
     }
 
     fn warm_spec(&self) -> SandboxSpec {
-        self.spec_with_thread_key(None)
+        self.spec_with_thread_key(None, None, None)
     }
 
-    fn spec_with_thread_key(&self, thread_key: Option<&ThreadKey>) -> SandboxSpec {
+    fn spec_with_thread_key(
+        &self,
+        thread_key: Option<&ThreadKey>,
+        harness_type: Option<&HarnessType>,
+        persona_id: Option<&str>,
+    ) -> SandboxSpec {
         let spec = match self {
             Self::MockAppServer { image, .. } => SandboxSpec::new(image)
                 .command(["/bin/sh", "-lc"])
                 .args([mock_app_server_script()]),
             Self::CodexAppServer { image, env, .. } => {
                 let mut spec = SandboxSpec::new(image);
+                if let Some(harness_type) = harness_type {
+                    spec = spec
+                        .args([harness_wrapper(harness_type)])
+                        .env("CENTAUR_HARNESS_TYPE", harness_type.as_ref());
+                }
                 if let Some(thread_key) = thread_key {
                     spec = spec.env("CENTAUR_THREAD_KEY", thread_key.as_str());
+                }
+                if let Some(persona_id) = persona_id {
+                    spec = spec.env("AGENT_PERSONA", persona_id);
                 }
                 for (name, value) in env {
                     spec = spec.env(name.clone(), value.clone());
@@ -1499,6 +1599,14 @@ impl SandboxWorkloadMode {
             spec = spec.mount(mount.clone());
         }
         spec
+    }
+}
+
+fn harness_wrapper(harness_type: &HarnessType) -> &'static str {
+    match harness_type {
+        HarnessType::Codex => "codex-app-wrapper",
+        HarnessType::Amp => "amp-wrapper",
+        HarnessType::ClaudeCode => "claude-app-wrapper",
     }
 }
 
@@ -4048,7 +4156,7 @@ mod tests {
         );
         let thread_key = ThreadKey::parse("chat:C123:1780000000.000000").unwrap();
 
-        let spec = workload.spec(&thread_key);
+        let spec = workload.spec(&thread_key, &HarnessType::Codex, None);
 
         assert_eq!(spec.mounts.len(), 1);
         assert_eq!(spec.mounts[0].target_path, "/home/agent/github");
@@ -4066,7 +4174,7 @@ mod tests {
         let workload = SandboxWorkloadMode::codex_app_server("centaur-agent:latest", Vec::new());
         let thread_key = ThreadKey::parse("chat:C123:1780000000.000000").unwrap();
 
-        let spec = workload.spec(&thread_key);
+        let spec = workload.spec(&thread_key, &HarnessType::Codex, None);
 
         assert_eq!(
             spec.env
@@ -4092,7 +4200,7 @@ mod tests {
         );
         let thread_key = ThreadKey::parse("chat:C123:1780000000.000000").unwrap();
 
-        let claimed_spec = workload.spec(&thread_key);
+        let claimed_spec = workload.spec(&thread_key, &HarnessType::Codex, None);
         let warm_spec = workload.warm_spec();
 
         assert_eq!(
@@ -4100,6 +4208,38 @@ mod tests {
             Some(thread_key.as_str())
         );
         assert_eq!(env_value(&warm_spec, "CENTAUR_THREAD_KEY"), None);
+    }
+
+    #[test]
+    fn codex_app_workload_selects_wrapper_from_session_harness() {
+        let workload = SandboxWorkloadMode::codex_app_server(
+            "centaur-agent:latest",
+            [("CENTAUR_API_URL".to_owned(), "http://api:8000".to_owned())],
+        );
+        let thread_key = ThreadKey::parse("web:test-thread").unwrap();
+
+        for (harness_type, expected_wrapper, expected_wire_value) in [
+            (HarnessType::Codex, "codex-app-wrapper", "codex"),
+            (HarnessType::ClaudeCode, "claude-app-wrapper", "claudecode"),
+            (HarnessType::Amp, "amp-wrapper", "amp"),
+        ] {
+            let spec = workload.spec(&thread_key, &harness_type, Some("eng"));
+
+            assert_eq!(spec.args, vec![expected_wrapper]);
+            assert!(
+                spec.env
+                    .iter()
+                    .any(|env| env.name == "CENTAUR_THREAD_KEY" && env.value == "web:test-thread")
+            );
+            assert!(spec.env.iter().any(|env| {
+                env.name == "CENTAUR_HARNESS_TYPE" && env.value == expected_wire_value
+            }));
+            assert!(
+                spec.env
+                    .iter()
+                    .any(|env| env.name == "AGENT_PERSONA" && env.value == "eng")
+            );
+        }
     }
 
     #[test]
@@ -4112,8 +4252,8 @@ mod tests {
         let second_thread_key = ThreadKey::parse("chat:C456:1780000000.000001").unwrap();
 
         assert_ne!(
-            sandbox_spec_key(&workload.spec(&first_thread_key)),
-            sandbox_spec_key(&workload.spec(&second_thread_key))
+            sandbox_spec_key(&workload.spec(&first_thread_key, &HarnessType::Codex, None)),
+            sandbox_spec_key(&workload.spec(&second_thread_key, &HarnessType::Codex, None))
         );
         assert_eq!(
             sandbox_spec_key(&workload.warm_spec()),
