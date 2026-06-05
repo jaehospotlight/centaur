@@ -1,5 +1,6 @@
 pub mod client;
 mod error;
+mod persona_discovery;
 mod routes;
 pub mod types;
 

@@ -3,6 +3,7 @@ use centaur_session_core::{HarnessType, SessionEvent, SessionMessageInput, Threa
 use centaur_session_runtime::SESSION_OUTPUT_LINE_EVENT;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -39,6 +40,16 @@ pub struct ExecuteSessionResponse {
     pub thread_key: ThreadKey,
     pub status: String,
 }
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PersonaRecord {
+    pub description: String,
+    pub engine: String,
+    pub default_repo: Option<String>,
+    pub has_custom_executor: bool,
+}
+
+pub type ListPersonasResponse = BTreeMap<String, PersonaRecord>;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct EventsQuery {

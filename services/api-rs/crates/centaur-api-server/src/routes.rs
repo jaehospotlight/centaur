@@ -17,9 +17,11 @@ use serde_json::{Value, json};
 
 use crate::{
     ApiError,
+    persona_discovery::discover_personas,
     types::{
         AppendMessagesRequest, AppendMessagesResponse, CreateSessionRequest, EventsQuery,
-        ExecuteSessionRequest, ExecuteSessionResponse, SessionSseEvent, stream_error_sse,
+        ExecuteSessionRequest, ExecuteSessionResponse, ListPersonasResponse, SessionSseEvent,
+        stream_error_sse,
     },
 };
 
@@ -35,6 +37,7 @@ pub fn build_router_with_runtime(store: PgSessionStore, sandbox_runtime: Sandbox
 pub fn build_router_with_session_runtime(runtime: SessionRuntime) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/personas", get(list_personas))
         .route("/api/session/{thread_key}", post(create_or_get_session))
         .route("/api/session/{thread_key}/messages", post(append_messages))
         .route("/api/session/{thread_key}/execute", post(execute_session))
@@ -45,6 +48,10 @@ pub fn build_router_with_session_runtime(runtime: SessionRuntime) -> Router {
 
 async fn healthz() -> Json<Value> {
     Json(json!({"ok": true}))
+}
+
+async fn list_personas() -> Json<ListPersonasResponse> {
+    Json(discover_personas())
 }
 
 async fn create_or_get_session(
