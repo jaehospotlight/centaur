@@ -103,7 +103,7 @@ These are broadly useful across most deployments and are good candidates to conf
 | `newsapi` | News headlines, article search, and source lists | `NEWSAPI_KEY` |
 | `openfec` | Federal election candidates, committees, contributions, filings, and totals | `DATAGOV_API_KEY` |
 | `plural` | State legislation, legislators, committees, events, and jurisdictions | `PLURAL_API_KEY` |
-| `sensortower` | Mobile app analytics, publisher data, charts, and sales estimates | `SENSOR_TOWER_AUTH_TOKEN` |
+| `sensortower` | Mobile app analytics, publisher data, charts, and sales estimates | `SENSOR_TOWER_AUTH_TOKEN or SENSORTOWER_API_KEY` |
 | `similarweb` | Web traffic, rankings, referrals, keywords, geography, and app data | `SIMILARWEB_API_KEY` |
 | `websearch` | Web search and deep research | `EXA_API_KEY`, `ANTHROPIC_API_KEY` |
 | `youtube` | YouTube video, channel, transcript, and search data | `YOUTUBE_API_KEY`, `GOOGLE_API_KEY` |

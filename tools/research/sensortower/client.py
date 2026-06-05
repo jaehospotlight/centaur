@@ -7,6 +7,18 @@ import httpx
 from centaur_sdk import secret
 
 
+AUTH_TOKEN_SECRET_NAMES = (
+    "SENSOR_TOWER_AUTH_TOKEN",
+    "SENSORTOWER_AUTH_TOKEN",
+    "SENSOR_TOWER_API_KEY",
+    "SENSORTOWER_API_KEY",
+)
+
+
+def _clean_secret(value: str | None) -> str:
+    return (value or "").strip()
+
+
 class SensorTowerClient:
     """Client for SensorTower API.
 
@@ -29,11 +41,18 @@ class SensorTowerClient:
     def _get_auth_token(self) -> str:
         """Get auth token from instance or env var."""
         if self._auth_token:
-            return self._auth_token
-        token = secret("SENSOR_TOWER_AUTH_TOKEN", "") or secret("SENSORTOWER_AUTH_TOKEN", "")
+            return _clean_secret(self._auth_token)
+
+        token = ""
+        for name in AUTH_TOKEN_SECRET_NAMES:
+            token = _clean_secret(secret(name, ""))
+            if token:
+                break
+
         if not token:
             raise RuntimeError(
-                "SENSOR_TOWER_AUTH_TOKEN not set. "
+                "SensorTower auth token not set. Expected one of: "
+                f"{', '.join(AUTH_TOKEN_SECRET_NAMES)}. "
                 "Get your token from https://sensortower.com/users/edit"
             )
         return token
