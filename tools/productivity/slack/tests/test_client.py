@@ -1,8 +1,10 @@
 import base64
 import email.message
 import json
+from io import BytesIO
 
 import pytest
+from PIL import Image
 from slack.client import SlackAuthError, SlackClient, SlackRateLimitError
 from slack_sdk.errors import SlackApiError
 
@@ -136,6 +138,19 @@ def _make_slack_error(
         message=message,
         response=_FakeSlackResponse(error=error, status_code=status_code),
     )
+
+
+def _image_base64(
+    *,
+    size: tuple[int, int],
+    mode: str = "RGB",
+    color: tuple[int, ...] = (0, 114, 178),
+    image_format: str = "PNG",
+) -> str:
+    image = Image.new(mode, size, color)
+    output = BytesIO()
+    image.save(output, format=image_format)
+    return base64.b64encode(output.getvalue()).decode("ascii")
 
 
 def test_send_message_forwards_unfurl_flags() -> None:
@@ -561,6 +576,50 @@ def test_upload_file_accepts_channel_id_alias_and_returns_preview() -> None:
         "csv_rows_sampled": 1,
         "csv_columns": 2,
     }
+
+
+def test_upload_file_downscales_oversized_png_before_slack_upload() -> None:
+    client, fake_web_client = _make_client()
+
+    result = client.upload_file(
+        None,
+        channel_id="paradigm-pulse",
+        content_base64=_image_base64(size=(5000, 2500), image_format="PNG"),
+        filename="chart.png",
+    )
+
+    assert fake_web_client.last_kwargs is not None
+    uploaded = Image.open(BytesIO(fake_web_client.last_kwargs["file"]))
+    assert fake_web_client.last_kwargs["filename"] == "chart.png"
+    assert max(uploaded.size) == client._MAX_IMAGE_EDGE_PX
+    assert result["preview"]["normalized"] is True
+    assert result["preview"]["original_width"] == 5000
+    assert result["preview"]["original_height"] == 2500
+    assert result["preview"]["width"] == 4096
+    assert result["preview"]["height"] == 2048
+
+
+def test_upload_file_converts_alpha_jpeg_filename_to_png() -> None:
+    client, fake_web_client = _make_client()
+
+    result = client.upload_file(
+        None,
+        channel_id="paradigm-pulse",
+        content_base64=_image_base64(
+            size=(100, 50),
+            mode="RGBA",
+            color=(0, 114, 178, 128),
+            image_format="PNG",
+        ),
+        filename="chart.jpg",
+    )
+
+    assert fake_web_client.last_kwargs is not None
+    assert fake_web_client.last_kwargs["filename"] == "chart.png"
+    uploaded = Image.open(BytesIO(fake_web_client.last_kwargs["file"]))
+    assert uploaded.format == "PNG"
+    assert result["preview"]["normalized"] is True
+    assert result["preview"]["mime_type"] == "image/png"
 
 
 def test_upload_file_infers_slack_thread_from_tool_context() -> None:

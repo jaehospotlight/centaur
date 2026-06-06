@@ -6,15 +6,18 @@ import mimetypes
 import os
 import re
 import time
-import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import quote, urljoin, urlparse
+import urllib.request
 
 import structlog
+from PIL import Image, UnidentifiedImageError
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -25,6 +28,17 @@ from centaur_sdk.tool_sdk import get_tool_context, save_attachment, secret
 logger = structlog.get_logger()
 
 # Cache for channel list to avoid repeated API calls
+
+
+@dataclass(frozen=True)
+class NormalizedUpload:
+    data: bytes
+    filename: str
+    normalized: bool = False
+    original_size_bytes: int | None = None
+    original_mime_type: str | None = None
+    original_dimensions: tuple[int, int] | None = None
+    dimensions: tuple[int, int] | None = None
 
 
 class SlackAuthError(RuntimeError):
@@ -88,6 +102,8 @@ class SlackClient:
     _DEFAULT_DUMP_MESSAGE_LIMIT = 100
     _DEFAULT_DUMP_THREAD_LIMIT = 25
     _DEFAULT_API_TIMEOUT_SECONDS = 8
+    _MAX_IMAGE_EDGE_PX = 4096
+    _MAX_UPLOAD_IMAGE_BYTES = 10 * 1024 * 1024
     _MAX_RATE_LIMIT_SLEEP_SECONDS = 0.0
     _DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
     _NUMERIC_TS_RE = re.compile(r"^\d+(?:\.\d+)?$")
@@ -1468,6 +1484,137 @@ class SlackClient:
         return preview
 
     @staticmethod
+    def _image_format_for_filename(filename: str) -> str | None:
+        """Return the Pillow image format implied by a Slack upload filename."""
+        suffix = Path(filename).suffix.lower()
+        if suffix == ".png":
+            return "PNG"
+        if suffix in {".jpg", ".jpeg"}:
+            return "JPEG"
+        if suffix == ".webp":
+            return "WEBP"
+        if suffix == ".gif":
+            return "GIF"
+        return None
+
+    @staticmethod
+    def _filename_with_suffix(filename: str, suffix: str) -> str:
+        """Return filename with a normalized image suffix."""
+        path = Path(filename)
+        stem = path.stem or "upload"
+        return f"{stem}{suffix}"
+
+    @staticmethod
+    def _encode_image(image: Image.Image, image_format: str, *, quality: int) -> bytes:
+        """Encode a Pillow image for Slack upload."""
+        output = BytesIO()
+        save_kwargs: dict[str, Any] = {"format": image_format, "optimize": True}
+        if image_format == "JPEG":
+            save_kwargs["quality"] = quality
+            save_kwargs["progressive"] = True
+        elif image_format == "PNG":
+            save_kwargs["compress_level"] = 9
+        elif image_format == "WEBP":
+            save_kwargs["quality"] = quality
+            save_kwargs["method"] = 6
+        image.save(output, **save_kwargs)
+        return output.getvalue()
+
+    def _normalize_image_upload(self, data: bytes, filename: str) -> NormalizedUpload:
+        """Normalize image bytes to a Slack-safe format and size.
+
+        Slack accepts common image formats, but very large generated PNGs can
+        fail late or bloat tool payloads. Decode supported images, cap the
+        longest edge, convert unsupported animated/multi-frame uploads to a
+        still image, and recompress until the payload is below the upload
+        target.
+        """
+        image_format = self._image_format_for_filename(filename)
+        if image_format is None:
+            return NormalizedUpload(data=data, filename=filename)
+
+        original_filename = filename
+        try:
+            image = Image.open(BytesIO(data))
+            image.load()
+        except (UnidentifiedImageError, OSError, ValueError):
+            return NormalizedUpload(data=data, filename=filename)
+
+        original_mime_type, _ = mimetypes.guess_type(filename)
+        original_dimensions = image.size
+        normalized = False
+        target_format = image_format
+
+        if getattr(image, "is_animated", False):
+            image.seek(0)
+            image = image.copy()
+            target_format = "PNG"
+            filename = self._filename_with_suffix(filename, ".png")
+            normalized = True
+
+        if max(image.size) > self._MAX_IMAGE_EDGE_PX:
+            image.thumbnail(
+                (self._MAX_IMAGE_EDGE_PX, self._MAX_IMAGE_EDGE_PX),
+                Image.Resampling.LANCZOS,
+            )
+            normalized = True
+
+        has_alpha = image.mode in {"RGBA", "LA"} or (
+            image.mode == "P" and "transparency" in image.info
+        )
+        if target_format == "JPEG" and has_alpha:
+            target_format = "PNG"
+            filename = self._filename_with_suffix(filename, ".png")
+            normalized = True
+
+        if target_format == "JPEG":
+            if image.mode not in {"RGB", "L"}:
+                image = image.convert("RGB")
+                normalized = True
+        elif target_format == "PNG":
+            if image.mode not in {"RGB", "RGBA", "L", "LA", "P"}:
+                image = image.convert("RGBA" if has_alpha else "RGB")
+                normalized = True
+        elif target_format == "WEBP" and image.mode not in {"RGB", "RGBA"}:
+            image = image.convert("RGBA" if has_alpha else "RGB")
+            normalized = True
+
+        encoded = data
+        if normalized or len(data) > self._MAX_UPLOAD_IMAGE_BYTES:
+            qualities = (90, 80, 70, 60, 50)
+            if target_format in {"JPEG", "WEBP"}:
+                for quality in qualities:
+                    encoded = self._encode_image(image, target_format, quality=quality)
+                    if len(encoded) <= self._MAX_UPLOAD_IMAGE_BYTES:
+                        break
+            else:
+                encoded = self._encode_image(image, target_format, quality=90)
+
+        if len(encoded) > self._MAX_UPLOAD_IMAGE_BYTES and target_format == "PNG" and not has_alpha:
+            target_format = "JPEG"
+            filename = self._filename_with_suffix(filename, ".jpg")
+            rgb = image.convert("RGB")
+            for quality in (90, 80, 70, 60, 50):
+                encoded = self._encode_image(rgb, target_format, quality=quality)
+                if len(encoded) <= self._MAX_UPLOAD_IMAGE_BYTES:
+                    break
+
+        if len(encoded) > self._MAX_UPLOAD_IMAGE_BYTES:
+            raise ValueError(
+                f"Normalized image still exceeds the {self._MAX_UPLOAD_IMAGE_BYTES}-byte Slack upload limit"
+            )
+
+        return NormalizedUpload(
+            data=encoded,
+            filename=filename,
+            normalized=normalized or encoded != data or filename != original_filename,
+            original_size_bytes=len(data),
+            original_mime_type=original_mime_type,
+            original_dimensions=original_dimensions,
+            dimensions=image.size,
+        )
+
+    @staticmethod
     def _require_thread_key() -> str:
         """Return the thread_key the tool is running in, or raise.
 
@@ -1614,6 +1761,13 @@ class SlackClient:
                 raise ValueError(
                     "One of content_base64, attachment_id, or attachment_url is required"
                 )
+
+            normalized_upload = self._normalize_image_upload(
+                upload_bytes, effective_filename or "upload.bin"
+            )
+            upload_bytes = normalized_upload.data
+            effective_filename = normalized_upload.filename
+
             # Pass bytes via `file=` (binary upload) rather than `content=`,
             # which slack_sdk treats as snippet text.
             kwargs["file"] = upload_bytes
@@ -1625,6 +1779,16 @@ class SlackClient:
             preview = self._preview_for_bytes(
                 upload_bytes or b"", effective_filename or "upload.bin"
             )
+            if normalized_upload.normalized:
+                preview["normalized"] = True
+                preview["original_size_bytes"] = normalized_upload.original_size_bytes
+                preview["original_mime_type"] = normalized_upload.original_mime_type
+                if normalized_upload.original_dimensions:
+                    preview["original_width"] = normalized_upload.original_dimensions[0]
+                    preview["original_height"] = normalized_upload.original_dimensions[1]
+                if normalized_upload.dimensions:
+                    preview["width"] = normalized_upload.dimensions[0]
+                    preview["height"] = normalized_upload.dimensions[1]
             if comment:
                 kwargs["initial_comment"] = comment
             elif effective_filename:
