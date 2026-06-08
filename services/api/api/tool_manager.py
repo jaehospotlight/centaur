@@ -1256,8 +1256,15 @@ async def _capture_live_slack_send(
     active_thread_ts = parts[3]
     requested_channel = str(args.get("channel") or args.get("channel_id") or "").lstrip("#")
     requested_thread_ts = str(args.get("thread_ts") or "")
-    channel_is_id = bool(re.match(r"^[CDG][A-Z0-9]+$", requested_channel))
-    if channel_is_id and requested_channel != active_channel:
+
+    # Only capture sends that are unambiguously bound for the active live thread.
+    # Capture is opt-in: a request qualifies only when it does not name a
+    # different destination. An empty channel/thread inherits the active thread,
+    # while an explicit channel ID must equal the active channel. A channel name
+    # (anything that is not the active channel ID) is treated as a different
+    # destination and posts normally — we cannot resolve names here, and the
+    # active channel is always a Slack ID, so a name can never match it.
+    if requested_channel and requested_channel != active_channel:
         return None
     if requested_thread_ts and requested_thread_ts != active_thread_ts:
         return None

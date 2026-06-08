@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api.tool_manager import (  # noqa: E402
     _LIFECYCLE_METHODS,
+    _capture_live_slack_send,
     _describe_method_docstring,
     _friendly_type_name,
     _normalize_for_serialization,
@@ -750,3 +751,88 @@ class TestHarnessSecretSelection:
         assert "anthropic-claude" in names
         assert "openai-codex" in names
         assert "OPENAI_CODEX_ACCOUNT_ID" in names
+
+
+class TestCaptureLiveSlackSend:
+    """Live-delivery capture must only swallow sends bound for the active thread.
+
+    A Slackbot live session streams the agent's reply into the active thread.
+    `_capture_live_slack_send` intercepts `slack.send_message` so a send to the
+    active thread folds into that stream instead of posting a duplicate. But a
+    send to a *different* channel must post normally — the previous guards only
+    bailed when the channel was a Slack *ID* that differed, so a different
+    channel referenced by name (or with thread_ts omitted) was wrongly captured.
+    """
+
+    TEAM = "T123"
+    ACTIVE_CHANNEL = "C0AJ07U8Z1N"
+    ACTIVE_THREAD = "1778883099.579529"
+    THREAD_KEY = f"slack:{TEAM}:{ACTIVE_CHANNEL}:{ACTIVE_THREAD}"
+
+    def _request(self, *, session_id="sess-1"):
+        from types import SimpleNamespace
+
+        async def fetchval(*_args, **_kwargs):
+            return session_id
+
+        pool = SimpleNamespace(fetchval=fetchval)
+        return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db_pool=pool)))
+
+    async def _call(self, monkeypatch, args, *, session_id="sess-1"):
+        from api import slackbot_client
+
+        sent = []
+
+        async def fake_session_text(sid, text):
+            sent.append((sid, text))
+
+        monkeypatch.setattr(slackbot_client, "session_text", fake_session_text)
+        result = await _capture_live_slack_send(
+            request=self._request(session_id=session_id),
+            sandbox_claims={"thread_key": self.THREAD_KEY},
+            tool_name="slack",
+            method_name="send_message",
+            args=args,
+        )
+        return result, sent
+
+    @pytest.mark.asyncio
+    async def test_active_channel_id_is_captured(self, monkeypatch):
+        result, sent = await self._call(
+            monkeypatch, {"channel": self.ACTIVE_CHANNEL, "text": "hi"}
+        )
+        assert result is not None and result["captured"] is True
+        assert sent == [("sess-1", "hi")]
+
+    @pytest.mark.asyncio
+    async def test_omitted_channel_inherits_active_thread(self, monkeypatch):
+        result, sent = await self._call(monkeypatch, {"text": "hi"})
+        assert result is not None and result["captured"] is True
+        assert sent == [("sess-1", "hi")]
+
+    @pytest.mark.asyncio
+    async def test_different_channel_id_posts_normally(self, monkeypatch):
+        result, sent = await self._call(
+            monkeypatch, {"channel": "C9999999999", "text": "hello"}
+        )
+        assert result is None
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_different_channel_name_posts_normally(self, monkeypatch):
+        # The regression: a name-referenced different channel must not be
+        # captured just because it does not match the Slack-ID pattern.
+        result, sent = await self._call(
+            monkeypatch, {"channel": "#some-other-channel", "text": "hello"}
+        )
+        assert result is None
+        assert sent == []
+
+    @pytest.mark.asyncio
+    async def test_different_thread_ts_posts_normally(self, monkeypatch):
+        result, sent = await self._call(
+            monkeypatch,
+            {"channel": self.ACTIVE_CHANNEL, "thread_ts": "1.0", "text": "hi"},
+        )
+        assert result is None
+        assert sent == []
