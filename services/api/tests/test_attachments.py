@@ -763,6 +763,16 @@ async def test_download_attachment_allows_cross_thread_reads_by_default(monkeypa
     assert resp.status_code == 200
     assert resp.body == SAMPLE_PNG
 
+    # Sandbox token scoped to another thread with a helper-appended current
+    # thread_key still serves the bytes when cross-thread reads are enabled.
+    resp = await download_attachment(
+        _request({"thread_key": "test:other-thread"}),
+        "att-x",
+        thread_key="test:other-thread",
+    )
+    assert resp.status_code == 200
+    assert resp.body == SAMPLE_PNG
+
     # Sandbox token scoped to the owning thread → serves the bytes
     resp = await download_attachment(
         _request({"thread_key": "test:owner-thread"}), "att-x"
@@ -775,7 +785,7 @@ async def test_download_attachment_allows_cross_thread_reads_by_default(monkeypa
     assert resp.status_code == 200
 
     # Explicit thread_key must match the attachment's thread, regardless of
-    # token type (used by privileged callers acting for an agent).
+    # non-sandbox token type (used by privileged callers acting for an agent).
     with pytest.raises(HTTPException) as excinfo:
         await download_attachment(
             _request(None), "att-x", thread_key="test:other-thread"
@@ -820,6 +830,16 @@ async def test_download_attachment_enforces_thread_scope_when_reads_locked(monke
     with pytest.raises(HTTPException) as excinfo:
         await download_attachment(
             _request({"thread_key": "test:other-thread"}), "att-x"
+        )
+    assert excinfo.value.status_code == 403
+
+    # The explicit thread_key bypass stays locked down when cross-thread reads
+    # are disabled.
+    with pytest.raises(HTTPException) as excinfo:
+        await download_attachment(
+            _request({"thread_key": "test:other-thread"}),
+            "att-x",
+            thread_key="test:other-thread",
         )
     assert excinfo.value.status_code == 403
 

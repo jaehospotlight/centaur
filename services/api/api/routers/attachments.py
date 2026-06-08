@@ -9,7 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
 from api.attachments.storage import insert_thread_attachment
-from api.deps import enforce_sandbox_thread_scope, verify_api_key
+from api.deps import (
+    enforce_sandbox_thread_scope,
+    get_sandbox_claims,
+    sandbox_cross_thread_reads_allowed,
+    verify_api_key,
+)
 
 log = structlog.get_logger()
 
@@ -132,12 +137,17 @@ async def download_attachment(
     # cross-thread reads are enabled (the default) — a thread link is the
     # capability to view its attachments.
     enforce_sandbox_thread_scope(request, row["thread_key"], write=False)
-    # An explicit thread_key constrains the read to that thread, for callers
-    # whose key is not a sandbox token (so the check above does not apply).
+    # An explicit thread_key constrains the read to that thread for privileged
+    # service callers. Sandbox tokens already passed the read policy above; if
+    # cross-thread reads are enabled, do not let a helper-appended current
+    # thread_key re-tighten a legitimate linked-thread attachment download.
     if thread_key is not None and row["thread_key"] != thread_key:
-        raise HTTPException(
-            status_code=403, detail="Attachment does not belong to the requested thread"
-        )
+        claims = get_sandbox_claims(request)
+        if claims is None or not sandbox_cross_thread_reads_allowed():
+            raise HTTPException(
+                status_code=403,
+                detail="Attachment does not belong to the requested thread",
+            )
     return Response(
         content=row["data"],
         media_type=row["mime_type"],
