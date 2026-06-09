@@ -34,7 +34,7 @@ use tracing::warn;
 const SESSION_OUTPUT_LINE_EVENT: &str = "session.output.line";
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 1_000;
 const DEFAULT_MAX_DURATION_MS: u64 = 60_000;
-type SandboxSpecFactory = Arc<dyn Fn(&ThreadKey, &str) -> SandboxSpec + Send + Sync>;
+type SandboxSpecFactory = Arc<dyn Fn(&ThreadKey, &HarnessType, &str) -> SandboxSpec + Send + Sync>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -73,13 +73,15 @@ pub enum SandboxRuntime {
 
 impl SandboxRuntime {
     pub fn backend(backend: Arc<dyn SandboxBackend>, spec: SandboxSpec) -> Self {
-        let spec_factory = move |_thread_key: &ThreadKey, _execution_id: &str| spec.clone();
+        let spec_factory = move |_thread_key: &ThreadKey,
+                                 _harness_type: &HarnessType,
+                                 _execution_id: &str| { spec.clone() };
         Self::backend_with_spec_factory(backend, spec_factory)
     }
 
     pub fn backend_with_spec_factory<F>(backend: Arc<dyn SandboxBackend>, spec_factory: F) -> Self
     where
-        F: Fn(&ThreadKey, &str) -> SandboxSpec + Send + Sync + 'static,
+        F: Fn(&ThreadKey, &HarnessType, &str) -> SandboxSpec + Send + Sync + 'static,
     {
         Self::Backend {
             backend,
@@ -149,6 +151,7 @@ async fn execute_session(
         &state.store,
         &state.sandbox_runtime,
         &thread_key,
+        &session.harness_type,
         session.sandbox_id.as_deref(),
         &execution.execution_id,
     )
@@ -248,6 +251,7 @@ async fn ensure_session_sandbox(
     store: &PgSessionStore,
     runtime: &SandboxRuntime,
     thread_key: &ThreadKey,
+    harness_type: &HarnessType,
     existing_sandbox_id: Option<&str>,
     execution_id: &str,
 ) -> Result<String, ApiError> {
@@ -277,7 +281,7 @@ async fn ensure_session_sandbox(
                 }
             }
 
-            let spec = spec_factory(thread_key, execution_id);
+            let spec = spec_factory(thread_key, harness_type, execution_id);
             let handle = backend.create(spec).await.map_err(ApiError::Sandbox)?;
             store
                 .update_sandbox_id(thread_key, Some(handle.id.as_str()))

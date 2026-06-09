@@ -5,7 +5,18 @@
 .venv
 
 # Node
-services/slackbot/node_modules
+node_modules
+**/node_modules
+
+# Build outputs
+target
+**/target
+dist
+**/dist
+.next
+**/.next
+coverage
+**/coverage
 
 # Sandbox cached repos (4GB+)
 services/sandbox/repos
