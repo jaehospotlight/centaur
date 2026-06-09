@@ -14,8 +14,9 @@
 //!     ref to point at. Prefer feeding these from an env var rather than a
 //!     literal arg to keep raw secrets out of shell history.
 //!
-//! After upserting, `--grant-role <FOREIGN_ID|OID>` optionally grants the new
-//! secret to a role in the same call.
+//! After upserting, `--grant-role <FOREIGN_ID|OID>` and/or `--grant-principal
+//! <THREAD_KEY|FOREIGN_ID>` optionally grant the new secret to a role and/or a
+//! principal in the same call.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +30,10 @@ use centaur_iron_proxy::SourcePolicy;
 use clap::{Args, Subcommand};
 use eyre::{Result, bail};
 
-use crate::{Cli, build_source_policy, get_role_or_fail, grant_secrets, parse_kv};
+use crate::principal::resolve_principal;
+use crate::{
+    Cli, build_source_policy, ensure_principal, get_role_or_fail, grant_secrets, parse_kv,
+};
 
 #[derive(Subcommand, Debug)]
 pub enum SecretCreateCmd {
@@ -55,39 +59,30 @@ pub enum SecretCreateCmd {
 
 pub async fn run(cli: &Cli, client: &IronControlClient, cmd: &SecretCreateCmd) -> Result<()> {
     let policy = build_source_policy(cli)?;
-    let (record, grant_role) = match cmd {
+    let (record, grant) = match cmd {
         SecretCreateCmd::Static(args) => {
             let input = args.to_input(&cli.namespace, &policy)?;
-            (client.upsert_static_secret(&input).await?, &args.grant_role)
+            (client.upsert_static_secret(&input).await?, &args.grant)
         }
         SecretCreateCmd::Oauth(args) => {
             let input = args.to_input(&cli.namespace, &policy)?;
-            (
-                client.upsert_oauth_token_secret(&input).await?,
-                &args.grant_role,
-            )
+            (client.upsert_oauth_token_secret(&input).await?, &args.grant)
         }
         SecretCreateCmd::Gcp(args) => {
             let input = args.to_input(&cli.namespace, &policy)?;
-            (
-                client.upsert_gcp_auth_secret(&input).await?,
-                &args.grant_role,
-            )
+            (client.upsert_gcp_auth_secret(&input).await?, &args.grant)
         }
         SecretCreateCmd::PgDsn(args) => {
             let input = args.to_input(&cli.namespace, &policy)?;
-            (client.upsert_pg_dsn_secret(&input).await?, &args.grant_role)
+            (client.upsert_pg_dsn_secret(&input).await?, &args.grant)
         }
         SecretCreateCmd::Hmac(args) => {
             let input = args.to_input(&cli.namespace, &policy)?;
-            (client.upsert_hmac_secret(&input).await?, &args.grant_role)
+            (client.upsert_hmac_secret(&input).await?, &args.grant)
         }
         SecretCreateCmd::Aws(args) => {
             let input = args.to_input(&cli.namespace, &policy)?;
-            (
-                client.upsert_aws_auth_secret(&input).await?,
-                &args.grant_role,
-            )
+            (client.upsert_aws_auth_secret(&input).await?, &args.grant)
         }
     };
 
@@ -96,31 +91,65 @@ pub async fn run(cli: &Cli, client: &IronControlClient, cmd: &SecretCreateCmd) -
         record.foreign_id.as_deref().unwrap_or("-"),
         record.id,
     );
-    maybe_grant(cli, client, grant_role.as_deref(), &record).await
+    apply_grants(cli, client, grant, &record).await
 }
 
-/// Grant the freshly-created secret to `--grant-role` when set.
-async fn maybe_grant(
+/// After creating the secret, grant it directly to a role and/or a principal,
+/// per `--grant-role` / `--grant-principal`. Both, either, or neither may be
+/// set; a principal is created if it doesn't exist yet (as `principals grant`
+/// does), so an operator can grant to a not-yet-seen principal up front.
+async fn apply_grants(
     cli: &Cli,
     client: &IronControlClient,
-    grant_role: Option<&str>,
+    grant: &GrantArgs,
     record: &SecretRecord,
 ) -> Result<()> {
-    let Some(role_ref) = grant_role else {
-        return Ok(());
-    };
-    let role = get_role_or_fail(client, &cli.namespace, role_ref).await?;
-    println!(
-        "role: {} ({})",
-        role.foreign_id.as_deref().unwrap_or("-"),
-        role.id
-    );
-    grant_secrets(
-        client,
-        &Grantee::Role(role.id),
-        std::slice::from_ref(&record.id),
-    )
-    .await
+    if let Some(role_ref) = grant.grant_role.as_deref() {
+        let role = get_role_or_fail(client, &cli.namespace, role_ref).await?;
+        println!(
+            "role: {} ({})",
+            role.foreign_id.as_deref().unwrap_or("-"),
+            role.id
+        );
+        grant_secrets(
+            client,
+            &Grantee::Role(role.id),
+            std::slice::from_ref(&record.id),
+        )
+        .await?;
+    }
+    if let Some(principal_ref) = grant.grant_principal.as_deref() {
+        let identity =
+            resolve_principal(principal_ref, grant.slack_user.as_deref(), &cli.namespace);
+        let principal_id = ensure_principal(client, &identity).await?;
+        println!("principal: {} ({principal_id})", identity.foreign_id);
+        grant_secrets(
+            client,
+            &Grantee::Principal(principal_id),
+            std::slice::from_ref(&record.id),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Optional grant targets shared by every `secrets create <type>` subcommand.
+#[derive(Args, Debug)]
+pub struct GrantArgs {
+    /// After creating, grant the secret to this role (`foreign_id` or OID).
+    #[arg(long = "grant-role", value_name = "ROLE")]
+    grant_role: Option<String>,
+
+    /// After creating, grant the secret directly to this principal: a Slack
+    /// thread key (`slack:T…:C…[:ts]`, derived) or a principal `foreign_id`
+    /// (e.g. `slack-channel-t1-c9`). Created if it doesn't exist yet.
+    #[arg(long = "grant-principal", value_name = "PRINCIPAL")]
+    grant_principal: Option<String>,
+
+    /// Acting Slack user id, used only to key a DM principal from a
+    /// `--grant-principal` thread key.
+    #[arg(long = "slack-user", value_name = "ID")]
+    slack_user: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -239,8 +268,8 @@ pub struct StaticCreateArgs {
     #[arg(long)]
     inject_query_param: Option<String>,
 
-    /// Inject mode: Go template formatting the injected value (e.g.
-    /// `Bearer {{secret}}`).
+    /// Inject mode: Go template formatting the injected value, where `.Value`
+    /// is the resolved credential (e.g. `Bearer {{.Value}}`).
     #[arg(long)]
     inject_formatter: Option<String>,
 
@@ -253,9 +282,8 @@ pub struct StaticCreateArgs {
     #[arg(long = "host", value_name = "HOST")]
     hosts: Vec<String>,
 
-    /// After creating, grant the secret to this role (`foreign_id` or OID).
-    #[arg(long = "grant-role", value_name = "ROLE")]
-    grant_role: Option<String>,
+    #[command(flatten)]
+    grant: GrantArgs,
 }
 
 impl StaticCreateArgs {
@@ -328,7 +356,7 @@ pub struct OAuthCreateArgs {
 
     /// OAuth grant type (e.g. `client_credentials`, `refresh_token`).
     #[arg(long = "grant-type")]
-    grant: String,
+    grant_type: String,
 
     /// OAuth token endpoint to exchange against.
     #[arg(long)]
@@ -366,9 +394,8 @@ pub struct OAuthCreateArgs {
     #[arg(long = "host", value_name = "HOST")]
     hosts: Vec<String>,
 
-    /// After creating, grant the secret to this role (`foreign_id` or OID).
-    #[arg(long = "grant-role", value_name = "ROLE")]
-    grant_role: Option<String>,
+    #[command(flatten)]
+    grant: GrantArgs,
 }
 
 impl OAuthCreateArgs {
@@ -384,7 +411,7 @@ impl OAuthCreateArgs {
             namespace: namespace.to_owned(),
             foreign_id: self.foreign_id.clone(),
             name: self.name.clone(),
-            grant: self.grant.clone(),
+            grant: self.grant_type.clone(),
             token_endpoint: self.token_endpoint.clone(),
             scopes: self.scopes.clone(),
             audience: self.audience.clone(),
@@ -426,9 +453,8 @@ pub struct GcpCreateArgs {
     #[arg(long = "host", value_name = "HOST")]
     hosts: Vec<String>,
 
-    /// After creating, grant the secret to this role (`foreign_id` or OID).
-    #[arg(long = "grant-role", value_name = "ROLE")]
-    grant_role: Option<String>,
+    #[command(flatten)]
+    grant: GrantArgs,
 }
 
 impl GcpCreateArgs {
@@ -476,9 +502,8 @@ pub struct PgDsnCreateArgs {
     #[command(flatten)]
     dsn: SourceSpec,
 
-    /// After creating, grant the secret to this role (`foreign_id` or OID).
-    #[arg(long = "grant-role", value_name = "ROLE")]
-    grant_role: Option<String>,
+    #[command(flatten)]
+    grant: GrantArgs,
 }
 
 impl PgDsnCreateArgs {
@@ -558,9 +583,8 @@ pub struct HmacCreateArgs {
     #[arg(long = "host", value_name = "HOST")]
     hosts: Vec<String>,
 
-    /// After creating, grant the secret to this role (`foreign_id` or OID).
-    #[arg(long = "grant-role", value_name = "ROLE")]
-    grant_role: Option<String>,
+    #[command(flatten)]
+    grant: GrantArgs,
 }
 
 impl HmacCreateArgs {
@@ -651,9 +675,8 @@ pub struct AwsCreateArgs {
     #[arg(long = "host", value_name = "HOST")]
     hosts: Vec<String>,
 
-    /// After creating, grant the secret to this role (`foreign_id` or OID).
-    #[arg(long = "grant-role", value_name = "ROLE")]
-    grant_role: Option<String>,
+    #[command(flatten)]
+    grant: GrantArgs,
 }
 
 impl AwsCreateArgs {
@@ -785,7 +808,11 @@ mod tests {
             inject_formatter: None,
             replace: None,
             hosts: Vec::new(),
-            grant_role: None,
+            grant: GrantArgs {
+                grant_role: None,
+                grant_principal: None,
+                slack_user: None,
+            },
         }
     }
 
@@ -803,7 +830,7 @@ mod tests {
         // formatter is meaningless in replace mode
         let mut bad_replace = static_args();
         bad_replace.replace = Some("PLACEHOLDER".to_owned());
-        bad_replace.inject_formatter = Some("Bearer {{secret}}".to_owned());
+        bad_replace.inject_formatter = Some("Bearer {{.Value}}".to_owned());
         assert!(bad_replace.injection().is_err());
     }
 
@@ -811,7 +838,7 @@ mod tests {
     fn static_inject_builds_full_input() {
         let mut args = static_args();
         args.inject_header = Some("Authorization".to_owned());
-        args.inject_formatter = Some("Bearer {{secret}}".to_owned());
+        args.inject_formatter = Some("Bearer {{.Value}}".to_owned());
         args.hosts = vec!["slack.com".to_owned()];
 
         let input = args.to_input("default", &op_policy()).unwrap();
@@ -823,7 +850,7 @@ mod tests {
         );
         let inject = input.inject_config.expect("inject config");
         assert_eq!(inject.header.as_deref(), Some("Authorization"));
-        assert_eq!(inject.formatter.as_deref(), Some("Bearer {{secret}}"));
+        assert_eq!(inject.formatter.as_deref(), Some("Bearer {{.Value}}"));
         assert!(input.replace_config.is_none());
         assert_eq!(input.rules.len(), 1);
         assert_eq!(input.rules[0].host.as_deref(), Some("slack.com"));
@@ -839,7 +866,7 @@ mod tests {
         let args = OAuthCreateArgs {
             foreign_id: "fid".to_owned(),
             name: "n".to_owned(),
-            grant: "client_credentials".to_owned(),
+            grant_type: "client_credentials".to_owned(),
             token_endpoint: None,
             scopes: Vec::new(),
             audience: None,
@@ -848,7 +875,11 @@ mod tests {
             token_header_refs: Vec::new(),
             token_header_values: Vec::new(),
             hosts: Vec::new(),
-            grant_role: None,
+            grant: GrantArgs {
+                grant_role: None,
+                grant_principal: None,
+                slack_user: None,
+            },
         };
         assert!(args.to_input("default", &env_policy()).is_err());
     }
@@ -868,7 +899,11 @@ mod tests {
             allowed_regions: Vec::new(),
             allowed_services: Vec::new(),
             hosts: Vec::new(),
-            grant_role: None,
+            grant: GrantArgs {
+                grant_role: None,
+                grant_principal: None,
+                slack_user: None,
+            },
         };
         let input = args.to_input("default", &env_policy()).unwrap();
         assert_eq!(input.access_key_id.config["var"], "AWS_ACCESS_KEY_ID");
