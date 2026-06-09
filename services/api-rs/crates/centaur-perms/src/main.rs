@@ -17,6 +17,7 @@ use centaur_iron_proxy::SourcePolicy;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use eyre::{Result, bail};
 
+mod create;
 mod principal;
 mod tools;
 mod translate;
@@ -121,6 +122,11 @@ enum SecretsCmd {
     /// Show one secret's full configuration. Credential values are never
     /// returned by iron-control — only the source each resolves from.
     Show(SecretSelector),
+    /// Register an arbitrary secret on the fly, outside the tool convention:
+    /// its value comes from a `--source-ref` (resolved via `--source-policy`)
+    /// or a `--source-value` (stored inline, encrypted at rest).
+    #[command(subcommand)]
+    Create(create::SecretCreateCmd),
 }
 
 #[derive(Args, Debug)]
@@ -321,6 +327,7 @@ async fn main() -> Result<()> {
         Command::Secrets(cmd) => match cmd {
             SecretsCmd::List(args) => secrets_list(&cli, &client, args).await,
             SecretsCmd::Show(args) => secrets_show(&cli, &client, args).await,
+            SecretsCmd::Create(cmd) => create::run(&cli, &client, cmd).await,
         },
         Command::Broker(cmd) => match cmd {
             BrokerCmd::Create(args) => broker_create(&cli, &client, args).await,

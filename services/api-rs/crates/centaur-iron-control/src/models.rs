@@ -68,6 +68,18 @@ impl SecretSource {
         }
     }
 
+    /// An inline ``control_plane`` source: iron-control stores ``value``
+    /// directly (encrypted at rest) and delivers it to proxies, rather than
+    /// resolving it from an external ref. Use for one-off raw secrets that have
+    /// no env var or 1Password item to point at.
+    pub fn control_plane(value: impl Into<String>) -> Self {
+        Self {
+            source_type: "control_plane".to_owned(),
+            secret: Some(value.into()),
+            config: Value::Null,
+        }
+    }
+
     /// A token-broker source; ``credential_id`` names the broker credential
     /// whose current access token iron-control delivers inline. When
     /// ``credential_id`` is a ``foreign_id`` (rather than a ``bcr_`` OID),
