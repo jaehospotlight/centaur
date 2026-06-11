@@ -22,6 +22,7 @@ from api.tool_manager import (  # noqa: E402
     ToolManager,
     ToolMethod,
 )
+from api.deps import mint_sandbox_token  # noqa: E402
 
 
 class TestDescribeMethodDocstring:
@@ -612,10 +613,11 @@ async def test_tool_rest_router_lists_describes_and_invokes_tools(
     manager.discover()
     app = FastAPI()
     app.include_router(manager.create_rest_router())
+    headers = {"Authorization": f"Bearer {mint_sandbox_token('thread:test', 'ctr-test')}"}
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        list_response = await client.get("/tools")
+        list_response = await client.get("/tools", headers=headers)
         assert list_response.status_code == 200
         assert list_response.json() == {
             "alpha": {
@@ -624,7 +626,7 @@ async def test_tool_rest_router_lists_describes_and_invokes_tools(
             }
         }
 
-        describe_response = await client.get("/tools/alpha")
+        describe_response = await client.get("/tools/alpha", headers=headers)
         assert describe_response.status_code == 200
         description = describe_response.json()
         assert description["tool"] == "alpha"
@@ -638,6 +640,7 @@ async def test_tool_rest_router_lists_describes_and_invokes_tools(
         call_response = await client.post(
             "/tools/alpha/sync_echo",
             json={"text": "from rest"},
+            headers=headers,
         )
         assert call_response.status_code == 200
         assert call_response.json() == {
@@ -646,7 +649,9 @@ async def test_tool_rest_router_lists_describes_and_invokes_tools(
             "result": {"mode": "sync", "text": "from rest", "source": "base"},
         }
 
-        secret_response = await client.post("/tools/alpha/secret_values", json={})
+        secret_response = await client.post(
+            "/tools/alpha/secret_values", json={}, headers=headers
+        )
         assert secret_response.status_code == 200
         assert secret_response.json() == {
             "tool": "alpha",
@@ -654,12 +659,50 @@ async def test_tool_rest_router_lists_describes_and_invokes_tools(
             "result": {"required": "REQ_TOKEN", "optional": "OPT_TOKEN"},
         }
 
-        missing_response = await client.post("/tools/alpha/missing", json={})
+        missing_response = await client.post(
+            "/tools/alpha/missing", json={}, headers=headers
+        )
         assert missing_response.status_code == 200
         assert missing_response.json()["result"] == (
             '{"error": "Method \'missing\' not found in tool \'alpha\'", '
             '"available_methods": ["async_echo", "secret_values", "sync_echo"]}'
         )
+
+        search_response = await client.post(
+            "/tools/search_tools",
+            json={"query": "sync echo", "limit": 5},
+            headers=headers,
+        )
+        assert search_response.status_code == 200
+        search_body = search_response.json()
+        assert search_body["query"] == "sync echo"
+        assert search_body["count"] >= 1
+        assert search_body["tools"][0]["toolName"] == "alpha"
+        assert search_body["tools"][0]["name"] == "sync_echo"
+
+        execute_response = await client.post(
+            "/tools/execute_tool",
+            json={
+                "toolName": "alpha",
+                "name": "sync_echo",
+                "arguments": {"text": "one"},
+            },
+            headers=headers,
+        )
+        assert execute_response.status_code == 200
+        assert execute_response.json() == {
+            "tool": "alpha",
+            "method": "sync_echo",
+            "result": {"mode": "sync", "text": "one", "source": "base"},
+        }
+
+        invalid_response = await client.post(
+            "/tools/execute_tool",
+            json={"toolName": "alpha", "name": "sync_echo", "arguments": []},
+            headers=headers,
+        )
+        assert invalid_response.status_code == 400
+        assert "'arguments' must be an object" in invalid_response.json()["detail"]
 
 
 class TestHarnessSecretSelection:

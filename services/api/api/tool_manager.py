@@ -1625,6 +1625,83 @@ def _friendly_type_name(annotation: Any) -> str:
     return str(annotation)
 
 
+def _tool_catalog(tools: Mapping[str, "LoadedTool"]) -> dict[str, dict[str, Any]]:
+    catalog: dict[str, dict[str, Any]] = {}
+    for name, tool in sorted(tools.items()):
+        catalog[name] = {
+            "name": tool.name,
+            "description": tool.description,
+            "methods": [
+                {
+                    "name": method.method_name,
+                    "description": _describe_method_docstring(method.fn.__doc__),
+                    "parameters": _catalog_method_parameters(method.fn),
+                }
+                for method in sorted(tool.methods, key=lambda item: item.method_name)
+            ],
+        }
+    return catalog
+
+
+def _search_tool_catalog(
+    tools: Mapping[str, "LoadedTool"], query: str, *, limit: int = 10
+) -> list[dict[str, Any]]:
+    terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9_:-]+", query)]
+    if not terms:
+        return []
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for tool in tools.values():
+        for method in tool.methods:
+            entry = _catalog_tool_method(tool, method)
+            method_name = method.method_name.lower()
+            haystack = " ".join(
+                [
+                    tool.name,
+                    tool.description,
+                    method.method_name,
+                    entry["description"],
+                    " ".join(entry["parameters"].keys()),
+                ]
+            ).lower()
+            score = sum(1 for term in terms if term in haystack)
+            score += sum(4 for term in terms if term == method_name)
+            score += sum(3 for term in terms if method_name.startswith(term))
+            score += sum(2 for term in terms if term in method_name)
+            if score:
+                scored.append((score, entry))
+    scored.sort(key=lambda item: (-item[0], item[1]["toolName"], item[1]["name"]))
+    return [entry for _, entry in scored[: max(limit, 0)]]
+
+
+def _catalog_tool_method(tool: "LoadedTool", method: ToolMethod) -> dict[str, Any]:
+    return {
+        "toolName": tool.name,
+        "name": method.method_name,
+        "description": _describe_method_docstring(method.fn.__doc__),
+        "parameters": _catalog_method_parameters(method.fn),
+    }
+
+
+def _catalog_method_parameters(fn: Callable[..., Any]) -> dict[str, Any]:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return {}
+    params: dict[str, Any] = {}
+    for name, param in sig.parameters.items():
+        if name == "self":
+            continue
+        info: dict[str, Any] = {"type": "any"}
+        if param.annotation is not inspect.Parameter.empty:
+            info["type"] = _friendly_type_name(param.annotation)
+        if param.default is inspect.Parameter.empty:
+            info["required"] = True
+        else:
+            info["default"] = param.default
+        params[name] = info
+    return params
+
+
 class LoadedTool:
     def __init__(
         self,
@@ -2666,6 +2743,65 @@ class ToolManager:
                     status_code=404, detail=f"Persona '{name}' not found"
                 )
             return PlainTextResponse(p.prompt_content)
+
+        # ── Catalog tool endpoints ──────────────────────────────────────────
+
+        @router.post("/search_tools")
+        async def search_tools(request: Request):
+            raw_body = await request.body()
+            try:
+                body = json.loads(raw_body) if raw_body else {}
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=400, detail="Request body must be valid JSON"
+                ) from exc
+            if not isinstance(body, dict) or not isinstance(body.get("query"), str):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Request body must be a JSON object with string field 'query'",
+                )
+            limit = body.get("limit", 10)
+            if not isinstance(limit, int):
+                raise HTTPException(status_code=400, detail="'limit' must be an integer")
+            visible_catalog = {
+                name: tool
+                for name, tool in pm.tools.items()
+                if check_scope(get_key_info(request), "tools", name)
+            }
+            result = _search_tool_catalog(visible_catalog, body["query"], limit=limit)
+            return {"query": body["query"], "count": len(result), "tools": result}
+
+        @router.post("/execute_tool")
+        async def execute_tool(request: Request):
+            raw_body = await request.body()
+            try:
+                body = json.loads(raw_body) if raw_body else {}
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=400, detail="Request body must be valid JSON"
+                ) from exc
+            if (
+                not isinstance(body, dict)
+                or not isinstance(body.get("toolName"), str)
+                or not isinstance(body.get("name"), str)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Request body must be a JSON object with string fields "
+                        "'toolName' and 'name'"
+                    ),
+                )
+            arguments = body.get("arguments", {})
+            if not isinstance(arguments, dict):
+                raise HTTPException(status_code=400, detail="'arguments' must be an object")
+            tool_name = body["toolName"]
+            method_name = body["name"]
+            _require_tool_scope(request, tool_name)
+            result = await pm.call_tool(
+                tool_name, method_name, arguments, request=request
+            )
+            return {"tool": tool_name, "method": method_name, "result": result}
 
         # ── Tool endpoints ───────────────────────────────────────────────────
 
