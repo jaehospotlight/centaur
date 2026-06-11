@@ -379,8 +379,6 @@ kubectl exec -n centaur statefulset/centaur-centaur-postgres -- psql -U tempo -d
 
 **Verify:** Two rows — one `user`, one `assistant` with the agent's response text.
 
-**Known issue (fixed):** `stream_exec` previously expected `turn.done.result` to be a `dict` with a `.text` field, but it's actually a plain string. This caused assistant messages to never be persisted. If you see user messages but no assistant messages in `chat_messages`, check the result extraction logic in `services/api/api/agent.py` → `stream_exec()`.
-
 ### 2f. Fire-and-Forget + Status Poll
 
 Test the async execution flow — fire a job and poll `/agent/status` for completion:
@@ -543,7 +541,6 @@ cp {SKILL_DIR}/templates/tool-qa-report-template.md {OUTPUT_DIR}/report.md
 | Symptom | Root Cause | Fix |
 |---------|-----------|-----|
 | 502 on `/agent/execute` via ingress | Missing SSE directives (`proxy_buffering off`, `proxy_read_timeout`) | Add SSE config to the ingress/route handling `/agent/` |
-| Assistant messages missing from `chat_messages` | `stream_exec` result extraction expected dict, got string | Fix in `services/api/api/agent.py` — handle both string and dict `result` |
 | `API_SECRET_KEY` empty from `.env` | Key is in secrets manager, not `.env` | Fetch via `curl http://firewall:8081/secrets/API_SECRET_KEY` |
 | vlogs tool fails with DNS error | VictoriaLogs is not part of the default local Helm stack | Expected unless observability is installed separately |
 | Slackbot is not running locally | Default dev values disable slackbot | Enable it in values only when testing Slack-specific flows |

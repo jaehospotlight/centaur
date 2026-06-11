@@ -13,48 +13,26 @@ permissions:
   contents: read
 
 jobs:
-  python-runtime:
-    name: API workflow and control-plane tests
+  api-rs:
+    name: Rust control-plane tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
         with:
-          python-version: "3.11"
+          workspaces: services/api-rs
 
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-        with:
-          enable-cache: true
+      - name: Test
+        working-directory: services/api-rs
+        run: cargo test --workspace --locked
 
-      - name: Install Python dependencies
-        working-directory: services/api
-        run: uv sync --group dev
-
-      - name: Lint
-        working-directory: services/api
-        run: uv run ruff check api/
-
-      - name: Compile
-        working-directory: services/api
-        run: uv run python -m compileall -q api/
-
-      - name: Targeted API tests
-        working-directory: services/api
-        run: |
-          uv run pytest -q \
-            tests/test_workflows.py::test_create_slack_thread_turn_workflow_eager_start \
-            tests/test_workflows.py::test_slack_thread_turn_active_assignment_does_not_backfill_stop_history \
-            tests/test_workflows.py::test_cancel_workflow_run_cancels_linked_execution \
-            tests/test_agent_control_plane.py::test_cancel_execution_stops_runtime_and_clears_inflight \
-            tests/test_agent_control_plane.py::test_steer_stdin_interrupts_amp_before_injecting \
-            tests/test_agent_control_plane.py::test_worker_stops_session_when_cancel_requested_mid_stream \
-            tests/test_agent_control_plane.py::test_worker_maps_amp_user_cancelled_error_to_cancelled
-
-  slackbot-targeted-tests:
-    name: Slackbot interface and delivery tests
+  slackbotv2:
+    name: Slackbot tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -75,10 +53,6 @@ jobs:
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Targeted Slackbot tests
-        working-directory: services/slackbot
-        run: |
-          bun test \
-            src/centaur/handoff.test.ts \
-            src/slack/normalize.test.ts \
-            src/centaur/final-delivery.test.ts
+      - name: Slackbotv2 tests
+        working-directory: services/slackbotv2
+        run: bun test test

@@ -113,58 +113,6 @@ onepasswordConnect:
 secrets:
   bootstrapSecretName: ""
 
-# Legacy Python control plane. Superseded by apiRs (the Rust control plane);
-# disabled by default. It still owns subsystems not yet ported (workflows, warm
-# pool, Slack ETL, plugin watcher, egress discovery), so re-enable it if you need
-# those alongside api-rs.
-api:
-  enabled: false
-  replicaCount: 1
-  image:
-    repository: centaur-api
-    tag: latest
-    pullPolicy: Always
-  executionWorkerEnabled: false
-  defaultHarness: codex
-  # The API's worker claims workflow_runs and spawns a per-run sandbox to
-  # execute each handler. Disable only if you're running your own claimer.
-  workflowWorkerEnabled: true
-  warmPoolEnabled: false
-  pluginWatcherEnabled: false
-  slackEtlEnabled: false
-  slackSyncIntervalSeconds: 3600
-  slackBackfillIntervalSeconds: 3600
-  slackBackfillChannelBatchLimit: 20
-  slackSyncBackfillLookbackDays: 30
-  slackSyncThreadLookbackDays: 3
-  googleDriveEtlEnabled: false
-  googleDriveSyncIntervalSeconds: 14400
-  googleCalendarEtlEnabled: false
-  googleCalendarSyncIntervalSeconds: 14400
-  companyContextDocumentsIntervalSeconds: 14400
-  slackEtlExcludedChannelPatterns: ""
-  victoriaMetricsPushEnabled: false
-  startupProbe:
-    failureThreshold: 30
-    periodSeconds: 10
-    timeoutSeconds: 5
-  livenessProbe:
-    failureThreshold: 6
-    periodSeconds: 10
-    timeoutSeconds: 5
-  readinessProbe:
-    failureThreshold: 6
-    periodSeconds: 10
-    timeoutSeconds: 5
-  egressDiscovery:
-    enabled: true
-    namespace: centaur-egress
-    clusterDomain: cluster.local
-    tailnetFqdnAnnotation: tailscale.com/tailnet-fqdn
-  terminationGracePeriodSeconds: 35
-  extraEnv: {}
-  resources: {}
-
 overlay:
   mountPath: /app/overlay/org
   systemPrompt: ""
@@ -285,23 +233,8 @@ apiRs:
   extraEnv: {}
   resources: {}
 
-# Legacy Slackbot that talks to the Python `api` on :8000. Superseded by
-# slackbotv2 (which talks to api-rs); disabled by default so the two bots don't
-# both answer the same Slack events. Re-enable only for a separate Slack app.
-slackbot:
-  enabled: false
-  replicaCount: 1
-  image:
-    repository: centaur-slackbot
-    tag: latest
-    pullPolicy: Always
-  runtimeErrorAlertChannel: ""
-  extraEnv: {}
-  resources: {}
-
-# Chat SDK Slackbot v2 — successor to `slackbot`. Forwards Slack events to the
-# api-rs control plane (:8080) and streams responses back. Listens on :3001 so
-# chart ingress/networkpolicy swap cleanly from slackbot.
+# Chat SDK Slackbot v2. Forwards Slack events to the api-rs control plane
+# (:8080) and streams responses back. Listens on :3001.
 slackbotv2:
   enabled: true
   replicaCount: 1
@@ -349,15 +282,10 @@ ingress:
 
 httpRoutes: []
 
+# External runner access. allowedCidrs entries are added as ingress peers on
+# the api-rs NetworkPolicy.
 runnerAccess:
-  enabled: false
   allowedCidrs: []
-  apiService:
-    type: LoadBalancer
-    loadBalancerSourceRanges: []
-  proxyService:
-    type: LoadBalancer
-    loadBalancerSourceRanges: []
 
 networkPolicy:
   enabled: true

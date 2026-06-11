@@ -1,12 +1,11 @@
 //! Tool discovery and ``pyproject.toml`` `[tool.centaur]` secret parsing.
 //!
-//! This is the CLI-side analogue of the API's `ToolManager._collect_tools` and
-//! `_parse_secret` (`services/api/api/tool_manager.py`). It resolves a tool by
-//! name across one or more (overlay-ordered) tool directories — later
-//! directories shadow earlier ones, exactly like the API — and parses the
-//! tool's declared secrets into a neutral [`ParsedSecret`] the translator turns
-//! into iron-control inputs. Only the secret *schema* is reimplemented here;
-//! the API's loader stays the source of truth for runtime tool loading.
+//! It resolves a tool by name across one or more
+//! (overlay-ordered) tool directories — later directories shadow earlier ones,
+//! matching the API's loader — and parses the tool's declared secrets into a
+//! neutral [`ParsedSecret`] the translator turns into iron-control inputs.
+//! Only the secret *schema* is implemented here; the API's loader stays the
+//! source of truth for runtime tool loading.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +13,7 @@ use eyre::{Context, Result, bail, eyre};
 use toml::Value;
 
 /// Headers the legacy raw-string shim scans for a replace-mode placeholder,
-/// mirroring `DEFAULT_MATCH_HEADERS` in `tool_manager.py`. Typed entries name
+/// mirroring the Python control plane's `DEFAULT_MATCH_HEADERS`. Typed entries name
 /// their own `match_headers` instead and never fall back to this set.
 const DEFAULT_MATCH_HEADERS: &[&str] = &[
     "Authorization",
@@ -36,8 +35,9 @@ const DEFAULT_MATCH_HEADERS: &[&str] = &[
     "/^x-[a-z0-9-]*(api-key|apikey|secret|token|auth|key)$/",
 ];
 
-/// Enums iron-proxy's `hmac_sign` transform accepts, mirroring `_HMAC_*` in
-/// `tool_manager.py`. Centralized so parser errors list the same options.
+/// Enums iron-proxy's `hmac_sign` transform accepts, mirroring the Python
+/// control plane's `_HMAC_*` sets. Centralized so parser errors list the same
+/// options.
 const HMAC_ALGORITHMS: &[&str] = &["sha256", "sha512", "sha1"];
 const HMAC_KEY_ENCODINGS: &[&str] = &["raw", "base64", "hex"];
 const HMAC_OUTPUT_ENCODINGS: &[&str] = &["base64", "hex"];

@@ -20,7 +20,7 @@ export SLACK_SIGNING_SECRET=...
 export SLACKBOT_API_KEY=...
 ```
 
-Application-level LLM/tool secrets such as OpenAI and Anthropic tokens stay in 1Password and are loaded by the secrets service.
+Application-level LLM/tool secrets such as OpenAI and Anthropic tokens stay in 1Password and are resolved in-flight by iron-proxy.
 
 ### 2. Boot the stack
 
@@ -30,40 +30,7 @@ just up
 
 ### Database migrations
 
-```bash
-./scripts/dbmate new add_agent_leases
-./scripts/dbmate --set overlay new add_org_tables
-./scripts/dbmate status
-./scripts/dbmate up
-```
-
-`./scripts/dbmate` creates the next numbered SQL file in `services/api/db/migrations` by default, or in `services/api/db/migrations` inside the mounted overlay when you pass `--set overlay`. `up`, `migrate`, and `status` run against both the core and overlay migration sets unless you pin a specific set. Each set has its own dbmate migrations table so overlay repos can extend the shared Postgres database without version collisions. If `DATABASE_URL` is not set in your shell, the wrapper reuses the API deployment's configured value through `kubectl exec`.
-
-### 3. Test
-
-From inside the API deployment (localhost bypass — no key needed):
-
-```bash
-THREAD_KEY=test-e2e-1
-
-SPAWN=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/spawn \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"harness\":\"amp\"}")
-ASSIGNMENT_GENERATION=$(printf '%s' "$SPAWN" | jq -r '.assignment_generation')
-
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/message \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly PONG and nothing else.\"}]}"
-
-EXECUTE=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/execute \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"harness\":\"amp\",\"delivery\":{\"platform\":\"dev\"}}")
-EXECUTION_ID=$(printf '%s' "$EXECUTE" | jq -r '.execution_id')
-
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
-```
-
-Or create a DB-backed key for external use (see [API Key Management](#api-key-management)).
+Migrations are sqlx migrations in `services/api-rs/crates/centaur-session-sqlx/migrations` — numbered `.sql` files embedded into the binary via `sqlx::migrate!`. The api-rs server applies them on startup when `RUN_MIGRATIONS` is set (the Helm chart sets it). To add a migration, create the next numbered file in that directory.
 
 ## Architecture
 
@@ -71,183 +38,66 @@ See the [architecture diagram in the README](README.md#architecture).
 
 ### End-to-End Request Flow
 
-1. User mentions bot in Slack → webhook → slackbot → api
-2. API spawns/reuses a Kubernetes sandbox pod (`centaur-agent:latest`) for that thread
+1. User mentions bot in Slack → webhook → slackbotv2 → api-rs
+2. api-rs spawns/reuses a Kubernetes sandbox pod (`centaur-agent:latest`) for that thread
 3. Executes harness (amp/claude-code/codex) through the sandbox backend
-4. Harness calls tools via `curl` back to API at `http://api:8000` (REST, NOT MCP)
-5. LLM API calls route through firewall proxy which injects real credentials
+4. Harness calls tools via the `call` helper — the in-pod tools sidecar when `CENTAUR_TOOLS_URL` is set, otherwise `$CENTAUR_API_URL` (REST, NOT MCP)
+5. LLM API calls route through the per-sandbox iron-proxy, which injects real credentials
 6. Results stream as JSON events → posted to Slack
 
 ### Service Interface Contracts
 
 Centaur is a modular service architecture. Each service communicates through well-defined interfaces. As long as you implement these interfaces, you can swap or extend any layer independently.
 
-**Client → API** (durable control-plane protocol):
+**Client → API** (session control plane):
 
-Clients (slackbot, CLI, external integrations) should stay thin. They persist input with `spawn -> message -> execute`, stream or replay output from the durable events endpoint, and only fall back to durable terminal state when the live stream is gone. The API owns runtime assignment, execution serialization, cancellation, and final-delivery recovery; Postgres is the source of truth.
+Clients (slackbotv2, CLI, external integrations) talk to api-rs over REST. The route surface is defined in `services/api-rs/crates/centaur-api-server/src/routes.rs`:
 
-**Step 1: Assign or reuse a runtime** (`POST /agent/spawn`)
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/session/{thread_key}` | Create or get the session for a thread |
+| `POST /api/session/{thread_key}/messages` | Append user messages |
+| `POST /api/session/{thread_key}/execute` | Enqueue an execution |
+| `GET /api/session/{thread_key}/events` | Stream/replay session events (SSE) |
+| `POST /api/sandboxes/drain` | Drain sandboxes |
+| `/api/workflows/...`, `/api/webhooks/{slug}` | Workflow runs, events, and inbound webhooks (see [Durable Workflows](#durable-workflows)) |
 
-Pins one warm runtime to the thread and returns the current `assignment_generation`.
+Postgres is the source of truth — sessions, messages, executions, and events live in the `sessions`, `session_messages`, `session_executions`, and `session_events` tables (`services/api-rs/crates/centaur-session-sqlx/migrations`).
 
-```
-POST /agent/spawn
-{
-  "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "harness": "amp"
-}
+**API → Sandbox:**
 
-← {
-    "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-    "runtime_id": "rtm_123",
-    "assignment_generation": 12,
-    "state": "assigned_idle"
-  }
-```
-
-**Step 2: Persist the user turn** (`POST /agent/message`)
-
-Writes one durable transcript event. Inline base64 image/document blocks are extracted into `attachments` and rewritten to lightweight `attachment_ref` parts.
-
-```
-POST /agent/message
-{
-  "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "assignment_generation": 12,
-  "role": "user",
-  "parts": [{"type": "text", "text": "analyze this"}],
-  "user_id": "U123",
-  "metadata": {"user_name": "alice", "platform": "slack"}
-}
-
-← {"ok": true, "message_id": "msg_123"}
-```
-
-**Step 3: Enqueue execution** (`POST /agent/execute`)
-
-Creates a durable execution request plus final-delivery obligation. The worker drives the attached container; the response is just the execution handle.
-
-```
-POST /agent/execute
-{
-  "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "assignment_generation": 12,
-  "harness": "amp",
-  "delivery": {"platform": "slack"}
-}
-
-← {"ok": true, "execution_id": "exe_123", "status": "queued"}
-```
-
-**Step 4: Stream or replay output** (`GET /agent/threads/{thread_key}/events`)
-
-Consumers tail durable events for one execution. On disconnect, reconnect with the last seen event id. If the execution already finished and no more rows remain, the API emits the terminal `execution_state` snapshot.
-
-```
-GET /agent/threads/slack:C0AJ07U8Z1N:1773364194.179929/events?execution_id=exe_123&after_event_id=0
-
-← SSE event: amp_raw_event
-← data: {"type":"assistant","message":{...}}
-← SSE event: turn.done
-← data: {"type":"turn.done","result":"..."}
-← SSE event: execution_state
-← data: {"status":"completed","result_text":"..."}
-```
-
-**Step 5: Release only when you really want to end the assignment** (`POST /agent/threads/{thread_key}/release`)
-
-Releases the thread-to-runtime pin and optionally cancels any non-terminal execution still tied to that assignment generation.
-
-**Inspect the active runtime for a thread** (`GET /agent/runtime?key={thread_key}`)
-
-Returns `{persona_id, persona, harness, engine, overlay: {loaded, mount_api, mount_sandbox, image}, available_personas, …}`. Sandboxes call this through `call agent runtime '?key='"$CENTAUR_THREAD_KEY"`; clients can call it directly to confirm what persona/overlay an assignment is actually running.
-
-**Durable state written for one turn:**
-
-| Table | What |
-|-------|------|
-| `agent_runtime_assignments` | Thread-to-runtime pin and active assignment generation |
-| `agent_message_requests` | Durable inbound transcript events |
-| `attachments` | Extracted attachment bytes for inline multimodal content |
-| `agent_execution_requests` | Queued/running/terminal execution row |
-| `agent_execution_events` | Replayable raw + projected execution events |
-| `agent_final_delivery_outbox` | Final-result delivery obligation for reconnect/retry paths |
-
-`POST /agent/connect` and `POST /agent/reconnect` are legacy endpoints now kept only as explicit `410 LEGACY_ENDPOINT_REMOVED` stubs. Do not build new clients on them.
-
-**API → Sandbox** (stdin/stdout, NDJSON):
-
-The API communicates with sandbox Pods through the active sandbox backend's attach stream. The wire format is **Anthropic message format** — this is the canonical protocol between the API and all sandboxes, regardless of which harness runs inside.
-
-```
-→ stdin:  {"type":"turn.start","turn_id":1,"text":"analyze this"}
-→ stdin:  {"type":"turn.start","turn_id":2,"content":[             // Anthropic content blocks
-             {"type":"text","text":"what is this?"},
-             {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
-           ]}
-→ stdin:  {"type":"interrupt"}
-
-← stdout: {"type":"system","subtype":"init","session_id":"T-..."}
-← stdout: {"type":"assistant","message":{"role":"assistant","content":[...]}}
-← stdout: {"type":"result","subtype":"success","result":"..."}
-← stdout: {"type":"turn.done","turn_id":1,"result":"..."}
-```
-
-**Sandbox harness adapter** (`services/sandbox/harness_session.py`):
-
-The sandbox's `harness_session.py` translates the standard Anthropic format into whatever each harness CLI actually accepts:
-
-| Harness | Translation |
-|---------|-------------|
-| **claude-code** | Pass through directly (native Anthropic format) |
-| **amp** | Materialize image/document blocks to files on disk, replace with `@/path` text mentions (Amp stdin only accepts text blocks) |
-| **codex / pi-mono** | Extract text from content blocks, pass as CLI argument |
-
-This means clients and the API never need to know about harness-specific quirks. They speak Anthropic format; the sandbox adapter handles the rest.
+api-rs drives sandbox Pods through the active sandbox backend's attach stream; the session runtime (`services/api-rs/crates/centaur-session-runtime`) normalizes each harness's JSON event stream into terminal results and replayable session events.
 
 **Sandbox → API** (REST over Kubernetes services):
 
-Agents call tools via `curl $CENTAUR_API_URL/tools/<tool>/<method>` over the in-cluster service network. Auth is via `CENTAUR_API_KEY` injected when the sandbox Pod is created.
+Agents call tools via the `call` helper (`services/sandbox/call.sh`): `call <tool> <method> [json]`. Tool requests go to the in-pod tools sidecar when `CENTAUR_TOOLS_URL` is set, otherwise to `$CENTAUR_API_URL`. Auth is via `CENTAUR_API_KEY` injected when the sandbox Pod is created.
 
 ### Network Isolation
 
-The Helm chart installs deny-by-default NetworkPolicies, then explicitly allows the service paths the stack needs: Slackbot to API, API to Postgres/secrets/firewall/Kubernetes, sandbox Pods to API/firewall, DNS, and configured egress.
+The Helm chart installs deny-by-default NetworkPolicies, then explicitly allows the service paths the stack needs: slackbotv2 to api-rs, api-rs to Postgres/Kubernetes, sandbox Pods to the API and their per-sandbox iron-proxy, DNS, and configured egress.
 
 ## Directory Structure
 
 ```
 centaur/
 ├── services/
-│   ├── api/              # FastAPI control plane (standalone service)
-│   │   ├── api/          # Python package
-│   │   │   ├── routers/  # HTTP endpoints (agent, workflows, admin, health, …)
-│   │   │   ├── sandbox/  # Sandbox backend abstraction (Kubernetes)
-│   │   │   ├── workflows/# Built-in workflow handlers (agent_turn, slack_thread_turn)
-│   │   │   ├── runtime_control.py   # Durable execution control-plane
-│   │   │   ├── workflow_engine.py   # Durable workflow engine (checkpoint/replay)
-│   │   │   ├── warm_pool.py         # Pre-warmed sandbox pool
-│   │   │   ├── vm_metrics.py        # Push-based VictoriaMetrics metrics
-│   │   │   └── observability.py     # Execution observation projections
-│   │   ├── Dockerfile
-│   │   └── tools.toml    # Tool plugin directory config
-│   ├── secrets/          # Pluggable secrets manager (standalone service)
-│   ├── firewall/         # mitmproxy addon — credential injection proxy
+│   ├── api-rs/           # Rust control plane (standalone service)
+│   │   └── crates/       # centaur-api-server, centaur-session-runtime,
+│   │                     # centaur-session-sqlx (migrations), centaur-workflows,
+│   │                     # centaur-sandbox-agent-k8s, centaur-perms, …
+│   ├── workflow-python/  # workflow_host.py — Python host that runs workflows/*.py for api-rs
+│   ├── iron-proxy/       # Egress proxy image — credential injection + allowlist
 │   ├── sandbox/          # Agent container image (Ubuntu 24.04 + uv + gh + node + bun + amp)
-│   ├── slackbot/         # Next.js + Slack Bolt event listener (pnpm)
-│   ├── grafana/          # Grafana dashboards + provisioning
-│   ├── fluentbit/        # Fluent Bit log shipping config
-│   └── alloy/            # Grafana Alloy config
+│   └── slackbotv2/       # Bun/TypeScript Slack event listener
 ├── centaur_sdk/          # Standalone SDK (pip install centaur-sdk)
-├── packages/             # Shared packages (api-client, harness-events)
+├── packages/             # Shared packages (api-client, harness-events, rendering)
 ├── tools/                # Open-source tool plugins (auto-discovered)
 │   ├── alchemy/          # One directory per tool — each has client.py + pyproject.toml
 │   ├── websearch/
 │   ├── telegram/
 │   └── …                 # 60+ tool plugins (crypto, research, productivity, infra, …)
-├── workflows/            # External workflow definitions (auto-discovered)
-│   ├── agent_loop.py     # Recurring agent polling/monitoring loop
-│   └── multi_step_demo.py       # Demo: branching, loops, conditionals
-├── scripts/              # Operational scripts
+├── workflows/            # Workflow definitions (auto-discovered via WORKFLOW_DIRS)
+├── contrib/              # Helm chart, operational scripts, assets
 └── Justfile              # Local Helm/Kubernetes workflow
 ```
 
@@ -264,7 +114,7 @@ centaur/
 3. **Make a real request** that exercises the change and show the output
 4. **Only then** commit and push
 
-For tool changes: tools hot-reload, so just verify via `curl -X POST http://localhost:8000/tools/<tool>/<method>` from inside the API deployment. For Dockerfile/infra changes: rebuild, redeploy, and verify the binary/service is present and functional. For firewall changes: test from inside a sandbox pod through the proxy.
+For tool changes: verify via the `call` helper (`call <tool> <method> '<json>'`) from inside a sandbox pod. For Dockerfile/infra changes: rebuild, redeploy, and verify the binary/service is present and functional. For proxy changes: test from inside a sandbox pod through iron-proxy.
 
 ## Local-First Testing — Never Touch the Deploy Box
 
@@ -276,16 +126,16 @@ The deploy box is **production**. Changes reach it via `git push` → GitHub Act
 For E2E testing, always:
 1. `just build-one <service>` locally
 2. `just deploy` locally
-3. Run curl commands against `localhost` through `kubectl exec -n centaur deploy/centaur-centaur-api -- curl ...`
+3. Run curl commands against `localhost` through `kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl ...`
 4. Verify results locally
 5. Only then commit, push, and let CI/CD handle production
 
 ## Code Conventions
 
 - Python 3.11+, `uv` for deps, `ruff` for lint/format (line-length=100)
-- `services/slackbot` uses `pnpm` only (single lockfile: `pnpm-lock.yaml`)
+- `services/slackbotv2` is TypeScript run with `bun`
 - All imports at top of file, never inside functions
-- Absolute imports only: `from api.X`, `from centaur_sdk.X`
+- Absolute imports only: `from centaur_sdk.X` (workflow files may use `from api.workflow_engine`, provided by the workflow host's compat shim)
 - All secrets via env vars or secret manager, never hardcode
 - `asyncpg` for Postgres, `pgvector` for embeddings
 - Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
@@ -302,11 +152,11 @@ uv run pytest                # tests
 
 ## Plugin System — Tools & Workflows
 
-Centaur has two plugin types that are auto-discovered at startup and hot-reloaded on file changes — no core code changes required to extend the system.
+Centaur has two plugin types that are auto-discovered at startup — no core code changes required to extend the system.
 
 ### Tool Plugins
 
-Tools live in directories listed in `tools.toml` (`plugin_dirs`). Each tool is a directory with `client.py` (class + `_client()` factory), `pyproject.toml`, and optional `cli.py`. The API auto-discovers tools on startup, generates REST endpoints at `/tools/{name}/{method}`, and hot-reloads on file changes.
+Tools live in directories listed in `tools.toml` (`plugin_dirs`). Each tool is a directory with `client.py` (class + `_client()` factory), `pyproject.toml`, and optional `cli.py`. Tools are auto-discovered and exposed as REST endpoints at `/tools/{name}/{method}`, which agents reach through the `call` helper.
 
 - `client.py`: NO `load_dotenv()`. Secrets via `secret()` from `centaur_sdk.tool_sdk`.
 - `cli.py`: YES `load_dotenv()` at top. Thin typer wrapper for standalone use.
@@ -331,9 +181,9 @@ def _client():
 
 ### Workflow Plugins
 
-Workflows live in directories listed in the `WORKFLOW_DIRS` env var (colon-separated paths, bind-mounted into the API container). Each workflow is a single Python file exporting `WORKFLOW_NAME`, an async `handler(params, ctx)`, and an optional `Input` dataclass. See [Durable Workflows](#durable-workflows) for the full programming model.
+Workflows live in directories listed in the `WORKFLOW_DIRS` env var (colon-separated paths). Each workflow is a single Python file exporting `WORKFLOW_NAME`, an async `handler(params, ctx)`, and optionally an `Input` dataclass, `WEBHOOKS`, and `SCHEDULE`. See [Durable Workflows](#durable-workflows) for the programming model.
 
-Built-in workflows ship in `services/api/api/workflows/`. External workflows (like those in the top-level `workflows/` directory) are loaded identically — just point `WORKFLOW_DIRS` at them.
+Workflows ship in the top-level `workflows/` directory and are executed by `services/workflow-python/workflow_host.py` on behalf of api-rs (`centaur-workflows`). Overlay repos add more workflows by extending `WORKFLOW_DIRS`.
 
 ### Ordered Overlays
 
@@ -351,24 +201,21 @@ Later overlay entries win cleanly when names collide, so the base repo stays gen
 
 ## Durable Workflows
 
-The workflow engine (`workflow_engine.py`) provides a checkpoint/replay model inspired by [Cloudflare Workflows](https://developers.cloudflare.com/workflows/). The handler function IS the workflow — steps are runtime-discovered via `ctx.step(name, fn)` calls. The engine checkpoints each step result to Postgres. On resume after crash or suspension, the handler re-executes top-to-bottom but skips steps that already have checkpoints (returning the cached result instantly). Dynamic branching, loops, and conditional logic work naturally because it is just Python.
+Workflow orchestration lives in api-rs (`services/api-rs/crates/centaur-workflows`), backed by the durable Postgres task engine in the `absurd` schema (see migration `0007_absurd_workflows.sql` and `services/api-rs/rfcs/0003-python-workflow-host.md`). api-rs owns workflow runs, retries, cancellation, checkpoint state, webhook ingress, and schedule firing. Workflow *handlers* stay in Python: api-rs launches `services/workflow-python/workflow_host.py`, which imports the workflow file, runs `handler(input, ctx)`, and delegates durable context operations back to api-rs over newline-delimited JSON on stdin/stdout.
+
+The handler function IS the workflow — steps are runtime-discovered via `ctx.step(name, fn)` calls, each step result is checkpointed, and replay returns cached results instead of re-executing. Dynamic branching, loops, and conditional logic work naturally because it is just Python.
 
 ### WorkflowContext API
 
-Every handler receives `(params, ctx)` where `ctx: WorkflowContext` provides:
+Every handler receives `(params, ctx)` where `ctx: WorkflowContext` (defined in `workflow_host.py`; importable as `from api.workflow_engine import WorkflowContext` via the compat shim) provides:
 
 | Primitive | Purpose |
 |-----------|---------|
-| `ctx.step(name, fn)` | Execute *fn* exactly once; return cached result on replay. Supports `retry` (RetryPolicy) and `timeout`. |
-| `ctx.sleep(name, duration)` | Suspend the run for *duration*; checkpoint + resume automatically. |
-| `ctx.sleep_until(name, when)` | Suspend until a specific datetime. |
-| `ctx.wait_for_event(name, event_type, correlation_id)` | Suspend until an external event arrives via `POST /workflows/events`. |
-| `ctx.start_workflow(name, workflow_name, run_input)` | Create a child workflow run (returns immediately). |
-| `ctx.wait_for_workflow(name, run_id)` | Suspend until a child workflow reaches terminal state. |
-| `ctx.run_workflow(name, workflow_name, run_input)` | Start + wait in one call. |
-| `ctx.start_agent(name, text=…)` | Shorthand: start a child `agent_turn` workflow. |
-| `ctx.run_agent(name, text=…)` | Shorthand: start + wait for a child `agent_turn` workflow. |
-| `ctx.log(msg, **kwargs)` | Structured log, suppressed during replay. |
+| `ctx.step(name, fn)` | Execute *fn* exactly once; return the checkpointed result on replay. |
+| `ctx.agent_turn(text=…)` / `ctx.run_agent(text=…)` | Run a durable agent turn through api-rs. |
+| `ctx.call_tool(tool, method, args)` | Call a tool plugin. |
+| `ctx.post_to_slack(channel, text, …)` | Post a Slack message. |
+| `ctx.log(event, **fields)` | Structured log forwarded to api-rs. |
 
 ### Writing a workflow
 
@@ -386,49 +233,22 @@ class Input:
 
 async def handler(inp: Input, ctx: WorkflowContext) -> dict[str, Any]:
     greeting = await ctx.step("gather", lambda: {"msg": inp.message})
-    await ctx.sleep("pause", timedelta(minutes=5))
-    result = await ctx.run_agent("agent", text=f"Summarize: {greeting['msg']}")
+    result = await ctx.run_agent(text=f"Summarize: {greeting['msg']}")
     return {"greeting": greeting, "agent_result": result}
 ```
 
-### Workflow lifecycle
-
-Runs go through: `queued → running → sleeping/waiting → running → … → completed/failed/cancelled`.
-
-- **Worker pool**: `WORKFLOW_WORKER_CONCURRENCY` workers (default 2) poll for claimable runs.
-- **Lease-based fencing**: Each worker holds a lease on its run, extended by a heartbeat. If the worker dies, the lease expires and another worker reclaims the run.
-- **Schedules**: Cron-based or interval-based schedules are configured in `workflow_schedules` table and ticked by the worker loop.
-- **External events**: `POST /workflows/events` delivers events that wake waiting runs.
-- **Child workflows**: Parent→child relationships are tracked; cancelling a parent cascels linked executions.
+Workflow files may also export `WEBHOOKS` (to receive `POST /api/webhooks/{slug}`) and `SCHEDULE` (restart-safe schedule firing); see the examples in `workflows/` such as `github_issue_triage.py` and `google_calendar_sync.py`.
 
 ### Workflow REST API
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /workflows/runs` | Create a workflow run (`workflow_name`, `input`, optional `trigger_key` for idempotency, `eager_start`) |
-| `GET /workflows/runs` | List runs (filter by `workflow_name`, `thread_key`, `status`, `parent_run_id`) |
-| `GET /workflows/runs/{run_id}` | Get run details (status, checkpoints, waiting_on) |
-| `GET /workflows/runs/{run_id}/children` | List child workflow runs |
-| `GET /workflows/runs/{run_id}/checkpoints` | Inspect all checkpoints for a run |
-| `POST /workflows/runs/{run_id}/cancel` | Cancel a run (idempotent for terminal runs) |
-| `POST /workflows/events` | Deliver an external event (`event_type`, `correlation_id`, `payload`) |
-
-### Built-in workflows
-
-| Workflow | Description |
-|----------|-------------|
-| `agent_turn` | Single durable agent turn: spawn → message → execute → wait for terminal result. |
-| `slack_thread_turn` | Same as `agent_turn` but requires a Slack `thread_key`. Used by the slackbot. |
-| `agent_loop` | Recurring agent loop: runs an agent turn every N seconds until the agent signals `{"done": true}`, max iterations, or deadline. |
-
-### Durable state
-
-| Table | What |
-|-------|------|
-| `workflow_runs` | Run metadata, status, input/output, parent/root hierarchy |
-| `workflow_checkpoints` | Per-step cached results, linked execution/child-run IDs |
-| `workflow_schedules` | Cron/interval schedule definitions with next_run_at tracking |
-| `workflow_events` | External events for `wait_for_event` correlation |
+| `POST /api/workflows/runs` | Create a workflow run |
+| `GET /api/workflows/runs` | List runs |
+| `GET /api/workflows/runs/{run_id}` | Get run details |
+| `POST /api/workflows/runs/{run_id}/cancel` | Cancel a run |
+| `POST /api/workflows/events` | Deliver an external event |
+| `ANY /api/webhooks/{slug}` | Trigger a webhook-registered workflow |
 
 ## Agent Sandbox
 
@@ -463,66 +283,39 @@ The entrypoint supports persona overlays via `AGENT_PERSONA`. Persona prompts ar
 - Runs under Kubernetes NetworkPolicies with API reachable through the in-cluster service URL
 - Entrypoint injects `CENTAUR_API_URL` and `CENTAUR_API_KEY` env vars
 - Stub API keys so harnesses init in API-key mode (not browser login)
-- `HTTPS_PROXY` routes LLM calls through the firewall
+- `HTTPS_PROXY` routes LLM calls through the egress proxy (iron-proxy)
 - Resource limits: 4GB memory, 2 CPUs
 - Image tagged `centaur-agent:latest`
 - Labels identify Centaur-managed sandboxes and carry thread/harness metadata for discovery/recovery
 
-### Credential Injection (Firewall)
+### Credential Injection (iron-proxy)
 
-Sandbox Pods never see real API keys. The firewall (`services/firewall/addon.py`) intercepts HTTPS and injects credentials from the secrets service:
-
-| Target host | Header | Format |
-|-------------|--------|--------|
-| `api.anthropic.com` | `x-api-key` | raw |
-| `api.openai.com` | `authorization` | bearer |
-| `ampcode.com` | `authorization` | bearer |
-| `api.github.com` | `authorization` | token |
-| `github.com` | `authorization` | basic auth |
+Sandbox Pods never see real API keys. Each sandbox's outbound HTTPS is MITM'd by its dedicated iron-proxy sidecar, which substitutes real credentials in-flight based on the secret grants resolved for the session's principal (see [Secrets](#secrets) and [centaur-perms](#centaur-perms)).
 
 ### Session Persistence
 
-- **`sandbox_sessions`** table: tracks sandbox ID, harness, engine, state, thread key, and thread title
-- **`chat_messages`** table: stores persisted user/assistant messages for Slackbot delivery and durable transcript surfaces
-- On API restart, sandbox ownership is re-read from `sandbox_sessions`; process-local queues and sockets are rebuilt lazily per sandbox
+- **`sessions`** table: one row per thread — session identity, sandbox, and state
+- **`session_messages`** / **`session_executions`** / **`session_events`** tables: durable transcript, execution, and replayable event state
 - Pods are still discoverable via Kubernetes labels even if DB state needs reconciliation
 
 ## Security Model
 
-- **API auth**: All callers authenticate with DB-backed API keys (`aiv2_*` prefix, stored in `api_keys` table). Local in-cluster service calls use the configured bypass paths where applicable.
-- **Sandbox auth**: Sandbox Pods get auto-issued HMAC-signed tokens (`sbx1.*` prefix) minted by the API. These are short-lived (2h TTL) and scoped to `agent` + `tools:*`.
+- **API auth**: slackbotv2 authenticates to api-rs with a bearer key (`SLACKBOT_API_KEY`); workflow webhook routes verify their configured per-webhook auth.
 - **Slack**: HMAC-SHA256 signature verification on all webhooks
 - **Public edge**: The Helm chart exposes public routes only when configured through Ingress, HTTPRoute, or service settings.
-- **Sandbox isolation**: Pods get stub keys only; real keys injected by firewall proxy in-flight
+- **Sandbox isolation**: Pods get placeholder credentials only; real keys injected by iron-proxy in-flight
 - **Filesystem**: Host repos mounted read-only by default; only working repo is read-write
-- **Kubernetes API**: The API service account is scoped to the Pod, Secret, exec, attach, and log operations needed to manage sandboxes.
-
-## API Key Management
-
-All API authentication uses **DB-backed keys** stored in the `api_keys` Postgres table. Keys are managed via the admin API (localhost-only, or requires `admin` scope).
-
-### Key types
-
-| Type | Prefix | Issued by | Used by | Scopes |
-|------|--------|-----------|---------|--------|
-| DB keys | `aiv2_*` | Admin API | Slackbot, CLI, external callers | Per-key (e.g. `["*"]`, `["agent:execute"]`) |
-| Sandbox tokens | `sbx1.*` | API (automatic) | Sandbox containers → API tool calls | `["agent", "tools:*"]` |
-
-### How services get their keys
-
-- **Slackbot**: `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, and `SLACKBOT_API_KEY` are injected from the local infra Secret.
-- **Sandbox containers**: Auto-issued `sbx1.*` token injected as `CENTAUR_API_KEY` at container creation
-- **Local testing**: Use localhost bypass (no key needed from inside the API deployment), or create a key via admin API
+- **Kubernetes API**: The api-rs sandbox-manager service account is scoped to the operations needed to manage sandbox Pods.
 
 ## Secrets
 
-Tool credentials (e.g., `ANTHROPIC_API_KEY`, `AMP_API_KEY`) are never materialized inside sandboxes or the API service. Tools declare which keys they need in their `pyproject.toml` and call `secret("KEY")` to receive a placeholder. Outbound HTTPS traffic is MITM'd by iron-proxy, which substitutes the real credential based on the host/key injection map managed by firewall-manager. iron-proxy resolves `op://...` references directly against 1Password.
+Tool credentials (e.g., `ANTHROPIC_API_KEY`, `AMP_API_KEY`) are never materialized inside sandboxes or the API service. Tools declare which keys they need in their `pyproject.toml` and call `secret("KEY")` to receive a placeholder. Outbound HTTPS traffic is MITM'd by iron-proxy, which substitutes the real credential based on the secret grants managed in iron-control. iron-proxy resolves `op://...` references directly against 1Password.
 
 For local development, infra secrets are stored in Kubernetes Secrets created by `just bootstrap-secrets`; application secrets continue to come from 1Password.
 
 ### iron-control
 
-[iron-control](https://github.com/ironsh/iron-control) is an optional Rails control plane for authenticated API access and encrypted secret storage. It is off by default; enable it with `--set ironControl.enabled=true` (or set `ironControl.enabled: true` in a values file). When enabled, it runs against a dedicated `iron_control_production` database on the bundled Postgres (a separate logical DB so its Rails `schema_migrations` table never collides with the API's dbmate table), created by an idempotent init container.
+[iron-control](https://github.com/ironsh/iron-control) is an optional Rails control plane for authenticated API access and encrypted secret storage. It is off by default; enable it with `--set ironControl.enabled=true` (or set `ironControl.enabled: true` in a values file). When enabled, it runs against a dedicated `iron_control_production` database on the bundled Postgres (a separate logical DB so its Rails `schema_migrations` table never collides with Centaur's own migrations table), created by an idempotent init container.
 
 `just bootstrap-secrets` seeds the required keys into `centaur-infra-env`: the three ActiveRecord encryption keys, `SECRET_KEY_BASE`, and the initial admin password/API key are auto-generated (only when absent, never rotated in place). `IRON_CONTROL_DATABASE_URL` defaults to the bundled Postgres server with no database path (so Rails resolves each connection's database name from the image's `database.yml`); export it before running `just bootstrap-secrets` to point at an external server. Override the admin email with `IRON_CONTROL_INITIAL_USER_EMAIL` (default `admin@centaur.local`).
 
@@ -662,24 +455,22 @@ Via CLI (from inside the Kubernetes network):
 
 ```bash
 # All logs for a specific thread
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://victorialogs:9428/select/logsql/query" \
+kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode "query=thread_key:C042WDDP89Y" --data-urlencode "limit=50"
 
 # API errors in the last hour
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://victorialogs:9428/select/logsql/query" \
+kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl -s "http://victorialogs:9428/select/logsql/query" \
   --data-urlencode "query=_stream:{service=\"api\"} AND level:error" --data-urlencode "limit=20"
 
-# Firewall audit trail for a time range
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://victorialogs:9428/select/logsql/query" \
-  --data-urlencode "query=_stream:{service=\"firewall\"} AND event:proxy_audit" \
+# Egress proxy audit trail for a time range
+kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl -s "http://victorialogs:9428/select/logsql/query" \
+  --data-urlencode "query=event:proxy_audit" \
   --data-urlencode "start=2026-03-10T00:00:00Z" --data-urlencode "end=2026-03-11T00:00:00Z"
 ```
 
 ### Audit logging
 
-The **firewall** emits a structured audit event for every outbound request from sandbox containers: method, host, path, status code, request/response bytes, duration, and source container IP. These are searchable via `event:proxy_audit` in VictoriaLogs.
-
-The **API** logs tool calls (`event:tool_call_started`, `event:tool_call_completed`), session lifecycle (`event:warm_container_claimed`), and HTTP requests with thread context.
+The egress proxy (**iron-proxy**) emits a structured audit event for every outbound request from sandbox containers. These are searchable via `event:proxy_audit` in VictoriaLogs.
 
 ### Logging contract
 
@@ -689,7 +480,7 @@ Services must write single-line JSON to stdout with these fields:
 |-------|----------|-------------|
 | `timestamp` | Yes | ISO 8601 timestamp |
 | `level` | Yes | `debug`, `info`, `warning`, `error` |
-| `service` | Yes | Service name (`api`, `firewall`, `secrets`) |
+| `service` | Yes | Service name (e.g. `api`, `slackbot`) |
 | `event` | Yes | Machine-readable event name |
 | `msg` | No | Human-readable message |
 | `thread_key` | No | Thread identifier (when applicable) |
@@ -704,68 +495,39 @@ Services must write single-line JSON to stdout with these fields:
 just up
 ```
 
-All E2E curl commands below use `kubectl exec` for localhost bypass (no API key needed).
-To test from outside the container, create a DB-backed key via the [admin API](#api-key-management).
+### 2. Run a session against api-rs
 
-### 2. Spawn a runtime assignment
+The supported clients are `centaur-session-cli` (`services/api-rs/crates/centaur-session-cli` — create, execute, or attach to a session) or direct curl against the session endpoints:
 
 ```bash
 THREAD_KEY=test-e2e-1
 
-SPAWN=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/spawn \
+# Create or get the session for a thread
+kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl -s -X POST \
+  "http://localhost:8080/api/session/${THREAD_KEY}" \
   -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"harness\":\"amp\"}")
-ASSIGNMENT_GENERATION=$(printf '%s' "$SPAWN" | jq -r '.assignment_generation')
-```
+  -d '{"harness_type":"amp"}'
 
-### 3. Persist a message
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/message \
+# Append a user message
+kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl -s -X POST \
+  "http://localhost:8080/api/session/${THREAD_KEY}/messages" \
   -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly PONG and nothing else.\"}]}"
-```
+  -d '{"messages":[{"role":"user","parts":[{"type":"text","text":"Reply with exactly PONG and nothing else."}]}]}'
 
-### 4. Enqueue execution
-
-```bash
-EXECUTE=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/execute \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"harness\":\"amp\",\"delivery\":{\"platform\":\"dev\"}}")
-EXECUTION_ID=$(printf '%s' "$EXECUTE" | jq -r '.execution_id')
-```
-
-### 5. Tail durable events (or reconnect later)
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -N \
-  "http://localhost:8000/agent/threads/${THREAD_KEY}/events?execution_id=${EXECUTION_ID}&after_event_id=0"
-```
-
-If this stream disconnects, reconnect with the last seen `event_id` as `after_event_id`. If the execution already finished, the endpoint emits the terminal `execution_state` snapshot.
-
-### 6. Inspect or cancel
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
-
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST \
-  "http://localhost:8000/agent/executions/${EXECUTION_ID}/cancel" \
+# Enqueue an execution
+kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl -s -X POST \
+  "http://localhost:8080/api/session/${THREAD_KEY}/execute" \
   -H "Content-Type: application/json" \
   -d '{}'
-```
 
-### 7. Release the assignment when finished
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST "http://localhost:8000/agent/threads/${THREAD_KEY}/release" \
-  -H "Content-Type: application/json" \
-  -d '{"release_id":"rel-test-e2e-1","cancel_inflight":true}'
+# Stream/replay events (SSE); reconnect with after_event_id
+kubectl exec -n centaur deploy/centaur-centaur-api-rs -- curl -s -N \
+  "http://localhost:8080/api/session/${THREAD_KEY}/events?after_event_id=0"
 ```
 
 ### Debugging
 
 ```bash
 kubectl get pods -n centaur -l centaur-agent=true
-kubectl exec -n centaur <sandbox-pod> curl -s http://api:8000/health
+kubectl logs -n centaur deploy/centaur-centaur-api-rs --tail=200
 ```
