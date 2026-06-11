@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -39,9 +39,70 @@ use tokio_util::sync::CancellationToken;
 #[derive(Parser, Debug)]
 #[command(
     name = "centaur-codemode-mcp",
-    about = "Code Mode MCP server for external Centaur tool access"
+    about = "Code Mode MCP server for external Centaur tool access",
+    args_conflicts_with_subcommands = true
 )]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+    #[command(flatten)]
+    serve: Args,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Register this service's iron-control identity: upsert the codemode
+    /// principal, assign every discovered tool role, create an iron-proxy
+    /// record bound to it, and write the minted `iprx_` token to a file the
+    /// in-pod iron-proxy container reads at start. Run as an init container.
+    Provision(ProvisionArgs),
+}
+
+#[derive(Parser, Debug)]
+struct ProvisionArgs {
+    /// iron-control admin API base URL (same as api-rs's IRON_CONTROL_URL).
+    #[arg(long, env = "IRON_CONTROL_URL")]
+    iron_control_url: String,
+
+    /// iron-control admin API key.
+    #[arg(long, env = "IRON_CONTROL_API_KEY")]
+    iron_control_api_key: String,
+
+    /// iron-control logical namespace (must match api-rs, which registers the
+    /// tool roles there at startup).
+    #[arg(long, env = "IRON_CONTROL_NAMESPACE", default_value = "default")]
+    iron_control_namespace: String,
+
+    /// Stable principal upsert key for this service.
+    #[arg(long, env = "CODEMODE_PRINCIPAL", default_value = "codemode-mcp")]
+    principal: String,
+
+    /// Proxy record name. Set per pod (e.g. the pod name) so each pod
+    /// generation binds its own proxy record, mirroring per-sandbox proxies.
+    #[arg(long, env = "CODEMODE_PROXY_NAME", default_value = "codemode-mcp")]
+    proxy_name: String,
+
+    /// Where to write the minted iron-proxy token (shared emptyDir).
+    #[arg(
+        long,
+        env = "CODEMODE_PROXY_TOKEN_FILE",
+        default_value = "/handoff/iron-proxy-token"
+    )]
+    token_file: PathBuf,
+}
+
+#[derive(Parser, Debug)]
 struct Args {
+    /// Run install-tool-shims (and `--env`) before serving so the catalog,
+    /// proxy package, and union venv exist. Used when the container starts
+    /// from a fresh filesystem.
+    #[arg(long, env = "CODEMODE_BOOTSTRAP")]
+    bootstrap: bool,
+
+    /// install-tool-shims executable used by --bootstrap.
+    #[arg(long, env = "CODEMODE_INSTALLER", default_value = "install-tool-shims")]
+    installer: PathBuf,
+
     /// Address to bind. Keep on loopback or a tailnet interface; this service
     /// executes model-written Python.
     #[arg(long, env = "CODEMODE_BIND", default_value = "127.0.0.1:8765")]
@@ -434,11 +495,110 @@ impl ServerHandler for CodeModeServer {
     }
 }
 
+/// Upsert the codemode principal, assign it every discovered tool role, and
+/// bind a fresh iron-proxy record to it. Idempotent except for the proxy
+/// record, which is minted per pod generation (token is only returned at
+/// create), mirroring per-sandbox proxies.
+async fn provision(args: ProvisionArgs) -> anyhow::Result<()> {
+    use centaur_iron_control::{IdentityInput, IronControlClient, managed_labels};
+
+    let client = IronControlClient::new(&args.iron_control_url, &args.iron_control_api_key);
+    let namespace = &args.iron_control_namespace;
+
+    let principal = client
+        .upsert_principal(&IdentityInput {
+            namespace: namespace.clone(),
+            foreign_id: args.principal.clone(),
+            name: "Code Mode MCP".to_owned(),
+            labels: managed_labels(),
+        })
+        .await
+        .context("upserting codemode principal")?;
+
+    // api-rs registers one role per discovered tool at startup; grant them all.
+    // The infra role (harness LLM auth) is deliberately not assigned: scripts
+    // call tools, not model APIs.
+    let roles = client
+        .list_roles(namespace, &[])
+        .await
+        .context("listing iron-control roles")?;
+    let tool_roles: Vec<_> = roles
+        .iter()
+        .filter(|role| {
+            role.foreign_id
+                .as_deref()
+                .is_some_and(|foreign_id| foreign_id.starts_with("tool-"))
+        })
+        .collect();
+    anyhow::ensure!(
+        !tool_roles.is_empty(),
+        "no tool-* roles in iron-control namespace {namespace}; is api-rs up and pointed at the same namespace?"
+    );
+    for role in &tool_roles {
+        client
+            .assign_role(&principal.id, &role.id)
+            .await
+            .with_context(|| format!("assigning role {}", role.name))?;
+    }
+
+    let proxy = client
+        .create_proxy(&args.proxy_name, &principal.id)
+        .await
+        .context("creating iron-proxy record")?;
+    let token = proxy
+        .token
+        .context("iron-control returned no proxy token at create")?;
+    if let Some(parent) = args.token_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&args.token_file, &token)
+        .with_context(|| format!("writing {}", args.token_file.display()))?;
+
+    tracing::info!(
+        principal = %principal.id,
+        proxy = %proxy.id,
+        roles = tool_roles.len(),
+        token_file = %args.token_file.display(),
+        "codemode iron-control identity provisioned"
+    );
+    Ok(())
+}
+
+/// Run install-tool-shims and the union-env build before serving. Shim install
+/// failures are fatal (the index is the service's data source); union-env
+/// failures only warn (the proxy falls back to per-tool CLI dispatch).
+async fn bootstrap(installer: &std::path::Path) -> anyhow::Result<()> {
+    let status = tokio::process::Command::new(installer)
+        .status()
+        .await
+        .with_context(|| format!("running {}", installer.display()))?;
+    anyhow::ensure!(status.success(), "install-tool-shims failed: {status}");
+    let env_status = tokio::process::Command::new(installer)
+        .arg("--env")
+        .status()
+        .await;
+    match env_status {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            tracing::warn!(%status, "union env build failed; tool calls fall back to CLI dispatch");
+        }
+        Err(err) => tracing::warn!(%err, "union env build did not run"),
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
-    let args = Args::parse();
+    let cli = Cli::parse();
+    let args = match cli.command {
+        Some(Command::Provision(args)) => return provision(args).await,
+        None => cli.serve,
+    };
+    if args.bootstrap {
+        bootstrap(&args.installer).await?;
+    }
     let config = Arc::new(CodeModeConfig::from_args(&args));
     if !config.index_path.is_file() {
         tracing::warn!(

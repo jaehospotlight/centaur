@@ -326,6 +326,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "centaur-iron-control",
  "clap",
  "rmcp",
  "schemars",

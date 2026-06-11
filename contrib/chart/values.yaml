@@ -262,6 +262,21 @@ slackbotv2:
   extraEnv: {}
   resources: {}
 
+# Code Mode MCP server — exposes Centaur tools to external MCP clients (local
+# Claude Code / Codex, typically over Tailscale) as three tools (list_tools /
+# tool_api / run_python). Scripts execute next to the tools and egress through
+# an in-pod managed iron-proxy bound to a `codemode-mcp` principal holding all
+# tool-* roles, exactly like sandbox pods. Requires ironControl.enabled and the
+# apiRs image (it ships the binary + bootstrap toolchain). Internal sandboxes
+# do not consume this service. Expose the Service via tailnet ingress only —
+# run_python executes arbitrary Python.
+codemodeMcp:
+  enabled: false
+  port: 8765
+  # Must match api-rs's IRON_CONTROL_NAMESPACE (where tool roles register).
+  ironControlNamespace: default
+  extraEnv: {}
+
 postgres:
   enabled: true
   image:

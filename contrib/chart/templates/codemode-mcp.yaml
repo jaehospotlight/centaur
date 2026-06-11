@@ -1,0 +1,281 @@
+{{- if .Values.codemodeMcp.enabled }}
+{{- if not .Values.ironControl.enabled }}
+{{- fail "codemodeMcp.enabled requires ironControl.enabled (tool secrets are injected via a managed iron-proxy)" }}
+{{- end }}
+# Code Mode MCP server: external MCP clients (Claude Code / Codex over
+# Tailscale) compose Centaur tools in Python via run_python. Egress is wired
+# exactly like sandbox pods: a provision init container mints an iron-proxy
+# record bound to a codemode principal (all tool-* roles), an in-pod iron-proxy
+# syncs that principal's secrets from iron-control, and the server's spawned
+# scripts egress through it (placeholders swapped for real secrets in-flight).
+# Internal sandboxes do NOT use this service; they mount the tools directly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "centaur.componentName" (dict "root" . "component" "codemode-mcp") }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "codemode-mcp") | nindent 4 }}
+spec:
+  # Singleton: one principal/proxy identity per pod generation.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "codemode-mcp") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/infra-secrets: {{ include "centaur.infraSecretsChecksum" . }}
+      labels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "codemode-mcp") | nindent 8 }}
+        # Admits this pod to policies that allow managed iron-proxy pods:
+        # iron-control /proxy/sync ingress and onepassword-connect ingress.
+        # The in-pod proxy and the provision init container both rely on it.
+        centaur.ai/iron-proxy: "true"
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Mints the iron-control identity and hands the iprx_ token to the
+        # iron-proxy container over the shared emptyDir.
+        - name: provision
+          image: {{ printf "%s:%s" .Values.apiRs.image.repository .Values.apiRs.image.tag | quote }}
+          imagePullPolicy: {{ .Values.apiRs.image.pullPolicy }}
+          command: ["centaur-codemode-mcp", "provision"]
+          env:
+            - name: IRON_CONTROL_URL
+              value: {{ include "centaur.ironControlUrl" . | quote }}
+            - name: IRON_CONTROL_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "centaur.secretEnvName" . }}
+                  key: {{ printf "%sIRON_CONTROL_INITIAL_API_KEY" .Values.secretManager.envPrefix }}
+            - name: IRON_CONTROL_NAMESPACE
+              value: {{ .Values.codemodeMcp.ironControlNamespace | quote }}
+            # Per-pod proxy record, mirroring per-sandbox proxies.
+            - name: CODEMODE_PROXY_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: handoff
+              mountPath: /handoff
+        # Builds tool shims, the centaur_tools proxy package, and the union
+        # venv. Runs before proxy env exists so uv can reach PyPI directly.
+        - name: bootstrap
+          image: {{ printf "%s:%s" .Values.apiRs.image.repository .Values.apiRs.image.tag | quote }}
+          imagePullPolicy: {{ .Values.apiRs.image.pullPolicy }}
+          command: ["/bin/sh", "-c", "install-tool-shims && install-tool-shims --env"]
+          env:
+            - name: TOOL_DIRS
+              value: /app/tools
+            - name: CENTAUR_TOOL_BIN_DIR
+              value: /var/lib/codemode/bin
+            - name: CENTAUR_TOOL_PROXY_DIR
+              value: /var/lib/codemode/proxy
+            - name: CENTAUR_TOOL_ENV_DIR
+              value: /var/lib/codemode/venv
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/codemode
+      containers:
+        # Managed-mode iron-proxy, identical contract to per-sandbox proxies:
+        # pulls the principal's effective config from iron-control with the
+        # minted token; nothing local but listeners and the CA.
+        - name: iron-proxy
+          image: {{ printf "%s:%s" .Values.ironProxy.image.repository .Values.ironProxy.image.tag | quote }}
+          imagePullPolicy: {{ .Values.ironProxy.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - 'export IRON_PROXY_TOKEN="$(cat /handoff/iron-proxy-token)" && exec /entrypoint.sh'
+          env:
+            - name: IRON_CONTROL_PLANE_URL
+              value: {{ include "centaur.ironControlUrl" . | quote }}
+            - name: IRON_MANAGEMENT_API_KEY
+              value: unused-local-sidecar-key
+            - name: IRON_PROXY_TUNNEL_LISTEN
+              value: {{ printf ":%v" .Values.ironProxy.service.proxyPort | quote }}
+            - name: IRON_TLS_MODE
+              value: mitm
+            - name: IRON_TLS_CA_CERT
+              value: /etc/iron-proxy/ca.crt
+            - name: IRON_TLS_CA_KEY
+              value: /etc/iron-proxy/ca.key
+            - name: IRON_LOG_LEVEL
+              value: info
+          ports:
+            - name: proxy
+              containerPort: {{ .Values.ironProxy.service.proxyPort }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.ironProxy.service.proxyPort }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: iron-proxy-config
+              mountPath: /etc/iron-proxy
+            - name: iron-proxy-certs
+              mountPath: /certs
+            - name: iron-proxy-ca
+              mountPath: /etc/iron-proxy-ca
+              readOnly: true
+            - name: handoff
+              mountPath: /handoff
+              readOnly: true
+        - name: codemode-mcp
+          image: {{ printf "%s:%s" .Values.apiRs.image.repository .Values.apiRs.image.tag | quote }}
+          imagePullPolicy: {{ .Values.apiRs.image.pullPolicy }}
+          command:
+            - centaur-codemode-mcp
+            - --bind
+            - {{ printf "0.0.0.0:%v" .Values.codemodeMcp.port | quote }}
+          env:
+            - name: TOOL_DIRS
+              value: /app/tools
+            - name: CENTAUR_TOOL_BIN_DIR
+              value: /var/lib/codemode/bin
+            - name: CENTAUR_TOOL_PROXY_DIR
+              value: /var/lib/codemode/proxy
+            - name: CENTAUR_TOOL_ENV_DIR
+              value: /var/lib/codemode/venv
+            - name: CENTAUR_TOOL_LOG_FILE
+              value: /var/lib/codemode/calls.jsonl
+            # Egress through the in-pod iron-proxy, exactly like sandbox pods:
+            # tool HTTP calls carry placeholder values that the proxy swaps for
+            # real secrets in-flight.
+            - name: HTTP_PROXY
+              value: {{ printf "http://127.0.0.1:%v" .Values.ironProxy.service.proxyPort | quote }}
+            - name: HTTPS_PROXY
+              value: {{ printf "http://127.0.0.1:%v" .Values.ironProxy.service.proxyPort | quote }}
+            - name: http_proxy
+              value: {{ printf "http://127.0.0.1:%v" .Values.ironProxy.service.proxyPort | quote }}
+            - name: https_proxy
+              value: {{ printf "http://127.0.0.1:%v" .Values.ironProxy.service.proxyPort | quote }}
+            - name: NO_PROXY
+              value: "localhost,127.0.0.1,.svc,.cluster.local"
+            - name: no_proxy
+              value: "localhost,127.0.0.1,.svc,.cluster.local"
+            # Trust the proxy's MITM CA, mirroring sandbox env.
+            - name: SSL_CERT_FILE
+              value: /firewall-certs/ca-cert.pem
+            - name: REQUESTS_CA_BUNDLE
+              value: /firewall-certs/ca-cert.pem
+            - name: CURL_CA_BUNDLE
+              value: /firewall-certs/ca-cert.pem
+            - name: NODE_EXTRA_CA_CERTS
+              value: /firewall-certs/ca-cert.pem
+            - name: GIT_SSL_CAINFO
+              value: /firewall-certs/ca-cert.pem
+{{- range $name, $value := .Values.codemodeMcp.extraEnv }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+{{- end }}
+          ports:
+            - name: mcp
+              containerPort: {{ .Values.codemodeMcp.port }}
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.codemodeMcp.port }}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/codemode
+            - name: firewall-ca-cert
+              mountPath: /firewall-certs
+              readOnly: true
+      volumes:
+        - name: handoff
+          emptyDir: {}
+        - name: state
+          emptyDir: {}
+        - name: iron-proxy-config
+          emptyDir: {}
+        - name: iron-proxy-certs
+          emptyDir: {}
+        - name: iron-proxy-ca
+          secret:
+            secretName: {{ .Values.firewall.existingCaKeySecretName }}
+        - name: firewall-ca-cert
+          secret:
+            secretName: {{ .Values.firewall.existingCaSecretName }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "centaur.componentName" (dict "root" . "component" "codemode-mcp") }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "codemode-mcp") | nindent 4 }}
+spec:
+  selector:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "codemode-mcp") | nindent 4 }}
+  ports:
+    - name: mcp
+      port: {{ .Values.codemodeMcp.port }}
+      targetPort: mcp
+{{- if .Values.networkPolicy.enabled }}
+---
+{{- $ingressSourceNamespaces := default .Values.networkPolicy.ingressControllerNamespaces .Values.networkPolicy.ingressSourceNamespaces }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "centaur.componentName" (dict "root" . "component" "codemode-mcp") }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "codemode-mcp") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "codemode-mcp") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # MCP clients arrive through the ingress/tailnet path only.
+    - from:
+{{- range $ingressSourceNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+{{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.codemodeMcp.port }}
+  egress:
+    # provision init + in-pod iron-proxy /proxy/sync. (The pod also carries
+    # centaur.ai/iron-proxy=true so iron-control's ingress admits it.)
+    - to:
+        - podSelector:
+            matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "iron-control") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ironControl.service.httpPort }}
+{{- if eq .Values.ironProxy.secretSource "onepassword-connect" }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app: {{ include "centaur.onepasswordConnectAppName" . | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ include "centaur.onepasswordConnectPort" . }}
+{{- end }}
+    # In-pod iron-proxy MITM egress to tool APIs, and the bootstrap init's
+    # direct PyPI fetches (uv builds the union venv before the proxy starts).
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+{{- end }}
+{{- end }}
