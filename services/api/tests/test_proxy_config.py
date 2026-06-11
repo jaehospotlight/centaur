@@ -876,12 +876,52 @@ def test_render_emits_header_and_gcp_auth_transforms(
     assert names == ["allowlist", "secrets", "gcp_auth", "header_allowlist"]
     secrets_block = next(t for t in cfg["transforms"] if t["name"] == "secrets")
     entry = secrets_block["config"]["secrets"][0]
-    assert "inject" not in entry
-    assert entry["replace"]["proxy_value"] == "OPENAI_API_KEY"
-    assert entry["replace"]["match_headers"] == ["Authorization"]
-    assert "match_path" not in entry["replace"]
-    assert "match_query" not in entry["replace"]
+    assert "replace" not in entry
+    assert entry["inject"] == {
+        "header": "Authorization",
+        "formatter": "Bearer {{.Value}}",
+    }
     assert entry["rules"] == [{"host": "api.openai.com"}]
+
+
+def test_render_host_scoped_header_secret_injects_raw_non_auth_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FIREWALL_MANAGER_SECRET_SOURCE", "env")
+    secrets = [
+        HttpSecret(
+            "VENDOR_API_KEY",
+            "VENDOR_API_KEY",
+            hosts=("api.vendor.com",),
+            match_headers=("X-Api-Key",),
+        ),
+    ]
+    cfg = yaml.safe_load(render_proxy_yaml(secrets))
+    secrets_block = next(t for t in cfg["transforms"] if t["name"] == "secrets")
+    entry = secrets_block["config"]["secrets"][0]
+    assert "replace" not in entry
+    assert entry["inject"] == {"header": "X-Api-Key"}
+    assert entry["rules"] == [{"host": "api.vendor.com"}]
+
+
+def test_render_unhosted_header_secret_keeps_legacy_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FIREWALL_MANAGER_SECRET_SOURCE", "env")
+    secrets = [
+        HttpSecret(
+            "LEGACY_API_KEY",
+            "LEGACY_API_KEY",
+            match_headers=("Authorization",),
+        ),
+    ]
+    cfg = yaml.safe_load(render_proxy_yaml(secrets))
+    secrets_block = next(t for t in cfg["transforms"] if t["name"] == "secrets")
+    entry = secrets_block["config"]["secrets"][0]
+    assert "inject" not in entry
+    assert entry["replace"]["proxy_value"] == "LEGACY_API_KEY"
+    assert entry["replace"]["match_headers"] == ["Authorization"]
+    assert entry["rules"] == []
 
 
 def test_render_replace_secret_emits_query_and_path_locations(
@@ -1495,7 +1535,10 @@ def test_render_emits_postgres_listeners_with_env_refs(
     ]
     cfg = yaml.safe_load(render_proxy_yaml(secrets))
     listeners = cfg["postgres"]
-    assert [l["name"] for l in listeners] == ["analytics_pg", "database_url"]
+    assert [listener["name"] for listener in listeners] == [
+        "analytics_pg",
+        "database_url",
+    ]
     assert listeners[0]["listen"] == "0.0.0.0:5432"
     assert listeners[1]["listen"] == "0.0.0.0:5433"
     # upstream.dsn uses the secret_ref directly so iron-proxy can resolve it

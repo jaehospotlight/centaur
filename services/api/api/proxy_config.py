@@ -103,6 +103,13 @@ def _build_source(secret_ref: str) -> dict[str, str]:
     return {"type": "env", "var": secret_ref}
 
 
+def _default_inject_formatter(header: str) -> str:
+    """Return the conventional full header value for an injected raw secret."""
+    if header.lower() in {"authorization", "proxy-authorization"}:
+        return "Bearer {{.Value}}"
+    return ""
+
+
 # Per-sandbox listener that lets a co-located tool-server sidecar reach the
 # core Centaur DB through the proxy (sandboxes are denied direct Postgres
 # egress). Unlike tool ``pg_dsn`` listeners, its upstream is always resolved
@@ -138,7 +145,9 @@ def assign_pg_listen_ports(secrets: list[SecretDef]) -> dict[str, int]:
     return {name: PG_LISTEN_PORT_BASE + idx for idx, name in enumerate(names)}
 
 
-def _secret_action_block(secret: HttpSecret) -> tuple[str, dict[str, Any]]:
+def _secret_action_block(
+    secret: HttpSecret, host_set: set[str] | None = None
+) -> tuple[str, dict[str, Any]]:
     """Return the ``replace``/``inject`` block iron-proxy expects for *secret*.
 
     Replace mode emits the ``proxy_value`` placeholder plus the scan locations
@@ -146,6 +155,20 @@ def _secret_action_block(secret: HttpSecret) -> tuple[str, dict[str, Any]]:
     Inject mode emits the target iron-proxy writes itself — a header (with an
     optional Go-template ``formatter``) or a query parameter.
     """
+    if (
+        secret.mode is SecretMode.REPLACE
+        and (host_set if host_set is not None else secret.hosts)
+        and secret.match_headers
+        and not secret.match_path
+        and not secret.match_query
+    ):
+        if len(secret.match_headers) == 1:
+            block = {"header": secret.match_headers[0]}
+            formatter = _default_inject_formatter(secret.match_headers[0])
+            if formatter:
+                block["formatter"] = formatter
+            return "inject", block
+
     if secret.mode is SecretMode.REPLACE:
         block: dict[str, Any] = {
             "proxy_value": secret.replacer,
@@ -186,7 +209,7 @@ def _build_secret_transform(
 
     entries: list[dict[str, Any]] = []
     for secret, host_set in sorted(by_secret.items(), key=lambda kv: astuple(kv[0])):
-        action, block = _secret_action_block(secret)
+        action, block = _secret_action_block(secret, host_set)
         entries.append(
             {
                 "source": _build_source(secret.secret_ref),
