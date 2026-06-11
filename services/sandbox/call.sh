@@ -11,6 +11,11 @@ TU="${CENTAUR_TOOLS_URL:-$U}"
 T="Accept: text/plain"
 J="Content-Type: application/json"
 
+LOCAL_TOOLS=0
+if [ -z "${CENTAUR_TOOLS_URL:-}" ] && command -v centaur-tools >/dev/null 2>&1; then
+  LOCAL_TOOLS=1
+fi
+
 _host_from_url() {
   printf '%s\n' "$1" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://([^/:]+).*#\1#'
 }
@@ -202,13 +207,20 @@ case "$tool" in
     ;;
   tools)
     # Inject the built-in agent sub-command into the tool listing
-    response="$(request "GET" "$TU/tools")" || { printf '%s\n' "$response"; exit 1; }
-    printf '%s' "$response" | jq -c '. + {"agent":{"description":"Sub-agent dispatch (built-in). Use: call agent execute, call agent status, call agent runtime, call agent stop","methods":["execute","status","runtime","stop"]}}'
+    if [ "$LOCAL_TOOLS" = "1" ]; then
+      response="$(centaur-tools json)" || { printf '%s\n' "$response"; exit 1; }
+      printf '%s' "$response" | jq -c 'map({(.name): {description: ((.description // "") | if . == "" then .package else . end), methods: []}}) | add + {"agent":{"description":"Sub-agent dispatch (built-in). Use: call agent execute, call agent status, call agent runtime, call agent stop","methods":["execute","status","runtime","stop"]}}'
+    else
+      response="$(request "GET" "$TU/tools")" || { printf '%s\n' "$response"; exit 1; }
+      printf '%s' "$response" | jq -c '. + {"agent":{"description":"Sub-agent dispatch (built-in). Use: call agent execute, call agent status, call agent runtime, call agent stop","methods":["execute","status","runtime","stop"]}}'
+    fi
     printf '\n'
     ;;
   discover)
     if [ "$2" = "agent" ]; then
       printf '%s\n' '{"tool":"agent","description":"Sub-agent dispatch (built-in, not a tool plugin)","methods":[{"name":"execute","description":"Spawn a sub-agent. Body: {\"thread_key\":\"task:<purpose>-<id>\",\"message\":\"...\",\"harness\":\"<persona>\"}. Returns {execution_id, status}."},{"name":"status","description":"Poll sub-agent. Usage: call agent status '\''?key=<thread_key>'\''"},{"name":"runtime","description":"Inspect active persona/overlay/available personas for a thread. Usage: call agent runtime '\''?key=<thread_key>'\''"},{"name":"stop","description":"Stop sub-agent. Body: {\"thread_key\":\"...\"}"}]}'
+    elif [ "$LOCAL_TOOLS" = "1" ]; then
+      centaur-tools discover "$2"
     else
       request "GET" "$TU/tools/$2"
     fi
@@ -250,7 +262,13 @@ case "$tool" in
     fi
     ;;
   *)
-    if [ -z "$body" ]; then
+    if [ "$LOCAL_TOOLS" = "1" ]; then
+      if [ -z "$body" ]; then
+        centaur-tools call "$tool" "$method" '{}'
+      else
+        centaur-tools call "$tool" "$method" "$body"
+      fi
+    elif [ -z "$body" ]; then
       request "POST" "$TU/tools/$tool/$method"
     else
       request "POST" "$TU/tools/$tool/$method" "$body"

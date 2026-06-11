@@ -41,6 +41,7 @@ def _discover_scripts(tool_dirs: list[Path]) -> dict[str, dict[str, str]]:
                     "name": name,
                     "project_dir": str(pyproject.parent),
                     "package": str(project.get("name") or pyproject.parent.name),
+                    "description": str(project.get("description") or ""),
                     "entrypoint": str(project_scripts[name]),
                     "client_module": str(
                         ((data.get("tool") or {}).get("centaur") or {}).get("module")
@@ -91,32 +92,65 @@ def load():
 
 
 def usage():
-    print("usage: centaur-tools [list|json|which <name>|run <name> [args...]|call <name> <method> [json]]", file=sys.stderr)
+    print("usage: centaur-tools [list|json|which <name>|discover <name>|run <name> [args...]|call <name> <method> [json]]", file=sys.stderr)
     return 2
 
 
 CALL_RUNNER = r'''
 import asyncio
+import importlib
 import importlib.util
 import inspect
 import json
 from pathlib import Path
 import sys
 
-module_path = Path(sys.argv[1])
-method = sys.argv[2]
-payload = json.loads(sys.argv[3])
+project_dir = Path(sys.argv[1])
+client_module = sys.argv[2]
+method = sys.argv[3]
+payload = json.loads(sys.argv[4])
 
-spec = importlib.util.spec_from_file_location("_centaur_tool_client", module_path)
-if spec is None or spec.loader is None:
-    raise RuntimeError(f"cannot load client module from {{module_path}}")
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
+
+def import_client_module():
+    if not client_module.endswith(".py"):
+        return importlib.import_module(client_module)
+
+    module_path = project_dir / client_module
+    if module_path.parent.joinpath("__init__.py").exists():
+        package_parts = [module_path.stem]
+        package_dir = module_path.parent
+        while package_dir.joinpath("__init__.py").exists():
+            package_parts.append(package_dir.name)
+            package_dir = package_dir.parent
+        sys.path.insert(0, str(package_dir))
+        return importlib.import_module(".".join(reversed(package_parts)))
+
+    spec = importlib.util.spec_from_file_location("_centaur_tool_client", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load client module from {{module_path}}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+module = import_client_module()
+client = module._client() if hasattr(module, "_client") else module
+
+if method == "__centaur_discover__":
+    methods = []
+    for name in sorted(dir(client)):
+        if name.startswith("_"):
+            continue
+        attr = getattr(client, name)
+        if callable(attr):
+            methods.append({{"name": name, "description": inspect.getdoc(attr) or ""}})
+    print(json.dumps({{"tool": payload.get("name"), "description": payload.get("description", ""), "methods": methods}}, default=str, separators=(",", ":")))
+    raise SystemExit(0)
 
 target = getattr(module, method, None)
-if target is None and hasattr(module, "_client"):
-    target = getattr(module._client(), method, None)
+if target is None:
+    target = getattr(client, method, None)
 if target is None:
     raise RuntimeError(f"tool has no method {{method}}")
 
@@ -134,7 +168,6 @@ print(json.dumps(result, default=str, separators=(",", ":")))
 
 def call_tool(tool, method, payload):
     project_dir = Path(tool["project_dir"])
-    module_path = project_dir / tool.get("client_module", "client.py")
     env = os.environ.copy()
     if PYTHONPATH_VALUE:
         if env.get("PYTHONPATH"):
@@ -149,7 +182,8 @@ def call_tool(tool, method, payload):
             "python",
             "-c",
             CALL_RUNNER,
-            str(module_path),
+            str(project_dir),
+            tool.get("client_module", "client.py"),
             method,
             json.dumps(payload, separators=(",", ":")),
         ],
@@ -177,6 +211,20 @@ def main(argv):
             print(f"unknown tool: {{argv[2]}}", file=sys.stderr)
             return 1
         print(tool["project_dir"])
+        return 0
+    if command == "discover" and len(argv) == 3:
+        name = argv[2]
+        if name not in by_name:
+            print(json.dumps({{"error": "unknown_tool", "tool": name}}, separators=(",", ":")))
+            return 1
+        tool = by_name[name]
+        result = call_tool(tool, "__centaur_discover__", tool)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.returncode != 0:
+            if result.stderr:
+                print(result.stderr, file=sys.stderr, end="")
+            return result.returncode
         return 0
     if command == "run" and len(argv) >= 3:
         name = argv[2]
@@ -218,7 +266,12 @@ def main() -> int:
     bin_dir.mkdir(parents=True, exist_ok=True)
 
     scripts = _discover_scripts(tool_dirs)
-    pythonpath = os.environ.get("CENTAUR_TOOL_PYTHONPATH", "")
+    pythonpath_entries = [
+        part for part in os.environ.get("CENTAUR_TOOL_PYTHONPATH", "").split(":") if part
+    ]
+    if Path("/opt/centaur/centaur_sdk").exists() and "/opt/centaur" not in pythonpath_entries:
+        pythonpath_entries.append("/opt/centaur")
+    pythonpath = ":".join(pythonpath_entries)
 
     for name, script in scripts.items():
         _write_tool_shim(bin_dir / name, script, pythonpath)
