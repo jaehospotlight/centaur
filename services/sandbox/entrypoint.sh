@@ -45,8 +45,19 @@ fi
 export CENTAUR_TOOL_PYTHONPATH="${PYTHONPATH:-}"
 unset -f _add_pythonpath_entry
 
+# Code Mode: the generated `centaur_tools` proxy package lives here. It is added
+# to the harness PYTHONPATH (but not CENTAUR_TOOL_PYTHONPATH, so per-tool envs
+# stay clean) so agent-written Python scripts can `from centaur_tools import x`.
+CENTAUR_TOOL_PROXY_DIR="${CENTAUR_TOOL_PROXY_DIR:-$HOME_DIR/.local/share/centaur-tools/python}"
+export CENTAUR_TOOL_PROXY_DIR
+export PYTHONPATH="$CENTAUR_TOOL_PROXY_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 if [ -n "${TOOL_DIRS:-}" ]; then
     install-tool-shims || echo "warning: failed to install Centaur tool CLI shims" >&2
+    # Build the Code Mode union env (all tool deps in one venv) in the
+    # background so it never delays readiness; until the env is ready the
+    # centaur_tools proxy transparently falls back to per-tool CLI dispatch.
+    (install-tool-shims --env || echo "warning: failed to build Code Mode union env" >&2) &
 fi
 
 if [ -d "$STATE_DIR" ] && [ -w "$STATE_DIR" ]; then

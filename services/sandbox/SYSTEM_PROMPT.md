@@ -87,13 +87,26 @@
 |  - Repos at ~/github/ are always available (read-only host mounts)
 
 [Tool CLI access — use shell commands]
-|centaur-tools list              → list available deployment tool CLIs
-|<tool> --help                   → inspect commands/options for one tool
+|centaur-tools list              → list deployment tools with descriptions
+|centaur-tools api <tool>        → compact Python method signatures for one tool (cheaper than --help)
+|<tool> --help                   → inspect commands/options for one tool CLI
 |websearch search "query"        → web research
 |slack search "query"            → Slack search
 |linear search "query"           → Linear issue search
 |vlogs query "level:error"       → recent service errors
 |Tool commands are normal CLIs backed by mounted repo packages. Use them instead of `call <tool> <method>`.
+|
+|[Code Mode — compose tools in Python]
+|For multi-step tool work (3+ calls, fan-out over many items, joins across tools, or large intermediate results), write ONE Python script with the `centaur_tools` proxy instead of many separate shell calls:
+|  from centaur_tools import slack, linear
+|  msgs = slack.search_messages(query="deploy failure", max_results=20)
+|  issues = linear.issues(team_key="INFRA", state="started", limit=20)
+|  # filter/join/aggregate in code; print ONLY the distilled result
+|Run it with `uv run python script.py`. Calls run in-process as plain Python (results are dicts/lists); secrets are still injected at the egress proxy.
+|Fan out with ThreadPoolExecutor(max_workers=8) — calls are thread-safe. Hyphenated tools: `centaur_tools.tool("standard-metrics").method(...)`.
+|Discover methods first with `centaur-tools api <tool>`; signatures there match the Python proxy exactly.
+|Never dump raw API responses into your output — distill in code. For mutating calls, call once and keep returned IDs; do not retry blindly inside loops.
+|For a single one-off lookup, a direct CLI call is still the right choice.
 |
 |[Parallel tool calls]
 |When multiple CLI lookups are independent, issue them in the same assistant turn as separate tool calls instead of waiting for one to finish before starting the next.
