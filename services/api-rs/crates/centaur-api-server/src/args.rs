@@ -605,7 +605,7 @@ impl CodeModeArgs {
         env_dir: &std::path::Path,
     ) -> SandboxSpec {
         let mut args = vec![
-            "codemode-exec".to_owned(),
+            "multiplexer".to_owned(),
             "--max-output-bytes".to_owned(),
             self.max_output_bytes.to_string(),
             "--default-timeout-seconds".to_owned(),
@@ -627,8 +627,8 @@ impl CodeModeArgs {
             .clone()
             .unwrap_or_else(|| "centaur-agent:latest".to_owned());
         let mut spec = SandboxSpec::new(image)
-            .label("centaur.ai/component", "codemode-exec")
-            .env("CENTAUR_WORKLOAD", "codemode-exec");
+            .label("centaur.ai/component", "codemode-multiplexer")
+            .env("CENTAUR_WORKLOAD", "codemode-multiplexer");
         match sandbox.backend {
             SandboxBackendKind::Local => {
                 let binary = self
@@ -1979,6 +1979,57 @@ mod tests {
 
         assert_eq!(args.sandbox.backend, SandboxBackendKind::AgentK8s);
         assert_eq!(args.sandbox.k8s_namespace, "centaur-test");
+    }
+
+    #[test]
+    fn codemode_sandbox_runs_multiplexer_workload() {
+        let args = Args::try_parse_from([
+            "centaur-api-server",
+            "--database-url",
+            "postgres://postgres:postgres@localhost/centaur",
+            "--codemode-mcp-enabled",
+            "--codemode-max-output-bytes",
+            "1234",
+            "--codemode-timeout-seconds",
+            "17",
+            "--codemode-max-concurrency",
+            "3",
+        ])
+        .unwrap();
+
+        let spec = args.codemode.sandbox_spec(
+            &args.sandbox,
+            std::path::Path::new("/tmp/codemode-proxy"),
+            std::path::Path::new("/tmp/codemode-env"),
+        );
+
+        assert_eq!(spec.args[0], "multiplexer");
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair == ["--max-output-bytes", "1234"])
+        );
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair == ["--default-timeout-seconds", "17"])
+        );
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair == ["--max-concurrency", "3"])
+        );
+        assert_eq!(
+            spec.labels.get("centaur.ai/component").map(String::as_str),
+            Some("codemode-multiplexer")
+        );
+        assert_eq!(
+            spec.env
+                .iter()
+                .find(|env| env.name == "CENTAUR_WORKLOAD")
+                .map(|env| env.value.as_str()),
+            Some("codemode-multiplexer")
+        );
     }
 
     #[test]

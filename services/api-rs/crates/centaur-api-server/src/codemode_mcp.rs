@@ -172,7 +172,7 @@ struct CodeModeExecutor {
     claim_lock: Mutex<()>,
 }
 
-type PendingResponse = oneshot::Sender<Result<ExecResponse, String>>;
+type PendingResponse = oneshot::Sender<Result<PythonRunOutput, String>>;
 type PendingResponses = Arc<Mutex<HashMap<String, PendingResponse>>>;
 
 struct SandboxSession {
@@ -299,8 +299,9 @@ impl CodeModeExecutor {
         timeout_seconds: Option<u64>,
     ) -> Result<PythonRunOutput, ErrorData> {
         let session = self.session(principal).await?;
-        let request = ExecRequest {
+        let request = RunPythonRequest {
             id: format!("run_{}", uuid::Uuid::new_v4()),
+            request_type: "codemode.run_python",
             script,
             timeout_seconds,
             max_output_bytes: Some(self.config.max_output_bytes),
@@ -335,10 +336,7 @@ impl CodeModeExecutor {
                 ErrorData::internal_error("Code Mode sandbox response channel closed", None)
             })?
             .map_err(|message| ErrorData::internal_error(message, None))?;
-        Ok(PythonRunOutput {
-            output: response.output,
-            is_error: response.is_error,
-        })
+        Ok(response)
     }
 
     async fn session(
@@ -432,16 +430,9 @@ async fn read_responses(
     let mut lines = BufReader::new(stdout).lines();
     loop {
         match lines.next_line().await {
-            Ok(Some(line)) => match serde_json::from_str::<ExecResponse>(&line) {
+            Ok(Some(line)) => match serde_json::from_str::<MultiplexerEvent>(&line) {
                 Ok(response) => {
-                    if let Some(sender) = pending.lock().await.remove(&response.id) {
-                        let _ = sender.send(Ok(response));
-                    } else {
-                        tracing::warn!(
-                            sandbox_id = %sandbox_id.as_str(),
-                            "received stale Code Mode response"
-                        );
-                    }
+                    handle_multiplexer_event(&sandbox_id, response, &pending).await;
                 }
                 Err(error) => tracing::warn!(
                     sandbox_id = %sandbox_id.as_str(),
@@ -496,20 +487,67 @@ fn internal_error(error: impl std::fmt::Display) -> ErrorData {
     ErrorData::internal_error(error.to_string(), None)
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct ExecRequest {
+async fn handle_multiplexer_event(
+    sandbox_id: &SandboxId,
+    response: MultiplexerEvent,
+    pending: &PendingResponses,
+) {
+    let response_id = response.id.clone();
+    let result = match response.event {
+        MultiplexerEventKind::CodeModeResult { output, is_error } => {
+            Some(Ok(PythonRunOutput { output, is_error }))
+        }
+        MultiplexerEventKind::Error { message } => Some(Err(message)),
+        MultiplexerEventKind::Unknown => {
+            tracing::debug!(
+                sandbox_id = %sandbox_id.as_str(),
+                response_id,
+                "ignoring non-CodeMode multiplexer event"
+            );
+            None
+        }
+    };
+    let Some(result) = result else {
+        return;
+    };
+    if let Some(sender) = pending.lock().await.remove(&response_id) {
+        let _ = sender.send(result);
+    } else {
+        tracing::warn!(
+            sandbox_id = %sandbox_id.as_str(),
+            response_id,
+            "received stale Code Mode response"
+        );
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct RunPythonRequest {
     id: String,
+    #[serde(rename = "type")]
+    request_type: &'static str,
     script: String,
     timeout_seconds: Option<u64>,
     max_output_bytes: Option<usize>,
     principal: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct ExecResponse {
+#[derive(Debug, Deserialize)]
+struct MultiplexerEvent {
     id: String,
-    output: String,
-    is_error: bool,
+    #[serde(flatten)]
+    event: MultiplexerEventKind,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum MultiplexerEventKind {
+    #[serde(rename = "codemode.result")]
+    CodeModeResult { output: String, is_error: bool },
+    #[serde(rename = "error")]
+    Error { message: String },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
