@@ -13,6 +13,25 @@ importers:
 
   .: {}
 
+  packages/ai-sdk:
+    dependencies:
+      '@centaur/harness-events':
+        specifier: workspace:*
+        version: link:../harness-events
+      ai:
+        specifier: ^6.0.203
+        version: 6.0.203(zod@4.4.3)
+    devDependencies:
+      '@types/node':
+        specifier: ^25.7.0
+        version: 25.9.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.0
+        version: 4.1.0(@opentelemetry/api@1.9.1)(@types/node@25.9.0)(vite@8.0.0(@types/node@25.9.0)(jiti@2.6.1)(yaml@2.8.4))
+
   packages/api-client:
     dependencies:
       '@centaur/harness-events':
@@ -70,13 +89,13 @@ importers:
         version: link:../../packages/rendering
       '@chat-adapter/slack':
         specifier: ^4.30.0
-        version: 4.30.0(patch_hash=3969edeaa8632fe39c4f2a10d6c3505e86aa4eb1cb970fb86eacca4f5deea5ca)(zod@4.4.3)
+        version: 4.30.0(patch_hash=3969edeaa8632fe39c4f2a10d6c3505e86aa4eb1cb970fb86eacca4f5deea5ca)(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
       '@chat-adapter/state-pg':
         specifier: ^4.30.0
-        version: 4.30.0(zod@4.4.3)
+        version: 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
       chat:
         specifier: ^4.30.0
-        version: 4.30.0(zod@4.4.3)
+        version: 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
       hono:
         specifier: ^4.12.18
         version: 4.12.19
@@ -86,7 +105,7 @@ importers:
     devDependencies:
       '@chat-adapter/state-memory':
         specifier: ^4.30.0
-        version: 4.30.0(zod@4.4.3)
+        version: 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
       '@slack/web-api':
         specifier: ^7.15.2
         version: 7.16.0
@@ -110,6 +129,22 @@ importers:
         version: 6.0.3
 
 packages:
+
+  '@ai-sdk/gateway@3.0.129':
+    resolution: {integrity: sha512-KEQpZGJuCksc4iFxYtVHeHHG7yH0izGFzJLmRZlriI0hFIzJF9bT2AzJoaTHUI6minlxtP0WKYh84dP18o/Cuw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider-utils@4.0.29':
+    resolution: {integrity: sha512-uhukHaCBvqkwBHkT8C2PrnqKTCoLn3pdHXqtcR9I8ErH+flbzgW4o7VHSNIup9LRu+WBvZIZDQLsx6rwl2tiOA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider@3.0.10':
+    resolution: {integrity: sha512-Q3BZ27qfpYqnCYGvE3vt+Qi6LGOF9R5Nmzn+9JoM1lCRsD9mYaIhfJLkSunN48nfGXJ6n+XNV0J/XVpqGQl7Dw==}
+    engines: {node: '>=18'}
 
   '@chat-adapter/shared@4.30.0':
     resolution: {integrity: sha512-IuYtbn/p1FBXvp7JYGEMLCt07GHOMlyjx7OlZXPJwLTravcyJuP7Q6N31r6c1yubMhM8PLb8eT8l/YnjwYjs9Q==}
@@ -356,6 +391,10 @@ packages:
     engines: {node: '>=16.20.0'}
     hasBin: true
 
+  '@vercel/oidc@3.2.0':
+    resolution: {integrity: sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug==}
+    engines: {node: '>= 20'}
+
   '@vitest/expect@4.1.0':
     resolution: {integrity: sha512-EIxG7k4wlWweuCLG9Y5InKFwpMEOyrMb6ZJ1ihYu02LVj/bzUwn2VMU+13PinsjRW75XnITeFrQBMH5+dLvCDA==}
 
@@ -391,6 +430,12 @@ packages:
   agent-base@6.0.2:
     resolution: {integrity: sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==}
     engines: {node: '>= 6.0.0'}
+
+  ai@6.0.203:
+    resolution: {integrity: sha512-2Qi1ZPGF/FnlvnRqntVgRbUYGeA5ZKFYwTtgu8rcUzMmddArM/nLsvCW69Ip99B1cop6XHRHl+GCKk9t9B+GDA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
 
   assertion-error@2.0.1:
     resolution: {integrity: sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA==}
@@ -519,6 +564,10 @@ packages:
     resolution: {integrity: sha512-Vo1ab+QXPzZ4tCa8SwIHJFaSzy4R6SHf7BY79rFBDf0idraZWAkYrDjDj8uWaSm3S2TK+hJ7/t1CEmZ7jXw+pg==}
     engines: {node: '>=18.0.0'}
 
+  eventsource-parser@3.1.0:
+    resolution: {integrity: sha512-kJezFj9YFAMLeORyi7aCLxLbD5/qWMQnoMVlVPyHIll7lgRJCc3JVln9Vgl9nwQi0YkMnhdGTMNn7CkRRAptMg==}
+    engines: {node: '>=18.0.0'}
+
   expect-type@1.3.0:
     resolution: {integrity: sha512-knvyeauYhqjOYvQ66MznSMs83wmHrCycNEN6Ao+2AeYEfxUIkuiVxdEa1qlGEPK+We3n0THiDciYSsCcgW/DoA==}
     engines: {node: '>=12.0.0'}
@@ -611,6 +660,9 @@ packages:
   jiti@2.6.1:
     resolution: {integrity: sha512-ekilCSN1jwRvIbgeg/57YFh8qQDNbwDb9xT/qu2DAHbFFZUicIl4ygVaAvzveMhMVr3LnpSKTNnwt8PoOfmKhQ==}
     hasBin: true
+
+  json-schema@0.4.0:
+    resolution: {integrity: sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==}
 
   lightningcss-android-arm64@1.32.0:
     resolution: {integrity: sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==}
@@ -1123,20 +1175,38 @@ packages:
 
 snapshots:
 
-  '@chat-adapter/shared@4.30.0(zod@4.4.3)':
+  '@ai-sdk/gateway@3.0.129(zod@4.4.3)':
     dependencies:
-      chat: 4.30.0(zod@4.4.3)
+      '@ai-sdk/provider': 3.0.10
+      '@ai-sdk/provider-utils': 4.0.29(zod@4.4.3)
+      '@vercel/oidc': 3.2.0
+      zod: 4.4.3
+
+  '@ai-sdk/provider-utils@4.0.29(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.10
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.4.3
+
+  '@ai-sdk/provider@3.0.10':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@chat-adapter/shared@4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)':
+    dependencies:
+      chat: 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
     transitivePeerDependencies:
       - ai
       - supports-color
       - zod
 
-  '@chat-adapter/slack@4.30.0(patch_hash=3969edeaa8632fe39c4f2a10d6c3505e86aa4eb1cb970fb86eacca4f5deea5ca)(zod@4.4.3)':
+  '@chat-adapter/slack@4.30.0(patch_hash=3969edeaa8632fe39c4f2a10d6c3505e86aa4eb1cb970fb86eacca4f5deea5ca)(ai@6.0.203(zod@4.4.3))(zod@4.4.3)':
     dependencies:
-      '@chat-adapter/shared': 4.30.0(zod@4.4.3)
+      '@chat-adapter/shared': 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
       '@slack/socket-mode': 2.0.7
       '@slack/web-api': 7.16.0
-      chat: 4.30.0(zod@4.4.3)
+      chat: 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
     transitivePeerDependencies:
       - ai
       - bufferutil
@@ -1145,17 +1215,17 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@chat-adapter/state-memory@4.30.0(zod@4.4.3)':
+  '@chat-adapter/state-memory@4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)':
     dependencies:
-      chat: 4.30.0(zod@4.4.3)
+      chat: 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
     transitivePeerDependencies:
       - ai
       - supports-color
       - zod
 
-  '@chat-adapter/state-pg@4.30.0(zod@4.4.3)':
+  '@chat-adapter/state-pg@4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)':
     dependencies:
-      chat: 4.30.0(zod@4.4.3)
+      chat: 4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3)
       pg: 8.21.0
     transitivePeerDependencies:
       - ai
@@ -1192,8 +1262,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.1
     optional: true
 
-  '@opentelemetry/api@1.9.1':
-    optional: true
+  '@opentelemetry/api@1.9.1': {}
 
   '@oxc-project/runtime@0.115.0': {}
 
@@ -1365,6 +1434,8 @@ snapshots:
       '@typescript/native-preview-win32-arm64': 7.0.0-dev.20260518.1
       '@typescript/native-preview-win32-x64': 7.0.0-dev.20260518.1
 
+  '@vercel/oidc@3.2.0': {}
+
   '@vitest/expect@4.1.0':
     dependencies:
       '@standard-schema/spec': 1.1.0
@@ -1414,6 +1485,14 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  ai@6.0.203(zod@4.4.3):
+    dependencies:
+      '@ai-sdk/gateway': 3.0.129(zod@4.4.3)
+      '@ai-sdk/provider': 3.0.10
+      '@ai-sdk/provider-utils': 4.0.29(zod@4.4.3)
+      '@opentelemetry/api': 1.9.1
+      zod: 4.4.3
+
   assertion-error@2.0.1: {}
 
   asynckit@0.4.0: {}
@@ -1453,7 +1532,7 @@ snapshots:
 
   character-entities@2.0.2: {}
 
-  chat@4.30.0(zod@4.4.3):
+  chat@4.30.0(ai@6.0.203(zod@4.4.3))(zod@4.4.3):
     dependencies:
       '@workflow/serde': 4.1.0-beta.2
       mdast-util-to-string: 4.0.0
@@ -1463,6 +1542,7 @@ snapshots:
       remend: 1.3.0
       unified: 11.0.5
     optionalDependencies:
+      ai: 6.0.203(zod@4.4.3)
       zod: 4.4.3
     transitivePeerDependencies:
       - supports-color
@@ -1537,6 +1617,8 @@ snapshots:
 
   eventsource-parser@3.0.6: {}
 
+  eventsource-parser@3.1.0: {}
+
   expect-type@1.3.0: {}
 
   extend@3.0.2: {}
@@ -1609,6 +1691,8 @@ snapshots:
 
   jiti@2.6.1:
     optional: true
+
+  json-schema@0.4.0: {}
 
   lightningcss-android-arm64@1.32.0:
     optional: true
@@ -2226,7 +2310,6 @@ snapshots:
 
   yaml@2.8.4: {}
 
-  zod@4.4.3:
-    optional: true
+  zod@4.4.3: {}
 
   zwitch@2.0.4: {}
