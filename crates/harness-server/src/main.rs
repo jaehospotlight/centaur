@@ -21,6 +21,8 @@ enum CliCommand {
     #[command(alias = "claude")]
     ClaudeCode(HarnessCommand),
     Amp(HarnessCommand),
+    #[command(alias = "aisdk")]
+    AiSdk(HarnessCommand),
     ValidateJsonrpc,
     ValidateAgentDeltas,
 }
@@ -53,6 +55,7 @@ fn run() -> Result<()> {
         CliCommand::Codex(command) => run_mode(HarnessKind::Codex, command.mode),
         CliCommand::ClaudeCode(command) => run_mode(HarnessKind::ClaudeCode, command.mode),
         CliCommand::Amp(command) => run_mode(HarnessKind::Amp, command.mode),
+        CliCommand::AiSdk(command) => run_mode(HarnessKind::AiSdk, command.mode),
         CliCommand::ValidateJsonrpc => run_validate_jsonrpc(),
         CliCommand::ValidateAgentDeltas => run_validate_agent_deltas(),
     }

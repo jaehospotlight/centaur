@@ -14,6 +14,7 @@ pub enum HarnessKind {
     Codex,
     ClaudeCode,
     Amp,
+    AiSdk,
 }
 
 pub struct ThreadState {

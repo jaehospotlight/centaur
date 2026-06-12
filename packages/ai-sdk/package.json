@@ -3,16 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Vercel AI SDK agent loop served as a Centaur harness (bridge for `harness-server ai-sdk`)",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "centaur-aisdk-bridge": "src/bridge.ts"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@centaur/harness-events": "workspace:*",
-    "ai": "^6.0.203"
+    "@ai-sdk/anthropic": "^3.0.45",
+    "@ai-sdk/provider": "^3.0.10",
+    "ai": "^6.0.203",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.7.0",

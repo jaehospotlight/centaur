@@ -20,6 +20,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::aisdk::AiSdkHarness;
 use crate::amp::AmpHarness;
 use crate::claude::ClaudeCodeHarness;
 use crate::codex::CodexHarnessServer;
@@ -37,6 +38,7 @@ pub fn server_for(kind: HarnessKind) -> Box<dyn AppServerRuntime> {
         HarnessKind::Codex => Box::new(CodexHarnessServer),
         HarnessKind::ClaudeCode => Box::new(AppServerNormalizer::new(ClaudeCodeHarness)),
         HarnessKind::Amp => Box::new(AppServerNormalizer::new(AmpHarness)),
+        HarnessKind::AiSdk => Box::new(AppServerNormalizer::new(AiSdkHarness)),
     }
 }
 
@@ -49,6 +51,7 @@ pub fn run_blocks_server(kind: HarnessKind) -> Result<()> {
         HarnessKind::Codex => crate::codex::run_codex_blocks_server(),
         HarnessKind::ClaudeCode => run_blocks_app_server(&ClaudeCodeHarness),
         HarnessKind::Amp => run_blocks_app_server(&AmpHarness),
+        HarnessKind::AiSdk => run_blocks_app_server(&AiSdkHarness),
     }
 }
 
@@ -404,8 +407,8 @@ fn attachment_block_to_user_input(
     }
 
     if let Some(staged_attachment_id) = non_empty(block.staged_attachment_id.as_deref()) {
-        if let Some(staged) = state.staged.get(staged_attachment_id) {
-            if staged.path.exists() {
+        if let Some(staged) = state.staged.get(staged_attachment_id)
+            && staged.path.exists() {
                 return Ok(local_file_inputs(
                     &staged.path,
                     staged.mime_type.as_deref().or(mime_type),
@@ -415,7 +418,6 @@ fn attachment_block_to_user_input(
                     ),
                 ));
             }
-        }
         return Ok(vec![UserInput::Text {
             text: format!("[Attachment was not staged successfully: {name}]"),
             text_elements: Vec::new(),
@@ -483,11 +485,10 @@ fn handle_attachment_chunk(parsed: BlocksLine, state: &mut BlocksState) -> Resul
         file.write_all(&bytes)?;
     }
 
-    if parsed.final_chunk {
-        if let Some(upload) = state.uploads.remove(attachment_id) {
+    if parsed.final_chunk
+        && let Some(upload) = state.uploads.remove(attachment_id) {
             state.staged.insert(attachment_id.to_string(), upload);
         }
-    }
 
     Ok(())
 }
@@ -680,7 +681,7 @@ fn handle_request<H: HarnessServer, W: Write>(
                 .get_mut(&thread_id)
                 .expect("thread state inserted or existed");
             apply_resume_overrides(state, &params)?;
-            let normalizer = normalizer_for(harness, &state, "turn-placeholder");
+            let normalizer = normalizer_for(harness, state, "turn-placeholder");
             let mut thread = normalizer.thread_snapshot()?;
             if !params.exclude_turns {
                 thread.turns = state.completed_turns.clone();
