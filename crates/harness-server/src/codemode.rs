@@ -41,9 +41,17 @@ struct ExecResponse {
 }
 
 #[derive(Debug)]
-struct RunOutput {
-    output: String,
-    is_error: bool,
+pub(crate) struct CodeModeRunInput {
+    pub(crate) script: String,
+    pub(crate) timeout_seconds: Option<u64>,
+    pub(crate) max_output_bytes: Option<usize>,
+    pub(crate) principal: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CodeModeRunOutput {
+    pub(crate) output: String,
+    pub(crate) is_error: bool,
 }
 
 pub fn default_proxy_dir() -> PathBuf {
@@ -101,31 +109,45 @@ pub fn run_codemode_exec_server(config: CodeModeExecConfig) -> Result<()> {
 }
 
 fn handle_request(config: &CodeModeExecConfig, request: ExecRequest) -> ExecResponse {
+    let output = run_codemode(
+        config,
+        CodeModeRunInput {
+            script: request.script,
+            timeout_seconds: request.timeout_seconds,
+            max_output_bytes: request.max_output_bytes,
+            principal: request.principal,
+        },
+    );
+    ExecResponse {
+        id: request.id,
+        output: output.output,
+        is_error: output.is_error,
+    }
+}
+
+pub(crate) fn run_codemode(
+    config: &CodeModeExecConfig,
+    request: CodeModeRunInput,
+) -> CodeModeRunOutput {
     let principal = request
         .principal
-        .clone()
         .or_else(|| env::var("CENTAUR_CODEMODE_PRINCIPAL").ok())
         .unwrap_or_else(|| "unknown-principal".to_owned());
     let timeout = request
         .timeout_seconds
         .map_or(config.default_timeout, Duration::from_secs);
     let max_output_bytes = request.max_output_bytes.unwrap_or(config.max_output_bytes);
-    let output = run_script(
+    run_script(
         config,
         &request.script,
         timeout,
         max_output_bytes,
         &principal,
     )
-    .unwrap_or_else(|error| RunOutput {
+    .unwrap_or_else(|error| CodeModeRunOutput {
         output: format!("error: {error}"),
         is_error: true,
-    });
-    ExecResponse {
-        id: request.id,
-        output: output.output,
-        is_error: output.is_error,
-    }
+    })
 }
 
 fn run_script(
@@ -134,7 +156,7 @@ fn run_script(
     timeout: Duration,
     max_output_bytes: usize,
     principal: &str,
-) -> Result<RunOutput> {
+) -> Result<CodeModeRunOutput> {
     let id = Uuid::new_v4();
     let script_path = env::temp_dir().join(format!("codemode-{id}.py"));
     let stdout_path = env::temp_dir().join(format!("codemode-{id}.stdout"));
@@ -169,7 +191,7 @@ fn run_script(
                 failed.then(|| status.code().unwrap_or(-1)),
             );
             cleanup_paths([&script_path, &stdout_path, &stderr_path]);
-            return Ok(RunOutput {
+            return Ok(CodeModeRunOutput {
                 output,
                 is_error: failed,
             });
@@ -183,7 +205,7 @@ fn run_script(
     let _ = child.kill();
     let _ = child.wait();
     cleanup_paths([&script_path, &stdout_path, &stderr_path]);
-    Ok(RunOutput {
+    Ok(CodeModeRunOutput {
         output: format!("error: script timed out after {}s", timeout.as_secs()),
         is_error: true,
     })

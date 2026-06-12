@@ -4,6 +4,7 @@ pub mod claude;
 pub mod codemode;
 pub mod codex;
 mod error;
+pub mod multiplexer;
 mod server;
 mod traits;
 mod turn;
@@ -15,6 +16,10 @@ pub use codemode::{
     CodeModeExecConfig, default_env_dir, default_proxy_dir, run_codemode_exec_server,
 };
 pub use error::{HarnessServerError, Result};
+pub use multiplexer::{
+    HarnessProcessKind, MultiplexerCommand, MultiplexerConfig, MultiplexerEvent,
+    MultiplexerEventKind, MultiplexerRequest, run_multiplexer_server,
+};
 pub use server::{run_blocks_server, run_harness_server, run_validate_jsonrpc, server_for};
 pub use traits::{
     AppServerNormalizer, AppServerRuntime, HarnessKind, HarnessServer, NormalizedContent,

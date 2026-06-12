@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use harness_server::{
-    CodeModeExecConfig, HarnessKind, Result, default_env_dir, default_proxy_dir, run_blocks_server,
-    run_codemode_exec_server, run_harness_server, run_validate_agent_deltas, run_validate_jsonrpc,
+    CodeModeExecConfig, HarnessKind, MultiplexerConfig, Result, default_env_dir, default_proxy_dir,
+    run_blocks_server, run_codemode_exec_server, run_harness_server, run_multiplexer_server,
+    run_validate_agent_deltas, run_validate_jsonrpc,
 };
 use std::{path::PathBuf, time::Duration};
 
@@ -23,6 +24,7 @@ enum CliCommand {
     ClaudeCode(HarnessCommand),
     Amp(HarnessCommand),
     CodemodeExec(CodeModeExecCommand),
+    Multiplexer(CodeModeExecCommand),
     ValidateJsonrpc,
     ValidateAgentDeltas,
 }
@@ -75,6 +77,15 @@ fn run() -> Result<()> {
             max_output_bytes: command.max_output_bytes,
             default_timeout: Duration::from_secs(command.default_timeout_seconds),
             max_concurrency: command.max_concurrency,
+        }),
+        CliCommand::Multiplexer(command) => run_multiplexer_server(MultiplexerConfig {
+            codemode: CodeModeExecConfig {
+                proxy_dir: command.proxy_dir,
+                env_dir: command.env_dir,
+                max_output_bytes: command.max_output_bytes,
+                default_timeout: Duration::from_secs(command.default_timeout_seconds),
+                max_concurrency: command.max_concurrency,
+            },
         }),
         CliCommand::ValidateJsonrpc => run_validate_jsonrpc(),
         CliCommand::ValidateAgentDeltas => run_validate_agent_deltas(),
