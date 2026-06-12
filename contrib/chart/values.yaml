@@ -34,7 +34,10 @@ ironProxy:
 # Base tools delivery for api-rs sandboxes. When enabled, repo-cache keeps `repo`
 # fresh on each node and a tools-bootstrap init container copies `subdir` into
 # each sandbox's /app/tools, so adding a tool is a push to the repo, not an image
-# rebuild. `port` is legacy (the deprecated tool-server sidecar) and unused here.
+# rebuild. Prefer overlays.sources for new deployments; toolServer.* remains as
+# a compatibility input and maps to the first ordered overlay source when
+# overlays.sources is empty. `port` is legacy (the deprecated tool-server
+# sidecar) and unused here.
 toolServer:
   enabled: true
   port: 8001
@@ -121,6 +124,24 @@ secrets:
 overlay:
   mountPath: /app/overlay/org
   systemPrompt: ""
+
+# Ordered repo-cache-backed overlays. Each source repo is synced by repo-cache;
+# api-rs reads tools/workflows from /var/lib/centaur/repos, while sandboxes read
+# matching workflow/skill paths from /home/agent/github. Later sources shadow
+# earlier ones when names collide. When sources is empty, toolServer.repo and
+# toolServer.extraSources are mapped into this shape for compatibility.
+overlays:
+  sources: []
+  # - repo: paradigmxyz/centaur
+  #   ref: ""
+  #   toolsSubdir: tools
+  #   workflowsSubdir: workflows
+  #   skillsSubdir: .agents/skills
+  # - repo: your-org/centaur-overlay
+  #   ref: abc1234
+  #   toolsSubdir: tools
+  #   workflowsSubdir: workflows
+  #   skillsSubdir: .agents/skills
 
 sandbox:
   controller: pod

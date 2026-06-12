@@ -104,6 +104,27 @@
         "systemPrompt": { "type": "string" }
       }
     },
+    "overlays": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "repo": { "type": "string" },
+              "ref": { "type": "string" },
+              "toolsSubdir": { "type": "string" },
+              "workflowsSubdir": { "type": "string" },
+              "skillsSubdir": { "type": "string" },
+              "promptPath": { "type": "string" },
+              "personasSubdir": { "type": "string" }
+            },
+            "required": ["repo"]
+          }
+        }
+      }
+    },
     "sandbox": {
       "type": "object",
       "properties": {

@@ -12,9 +12,10 @@ an overlay repo under `tools/` so the base Centaur repo stays generic. See
 configuration.
 
 Tools are loaded from `TOOL_DIRS`. In an overlay deployment, the tool must exist
-under `/app/overlay/org/tools` in the API container. Later tool directories can
-shadow earlier tools with the same name, so an overlay can replace a base tool
-intentionally.
+under the configured `toolsSubdir` in its repo-cache checkout, for example
+`/var/lib/centaur/repos/your-org/centaur-overlay/tools` in the API container.
+Later tool directories can shadow earlier tools with the same name, so an
+overlay can replace a base tool intentionally.
 
 See the [Tool Directory](/reference/tool-directory) for the integrations that
 ship with Centaur.
@@ -126,5 +127,6 @@ kubectl exec -n centaur-system deploy/centaur-centaur-api -- \
 ```
 
 Check that the tool appears and that missing-secret warnings match what you
-expect. If a tool is missing, inspect the overlay image contents, `TOOL_DIRS`,
-the tool directory name, and `[tool.centaur] module = "client.py"`.
+expect. If a tool is missing, inspect the configured repo/ref in repo-cache,
+`TOOL_DIRS`, the tool directory name, and
+`[tool.centaur] module = "client.py"`.

@@ -541,6 +541,8 @@ struct SandboxArgs {
     workflow_host_image: Option<String>,
     #[arg(long = "workflow-host-command", env = "WORKFLOW_HOST_COMMAND")]
     workflow_host_command: Option<String>,
+    #[arg(long = "kubernetes-workflow-dirs", env = "KUBERNETES_WORKFLOW_DIRS")]
+    kubernetes_workflow_dirs: Option<String>,
     #[command(flatten)]
     tools_source: ToolsArgs,
     #[arg(
@@ -751,6 +753,9 @@ impl SandboxArgs {
     }
 
     fn agent_k8s_workflow_dirs(&self) -> String {
+        if let Some(value) = clean_optional_value(self.kubernetes_workflow_dirs.as_deref()) {
+            return value;
+        }
         if let Some(repo) = clean_optional_value(self.tools_source.repo.as_deref()) {
             return format!("{SANDBOX_REPOS_MOUNT_PATH}/{repo}/workflows");
         }
@@ -1827,6 +1832,8 @@ mod tests {
             "/home/agent/github/paradigmxyz/centaur/tools",
             "--tools-overlay-path",
             "/home/agent/github/tempoxyz/centaur-tempo/tools",
+            "--kubernetes-workflow-dirs",
+            "/home/agent/github/paradigmxyz/centaur/workflows:/home/agent/github/tempoxyz/centaur-tempo/workflows",
             "--session-sandbox-passthrough-env",
             "TOOLS_PATH,TOOLS_OVERLAY_PATH",
         ])
@@ -1855,6 +1862,15 @@ mod tests {
                 .find(|env| env.name == "TOOLS_OVERLAY_PATH")
                 .map(|env| env.value.as_str()),
             Some("/home/agent/github/tempoxyz/centaur-tempo/tools")
+        );
+        assert_eq!(
+            spec.env
+                .iter()
+                .find(|env| env.name == "WORKFLOW_DIRS")
+                .map(|env| env.value.as_str()),
+            Some(
+                "/home/agent/github/paradigmxyz/centaur/workflows:/home/agent/github/tempoxyz/centaur-tempo/workflows"
+            )
         );
     }
 
