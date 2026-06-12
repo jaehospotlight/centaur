@@ -130,6 +130,20 @@ spec:
               value: {{ join ":" $toolDirs | quote }}
             - name: WORKFLOW_DIRS
               value: {{ $workflowDirs | quote }}
+{{- if .Values.apiRs.codeModeMcp.enabled }}
+            - name: CODEMODE_MCP_ENABLED
+              value: "true"
+            - name: CODEMODE_BOOTSTRAP
+              value: {{ .Values.apiRs.codeModeMcp.bootstrap | quote }}
+            - name: CODEMODE_DEFAULT_PRINCIPAL
+              value: {{ .Values.apiRs.codeModeMcp.defaultPrincipal | quote }}
+            - name: CODEMODE_MAX_OUTPUT_BYTES
+              value: {{ .Values.apiRs.codeModeMcp.maxOutputBytes | quote }}
+            - name: CODEMODE_TIMEOUT_SECONDS
+              value: {{ .Values.apiRs.codeModeMcp.timeoutSeconds | quote }}
+            - name: CODEMODE_MAX_CONCURRENCY
+              value: {{ .Values.apiRs.codeModeMcp.maxConcurrency | quote }}
+{{- end }}
 {{- if .Values.overlay.systemPrompt }}
             - name: CENTAUR_OVERLAY_DIR
               value: {{ .Values.overlay.mountPath | quote }}

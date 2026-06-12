@@ -1,6 +1,7 @@
 pub mod amp;
 pub mod anthropic;
 pub mod claude;
+pub mod codemode;
 pub mod codex;
 mod error;
 mod server;
@@ -10,6 +11,9 @@ mod util;
 mod validation;
 pub mod wire;
 
+pub use codemode::{
+    CodeModeExecConfig, default_env_dir, default_proxy_dir, run_codemode_exec_server,
+};
 pub use error::{HarnessServerError, Result};
 pub use server::{run_blocks_server, run_harness_server, run_validate_jsonrpc, server_for};
 pub use traits::{

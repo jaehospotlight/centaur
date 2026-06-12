@@ -302,9 +302,12 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "http",
  "kube",
  "reqwest",
+ "rmcp",
  "rustls",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -313,29 +316,12 @@ dependencies = [
  "subtle",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml",
  "tower",
  "tower-http",
  "tracing",
  "urlencoding",
-]
-
-[[package]]
-name = "centaur-codemode-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "centaur-iron-control",
- "clap",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 

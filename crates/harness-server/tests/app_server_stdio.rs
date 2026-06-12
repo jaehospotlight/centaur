@@ -1080,7 +1080,7 @@ fn run_native_anthropic(harness: Harness, prompt: &str, timeout: Duration) -> Na
                     .get("is_partial")
                     .and_then(Value::as_bool)
                     .is_some_and(|partial| !partial)
-                    || !value.get("is_partial").is_some()
+                    || value.get("is_partial").is_none()
                 {
                     run.final_assistant_text = assistant_text_from_message(&value["message"]);
                 }

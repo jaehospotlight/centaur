@@ -23,10 +23,13 @@ clap.workspace = true
 eventsource-stream.workspace = true
 futures-util.workspace = true
 hmac.workspace = true
+http = "1"
 hex.workspace = true
 kube.workspace = true
 reqwest.workspace = true
+rmcp.workspace = true
 rustls.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
@@ -34,11 +37,13 @@ sha2.workspace = true
 subtle.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util.workspace = true
 toml.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 urlencoding.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

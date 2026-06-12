@@ -1,7 +1,7 @@
 mod args;
 mod tool_discovery;
 
-use centaur_api_server::build_router_with_session_and_workflow_runtime;
+use centaur_api_server::build_router_with_session_and_workflow_and_codemode_runtime;
 use centaur_session_runtime::SessionRuntime;
 use centaur_session_sqlx::PgSessionStore;
 use centaur_telemetry::{TelemetryConfig, init_telemetry};
@@ -25,6 +25,7 @@ async fn main() -> Result<(), ServerError> {
         store.run_migrations().await?;
     }
     let sandbox_runtime = args.sandbox_runtime().await?;
+    let codemode = args.codemode_mcp_config(sandbox_runtime.clone()).await?;
     let mut runtime = SessionRuntime::new(store.clone(), sandbox_runtime);
     let mut warm_pool_bootstrap_principal = None;
     let mut workflow_host_principal = None;
@@ -67,7 +68,7 @@ async fn main() -> Result<(), ServerError> {
 
     axum::serve(
         listener,
-        build_router_with_session_and_workflow_runtime(runtime, workflows),
+        build_router_with_session_and_workflow_and_codemode_runtime(runtime, workflows, codemode),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
@@ -109,6 +110,8 @@ pub(crate) enum ServerError {
     ToolDiscovery(#[from] tool_discovery::ToolDiscoveryError),
     #[error("tool source error: {0}")]
     ToolSource(String),
+    #[error("code mode error: {0}")]
+    CodeMode(String),
     #[error("iron-proxy requires both firewall CA cert and key Secret names")]
     MissingIronProxyCaSecret,
     #[error("{0}")]

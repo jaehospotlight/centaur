@@ -243,6 +243,16 @@ apiRs:
     periodSeconds: 10
     timeoutSeconds: 5
   terminationGracePeriodSeconds: 35
+  # Code Mode MCP is served by api-rs at /mcp. Scripts execute in Centaur
+  # sandboxes via harness-server codemode-exec, so Kubernetes mode uses the
+  # normal per-sandbox iron-proxy and principal binding path.
+  codeModeMcp:
+    enabled: false
+    bootstrap: true
+    defaultPrincipal: codemode-mcp-dev
+    maxOutputBytes: 10000
+    timeoutSeconds: 120
+    maxConcurrency: 8
   extraEnv: {}
   resources: {}
 
@@ -261,21 +271,6 @@ slackbotv2:
   triggerBotAllowlist: ""
   extraEnv: {}
   resources: {}
-
-# Code Mode MCP server — exposes Centaur tools to external MCP clients (local
-# Claude Code / Codex, typically over Tailscale) as three tools (list_tools /
-# tool_api / run_python). Scripts execute next to the tools and egress through
-# an in-pod managed iron-proxy bound to a `codemode-mcp` principal holding all
-# tool-* roles, exactly like sandbox pods. Requires ironControl.enabled and the
-# apiRs image (it ships the binary + bootstrap toolchain). Internal sandboxes
-# do not consume this service. Expose the Service via tailnet ingress only —
-# run_python executes arbitrary Python.
-codemodeMcp:
-  enabled: false
-  port: 8765
-  # Must match api-rs's IRON_CONTROL_NAMESPACE (where tool roles register).
-  ironControlNamespace: default
-  extraEnv: {}
 
 postgres:
   enabled: true

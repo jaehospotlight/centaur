@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use harness_server::{
-    HarnessKind, Result, run_blocks_server, run_harness_server, run_validate_agent_deltas,
-    run_validate_jsonrpc,
+    CodeModeExecConfig, HarnessKind, Result, default_env_dir, default_proxy_dir, run_blocks_server,
+    run_codemode_exec_server, run_harness_server, run_validate_agent_deltas, run_validate_jsonrpc,
 };
+use std::{path::PathBuf, time::Duration};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -21,6 +22,7 @@ enum CliCommand {
     #[command(alias = "claude")]
     ClaudeCode(HarnessCommand),
     Amp(HarnessCommand),
+    CodemodeExec(CodeModeExecCommand),
     ValidateJsonrpc,
     ValidateAgentDeltas,
 }
@@ -29,6 +31,20 @@ enum CliCommand {
 struct HarnessCommand {
     #[arg(long, value_enum, default_value_t = ServerMode::Blocks)]
     mode: ServerMode,
+}
+
+#[derive(Debug, Parser)]
+struct CodeModeExecCommand {
+    #[arg(long, default_value_os_t = default_proxy_dir())]
+    proxy_dir: PathBuf,
+    #[arg(long, default_value_os_t = default_env_dir())]
+    env_dir: PathBuf,
+    #[arg(long, default_value_t = 10_000)]
+    max_output_bytes: usize,
+    #[arg(long, default_value_t = 120)]
+    default_timeout_seconds: u64,
+    #[arg(long, default_value_t = 8)]
+    max_concurrency: usize,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -53,6 +69,13 @@ fn run() -> Result<()> {
         CliCommand::Codex(command) => run_mode(HarnessKind::Codex, command.mode),
         CliCommand::ClaudeCode(command) => run_mode(HarnessKind::ClaudeCode, command.mode),
         CliCommand::Amp(command) => run_mode(HarnessKind::Amp, command.mode),
+        CliCommand::CodemodeExec(command) => run_codemode_exec_server(CodeModeExecConfig {
+            proxy_dir: command.proxy_dir,
+            env_dir: command.env_dir,
+            max_output_bytes: command.max_output_bytes,
+            default_timeout: Duration::from_secs(command.default_timeout_seconds),
+            max_concurrency: command.max_concurrency,
+        }),
         CliCommand::ValidateJsonrpc => run_validate_jsonrpc(),
         CliCommand::ValidateAgentDeltas => run_validate_agent_deltas(),
     }

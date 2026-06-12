@@ -1,13 +1,15 @@
 pub mod client;
+mod codemode_mcp;
 mod error;
 mod routes;
 pub mod types;
 
 pub use centaur_session_runtime::{SandboxRuntime, SessionRuntime};
+pub use codemode_mcp::CodeModeMcpConfig;
 pub use error::ApiError;
 pub use routes::{
-    build_router_with_runtime, build_router_with_session_and_workflow_runtime,
-    build_router_with_session_runtime,
+    build_router_with_runtime, build_router_with_session_and_workflow_and_codemode_runtime,
+    build_router_with_session_and_workflow_runtime, build_router_with_session_runtime,
 };
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use centaur_api_server::SandboxRuntime;
+use centaur_api_server::{CodeModeMcpConfig, SandboxRuntime};
 use centaur_iron_control::{
     IdentityInput, IronControlClient, RoleSpec, SessionRegistrar, register_role,
 };
@@ -58,6 +58,8 @@ pub(crate) struct Args {
     pub(crate) server: ServerArgs,
     #[command(flatten)]
     sandbox: SandboxArgs,
+    #[command(flatten)]
+    codemode: CodeModeArgs,
 }
 
 impl Args {
@@ -88,6 +90,13 @@ impl Args {
         self.sandbox
             .workflow_host_sandbox_runtime(bootstrap_iron_control_principal)
             .await
+    }
+
+    pub(crate) async fn codemode_mcp_config(
+        &self,
+        sandbox_runtime: SandboxRuntime,
+    ) -> Result<Option<CodeModeMcpConfig>, ServerError> {
+        self.codemode.config(&self.sandbox, sandbox_runtime).await
     }
 }
 
@@ -432,6 +441,221 @@ pub(crate) struct ServerArgs {
     pub(crate) bind_addr: SocketAddr,
     #[arg(long, env = "RUN_MIGRATIONS", default_value_t = false)]
     pub(crate) run_migrations: bool,
+}
+
+#[derive(Debug, ClapArgs)]
+struct CodeModeArgs {
+    #[arg(
+        long = "codemode-mcp-enabled",
+        env = "CODEMODE_MCP_ENABLED",
+        default_value_t = false
+    )]
+    enabled: bool,
+    #[arg(
+        long = "codemode-bootstrap",
+        env = "CODEMODE_BOOTSTRAP",
+        default_value_t = true
+    )]
+    bootstrap: bool,
+    #[arg(
+        long = "codemode-installer",
+        env = "CODEMODE_INSTALLER",
+        default_value = "install-tool-shims"
+    )]
+    installer: PathBuf,
+    #[arg(long = "codemode-bin-dir", env = "CENTAUR_TOOL_BIN_DIR")]
+    bin_dir: Option<PathBuf>,
+    #[arg(long = "codemode-proxy-dir", env = "CENTAUR_TOOL_PROXY_DIR")]
+    proxy_dir: Option<PathBuf>,
+    #[arg(long = "codemode-env-dir", env = "CENTAUR_TOOL_ENV_DIR")]
+    env_dir: Option<PathBuf>,
+    #[arg(
+        long = "codemode-default-principal",
+        env = "CODEMODE_DEFAULT_PRINCIPAL",
+        default_value = "codemode-mcp-dev"
+    )]
+    default_principal: String,
+    #[arg(
+        long = "codemode-max-output-bytes",
+        env = "CODEMODE_MAX_OUTPUT_BYTES",
+        default_value_t = 10_000
+    )]
+    max_output_bytes: usize,
+    #[arg(
+        long = "codemode-timeout-seconds",
+        env = "CODEMODE_TIMEOUT_SECONDS",
+        default_value_t = 120
+    )]
+    default_timeout_seconds: u64,
+    #[arg(
+        long = "codemode-max-concurrency",
+        env = "CODEMODE_MAX_CONCURRENCY",
+        default_value_t = 8
+    )]
+    max_concurrency: usize,
+    #[arg(
+        long = "codemode-harness-server-path",
+        env = "CODEMODE_HARNESS_SERVER_PATH"
+    )]
+    harness_server_path: Option<PathBuf>,
+}
+
+impl CodeModeArgs {
+    async fn config(
+        &self,
+        sandbox: &SandboxArgs,
+        runtime: SandboxRuntime,
+    ) -> Result<Option<CodeModeMcpConfig>, ServerError> {
+        if !self.enabled {
+            return Ok(None);
+        }
+
+        let bin_dir = self.bin_dir();
+        let proxy_dir = self.proxy_dir();
+        let env_dir = self.env_dir();
+        if self.bootstrap {
+            self.bootstrap_tools(&bin_dir, &proxy_dir, &env_dir).await?;
+        }
+        let sandbox_spec = self.sandbox_spec(sandbox, &proxy_dir, &env_dir);
+        info!(
+            index_path = %bin_dir.join(".centaur-tools.json").display(),
+            proxy_dir = %proxy_dir.display(),
+            env_dir = %env_dir.display(),
+            backend = ?sandbox.backend,
+            "Code Mode MCP enabled"
+        );
+        Ok(Some(CodeModeMcpConfig {
+            runtime,
+            sandbox_spec,
+            index_path: bin_dir.join(".centaur-tools.json"),
+            max_output_bytes: self.max_output_bytes,
+            default_timeout_seconds: self.default_timeout_seconds,
+            default_principal: self.default_principal.clone(),
+        }))
+    }
+
+    async fn bootstrap_tools(
+        &self,
+        bin_dir: &std::path::Path,
+        proxy_dir: &std::path::Path,
+        env_dir: &std::path::Path,
+    ) -> Result<(), ServerError> {
+        self.run_installer(
+            "installing Code Mode tool catalog",
+            [],
+            bin_dir,
+            proxy_dir,
+            env_dir,
+        )
+        .await?;
+        self.run_installer(
+            "building Code Mode Python environment",
+            ["--env"],
+            bin_dir,
+            proxy_dir,
+            env_dir,
+        )
+        .await
+    }
+
+    async fn run_installer<const N: usize>(
+        &self,
+        operation: &str,
+        args: [&str; N],
+        bin_dir: &std::path::Path,
+        proxy_dir: &std::path::Path,
+        env_dir: &std::path::Path,
+    ) -> Result<(), ServerError> {
+        let output = tokio::process::Command::new(&self.installer)
+            .args(args)
+            .env("CENTAUR_TOOL_BIN_DIR", bin_dir)
+            .env("CENTAUR_TOOL_PROXY_DIR", proxy_dir)
+            .env("CENTAUR_TOOL_ENV_DIR", env_dir)
+            .output()
+            .await
+            .map_err(|error| {
+                ServerError::CodeMode(format!(
+                    "{operation} failed to start ({}): {error}",
+                    self.installer.display()
+                ))
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(ServerError::CodeMode(format!(
+            "{operation} failed with status {}: {}",
+            output.status,
+            stderr.trim()
+        )))
+    }
+
+    fn sandbox_spec(
+        &self,
+        sandbox: &SandboxArgs,
+        proxy_dir: &std::path::Path,
+        env_dir: &std::path::Path,
+    ) -> SandboxSpec {
+        let mut args = vec![
+            "codemode-exec".to_owned(),
+            "--max-output-bytes".to_owned(),
+            self.max_output_bytes.to_string(),
+            "--default-timeout-seconds".to_owned(),
+            self.default_timeout_seconds.to_string(),
+            "--max-concurrency".to_owned(),
+            self.max_concurrency.max(1).to_string(),
+        ];
+        if matches!(sandbox.backend, SandboxBackendKind::Local) {
+            args.extend([
+                "--proxy-dir".to_owned(),
+                proxy_dir.to_string_lossy().to_string(),
+                "--env-dir".to_owned(),
+                env_dir.to_string_lossy().to_string(),
+            ]);
+        }
+
+        let image = sandbox
+            .agent_image
+            .clone()
+            .unwrap_or_else(|| "centaur-agent:latest".to_owned());
+        let mut spec = SandboxSpec::new(image)
+            .label("centaur.ai/component", "codemode-exec")
+            .env("CENTAUR_WORKLOAD", "codemode-exec");
+        match sandbox.backend {
+            SandboxBackendKind::Local => {
+                let binary = self
+                    .harness_server_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "harness-server".to_owned());
+                spec = spec.command([binary]).args(args);
+            }
+            SandboxBackendKind::AgentK8s => {
+                spec = spec
+                    .command(["/entrypoint.sh"])
+                    .args(std::iter::once("harness-server".to_owned()).chain(args));
+            }
+        }
+        spec
+    }
+
+    fn bin_dir(&self) -> PathBuf {
+        self.bin_dir
+            .clone()
+            .unwrap_or_else(|| home_relative(".local/bin"))
+    }
+
+    fn proxy_dir(&self) -> PathBuf {
+        self.proxy_dir
+            .clone()
+            .unwrap_or_else(|| home_relative(".local/share/centaur-tools/python"))
+    }
+
+    fn env_dir(&self) -> PathBuf {
+        self.env_dir
+            .clone()
+            .unwrap_or_else(|| home_relative(".local/share/centaur-tools/venv"))
+    }
 }
 
 #[derive(Debug, ClapArgs)]
@@ -1599,6 +1823,13 @@ fn default_workflow_host_path() -> String {
         .join("workflow_host.py")
         .to_string_lossy()
         .to_string()
+}
+
+fn home_relative(path: &str) -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(path)
 }
 
 fn harness_fragment_engine_name(engine: &HarnessType) -> &'static str {

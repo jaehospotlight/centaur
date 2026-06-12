@@ -18,12 +18,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
     case "$RUST_BUILD_PROFILE" in \
-      release) cargo build --release -p centaur-api-server -p centaur-codemode-mcp \
-        && cp target/release/centaur-api-server /usr/local/bin/centaur-api-server \
-        && cp target/release/centaur-codemode-mcp /usr/local/bin/centaur-codemode-mcp ;; \
-      debug|dev) cargo build -p centaur-api-server -p centaur-codemode-mcp \
-        && cp target/debug/centaur-api-server /usr/local/bin/centaur-api-server \
-        && cp target/debug/centaur-codemode-mcp /usr/local/bin/centaur-codemode-mcp ;; \
+      release) cargo build --release -p centaur-api-server \
+        && cp target/release/centaur-api-server /usr/local/bin/centaur-api-server ;; \
+      debug|dev) cargo build -p centaur-api-server \
+        && cp target/debug/centaur-api-server /usr/local/bin/centaur-api-server ;; \
       *) echo "unsupported RUST_BUILD_PROFILE=$RUST_BUILD_PROFILE" >&2; exit 2 ;; \
     esac
 
@@ -32,7 +30,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends ca-certificates python3
 COPY --from=builder /usr/local/bin/centaur-api-server /usr/local/bin/centaur-api-server
-COPY --from=builder /usr/local/bin/centaur-codemode-mcp /usr/local/bin/centaur-codemode-mcp
 # Code Mode bootstrap toolchain: uv builds the union tool venv, the installer
 # generates shims/proxy/index, and centaur_sdk rides PYTHONPATH for tool clients.
 COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /uvx /usr/local/bin/

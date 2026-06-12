@@ -680,7 +680,7 @@ fn handle_request<H: HarnessServer, W: Write>(
                 .get_mut(&thread_id)
                 .expect("thread state inserted or existed");
             apply_resume_overrides(state, &params)?;
-            let normalizer = normalizer_for(harness, &state, "turn-placeholder");
+            let normalizer = normalizer_for(harness, state, "turn-placeholder");
             let mut thread = normalizer.thread_snapshot()?;
             if !params.exclude_turns {
                 thread.turns = state.completed_turns.clone();
