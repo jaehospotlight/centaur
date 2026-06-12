@@ -94,18 +94,14 @@ overlays:
   sources:
     - repo: paradigmxyz/centaur
       ref: <centaur-commit-sha>
-      toolsSubdir: tools
-      workflowsSubdir: workflows
-      skillsSubdir: .agents/skills
     - repo: your-org/centaur-acme
       ref: <overlay-commit-sha>
-      toolsSubdir: tools
-      workflowsSubdir: workflows
-      skillsSubdir: .agents/skills
 ```
 
-Private overlay repos should use `repoCache.githubToken` so repo-cache can clone
-them.
+Each source defaults to the conventional `tools/`, `workflows/`, and
+`.agents/skills/` subdirectories; directories a repo does not contain are
+skipped, and a subdir set to `""` disables that surface. Private overlay repos
+should use `repoCache.githubToken` so repo-cache can clone them.
 
 ## 4. Point the infra repo at your revisions and images
 
@@ -119,14 +115,8 @@ overlays:
   sources:
     - repo: paradigmxyz/centaur
       ref: <centaur-commit-sha>
-      toolsSubdir: tools
-      workflowsSubdir: workflows
-      skillsSubdir: .agents/skills
     - repo: your-org/centaur-acme
       ref: <overlay-commit-sha>
-      toolsSubdir: tools
-      workflowsSubdir: workflows
-      skillsSubdir: .agents/skills
 ```
 
 The template also pins the base Centaur service images:

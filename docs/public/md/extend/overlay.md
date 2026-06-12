@@ -48,20 +48,27 @@ overlays:
   sources:
     - repo: paradigmxyz/centaur
       ref: 5da358a2
-      toolsSubdir: tools
-      workflowsSubdir: workflows
-      skillsSubdir: .agents/skills
 
     - repo: your-org/centaur-overlay
       ref: abc1234
-      toolsSubdir: tools
-      workflowsSubdir: workflows
-      skillsSubdir: .agents/skills
 ```
 
 `repo` is `owner/name` on GitHub. `ref` can be a branch, tag, or commit SHA;
-pinning a SHA is recommended for production. Omit a subdirectory key when that
-repo should not contribute that surface.
+pinning a SHA is recommended for production.
+
+Each source defaults to the conventional layout — `toolsSubdir: tools`,
+`workflowsSubdir: workflows`, `skillsSubdir: .agents/skills` — and directories
+a repo does not contain are skipped at runtime, so a skills-only overlay needs
+no extra configuration. Set a subdir to a non-default path to relocate it, or
+to `""` to explicitly disable that surface for a source:
+
+```yaml
+    - repo: your-org/workflows-only
+      ref: def5678
+      workflowsSubdir: flows
+      toolsSubdir: ""
+      skillsSubdir: ""
+```
 
 For compatibility, when `overlays.sources` is empty the chart maps
 `toolServer.repo`, `toolServer.ref`, `toolServer.subdir`, and

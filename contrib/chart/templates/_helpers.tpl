@@ -66,9 +66,27 @@ app.kubernetes.io/component: {{ .component }}
 {{- if .repo -}}
 {{- $source := dict "repo" .repo -}}
 {{- with .ref }}{{- $_ := set $source "ref" . -}}{{- end -}}
+{{- /*
+Subdir defaults: an omitted key falls back to the conventional layout
+(tools, workflows, .agents/skills); a key explicitly set to "" disables
+that surface for the source. Missing directories are skipped at runtime,
+so the defaults are safe for repos that only carry some surfaces.
+*/ -}}
+{{- if hasKey . "toolsSubdir" -}}
 {{- with .toolsSubdir }}{{- $_ := set $source "toolsSubdir" . -}}{{- end -}}
+{{- else -}}
+{{- $_ := set $source "toolsSubdir" "tools" -}}
+{{- end -}}
+{{- if hasKey . "workflowsSubdir" -}}
 {{- with .workflowsSubdir }}{{- $_ := set $source "workflowsSubdir" . -}}{{- end -}}
+{{- else -}}
+{{- $_ := set $source "workflowsSubdir" "workflows" -}}
+{{- end -}}
+{{- if hasKey . "skillsSubdir" -}}
 {{- with .skillsSubdir }}{{- $_ := set $source "skillsSubdir" . -}}{{- end -}}
+{{- else -}}
+{{- $_ := set $source "skillsSubdir" ".agents/skills" -}}
+{{- end -}}
 {{- with .promptPath }}{{- $_ := set $source "promptPath" . -}}{{- end -}}
 {{- with .personasSubdir }}{{- $_ := set $source "personasSubdir" . -}}{{- end -}}
 {{- $sources = append $sources $source -}}

@@ -130,18 +130,21 @@ overlay:
 # matching workflow/skill paths from /home/agent/github. Later sources shadow
 # earlier ones when names collide. When sources is empty, toolServer.repo and
 # toolServer.extraSources are mapped into this shape for compatibility.
+#
+# Subdirs default to the conventional layout — toolsSubdir: tools,
+# workflowsSubdir: workflows, skillsSubdir: .agents/skills — so most sources
+# only need `repo` and `ref`. Directories missing from a repo are skipped at
+# runtime. Set a subdir to "" to explicitly disable that surface for a source.
 overlays:
   sources: []
   # - repo: paradigmxyz/centaur
   #   ref: ""
-  #   toolsSubdir: tools
-  #   workflowsSubdir: workflows
-  #   skillsSubdir: .agents/skills
   # - repo: your-org/centaur-overlay
   #   ref: abc1234
-  #   toolsSubdir: tools
-  #   workflowsSubdir: workflows
-  #   skillsSubdir: .agents/skills
+  # - repo: your-org/workflows-only
+  #   ref: def5678
+  #   toolsSubdir: ""
+  #   skillsSubdir: ""
 
 sandbox:
   controller: pod

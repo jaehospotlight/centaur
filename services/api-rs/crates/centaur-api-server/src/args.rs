@@ -176,7 +176,9 @@ impl IronControlToolReconciler {
             for source in &self.tool_git_sources {
                 source.sync()?;
                 let tools_dir = source.tools_dir();
-                if source.repo_cache_path.is_some() && !tools_dir.is_dir() {
+                // Skip sources without a tools tree (chart-defaulted subdirs
+                // make this a normal case for non-tool overlay repos).
+                if !tools_dir.is_dir() {
                     continue;
                 }
                 dirs.push(tools_dir);
@@ -314,11 +316,15 @@ impl ToolGitSource {
             }
         }
 
+        // A synced source without the tools subdir is skipped by callers, not
+        // an error: with chart-defaulted subdirs, workflows- or skills-only
+        // overlay repos legitimately carry no tools tree.
         if !self.tools_dir().is_dir() {
-            return Err(ServerError::ToolSource(format!(
-                "configured tools subdir does not exist after sync: {}",
-                self.tools_dir().display()
-            )));
+            warn!(
+                repo = %self.repo,
+                tools_dir = %self.tools_dir().display(),
+                "tools subdir missing after sync; skipping tools source"
+            );
         }
         Ok(())
     }
@@ -1079,7 +1085,9 @@ impl SandboxArgs {
             for source in sources {
                 source.sync()?;
                 let tools_dir = source.tools_dir();
-                if source.repo_cache_path.is_some() && !tools_dir.is_dir() {
+                // Skip sources without a tools tree (chart-defaulted subdirs
+                // make this a normal case for non-tool overlay repos).
+                if !tools_dir.is_dir() {
                     continue;
                 }
                 dirs.push(tools_dir);
