@@ -752,6 +752,7 @@ describe('slackbotv2', () => {
       })
     )
     expect(appendedAttachment).not.toHaveProperty('dataBase64')
+    expect(JSON.stringify(codexApi.appends[0]!.body).length).toBeLessThan(64 * 1024)
 
     const inputLines = codexApi.executes[0]!.body.input_lines
     expect(inputLines.length).toBeGreaterThan(1)

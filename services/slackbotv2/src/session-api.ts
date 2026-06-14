@@ -211,6 +211,7 @@ export function sessionStreamError(error: unknown): RustSessionStreamEvent {
 /** Largest attachment we are willing to buffer in memory and inline as base64. */
 export const MAX_INLINE_ATTACHMENT_BYTES = 100 * 1024 * 1024
 const MAX_CODEX_INPUT_LINE_CHARS = 900 * 1024
+const MAX_SESSION_ATTACHMENT_BASE64_CHARS = 64 * 1024
 const STAGED_ATTACHMENT_CHUNK_CHARS = 700 * 1024
 
 async function serializeAttachment(attachment: Attachment): Promise<SlackbotV2ApiAttachment> {
@@ -744,7 +745,7 @@ function sessionAttachmentPart(attachment: SlackbotV2ApiAttachment): JsonObject 
   const part: JsonObject = { ...attachment, attachment_type: attachment.type, type: 'attachment' }
   if (
     typeof attachment.dataBase64 === 'string'
-    && attachment.dataBase64.length > MAX_CODEX_INPUT_LINE_CHARS
+    && attachment.dataBase64.length > MAX_SESSION_ATTACHMENT_BASE64_CHARS
   ) {
     delete part.dataBase64
     part.dataBase64Omitted = `${attachment.dataBase64.length} base64 chars omitted from stored session message`
