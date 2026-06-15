@@ -47,14 +47,18 @@ Declare every repo that contributes runtime extension points:
 overlays:
   sources:
     - repo: paradigmxyz/centaur
-      ref: 5da358a2
+      ref: main
 
     - repo: your-org/centaur-overlay
-      ref: abc1234
+      ref: main
 ```
 
 `repo` is `owner/name` on GitHub. `ref` can be a branch, tag, or commit SHA;
-pinning a SHA is recommended for production.
+omit it, set it to `""`, or set it to `main` to track the repo's default
+branch. Pinning a SHA is recommended when you need a fully reproducible
+production rollout, but many overlay repos intentionally track `main` so a
+reviewed merge is enough for new sandboxes to pick up the change after
+repo-cache refreshes.
 
 Each source defaults to the conventional layout — `toolsSubdir: tools`,
 `workflowsSubdir: workflows`, `skillsSubdir: .agents/skills` — and directories
@@ -64,7 +68,7 @@ to `""` to explicitly disable that surface for a source:
 
 ```yaml
     - repo: your-org/workflows-only
-      ref: def5678
+      ref: main
       workflowsSubdir: flows
       toolsSubdir: ""
       skillsSubdir: ""

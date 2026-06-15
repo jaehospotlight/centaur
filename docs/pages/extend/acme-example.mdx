@@ -75,17 +75,20 @@ The included workflow demonstrates how an overlay can add durable workflows
 without changing the base Centaur API. The included skill and sandbox prompt
 show how to package organization-specific agent guidance.
 
-## 3. Pin the overlay repo revision
+## 3. Configure the overlay repo
 
-Commit your overlay changes and record the revision you want Centaur to run:
+Commit your overlay changes. For production deployments that require an exact
+reproducible rollout, record the revision you want Centaur to run:
 
 ```bash
 git -C centaur-acme rev-parse --short HEAD
 ```
 
 The Centaur chart's repo-cache DaemonSet checks out the overlay repo on each
-node, so changing tools, workflows, or skills is a Git push plus a Helm values
-update — no API or sandbox image rebuild is required for overlay-only changes.
+node, so changing tools, workflows, or skills is a Git push — no API, sandbox,
+or overlay image rebuild is required for overlay-only changes. New sandboxes see
+the latest cached checkout; existing sandboxes can run `centaur-tools refresh`
+when they need to pull the current overlay into their workspace.
 
 Configure the ordered overlay sources in Helm values:
 
@@ -95,13 +98,15 @@ overlays:
     - repo: paradigmxyz/centaur
       ref: <centaur-commit-sha>
     - repo: your-org/centaur-acme
-      ref: <overlay-commit-sha>
+      ref: main
 ```
 
 Each source defaults to the conventional `tools/`, `workflows/`, and
 `.agents/skills/` subdirectories; directories a repo does not contain are
 skipped, and a subdir set to `""` disables that surface. Private overlay repos
-should use `repoCache.githubToken` so repo-cache can clone them.
+should use `repoCache.githubToken` so repo-cache can clone them. Set the overlay
+`ref` to a commit SHA instead of `main` only when you want pinned overlay
+rollouts.
 
 ## 4. Point the infra repo at your revisions and images
 
@@ -116,7 +121,7 @@ overlays:
     - repo: paradigmxyz/centaur
       ref: <centaur-commit-sha>
     - repo: your-org/centaur-acme
-      ref: <overlay-commit-sha>
+      ref: main
 ```
 
 The template also pins the base Centaur service images:
@@ -133,8 +138,9 @@ The template also pins the base Centaur service images:
 ```
 
 Replace those tags with images you built from `centaur`, or wire them to your
-image automation. Overlay-only changes are rolled out by updating the overlay
-repo `ref` in values.
+image automation. Overlay-only changes roll out through repo-cache; if the
+overlay source tracks `main`, merging to the overlay repo is enough for new
+sandboxes to pick up the next refreshed checkout.
 
 For production, pin the Centaur chart source to a commit SHA instead of tracking
 `main`:
