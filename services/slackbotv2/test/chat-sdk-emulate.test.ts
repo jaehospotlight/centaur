@@ -658,7 +658,17 @@ describe('slackbotv2', () => {
     expect(rootResponse.status).toBe(200)
     await Promise.all(rootWaits)
 
-    await postUserMessage('Important reply between mentions.', rootMention.ts)
+    const contextFileUrl = `${slackApi.url}/files/captured.png`
+    const contextReply = await postUserMessage('Important reply between mentions.', rootMention.ts)
+    slackApi.setMessageFiles(contextReply.ts, [
+      {
+        id: 'F-context-image',
+        mimetype: 'image/png',
+        name: 'context-image.png',
+        size: 14,
+        url_private: contextFileUrl
+      }
+    ])
     const replyMention = await postUserMessage(
       `<@${BOT_USER_ID}> now use the full thread`,
       rootMention.ts
@@ -703,6 +713,8 @@ describe('slackbotv2', () => {
     expect(replyExecuteInput).toContain('start from this root mention')
     expect(replyExecuteInput).toContain('Important reply between mentions.')
     expect(replyExecuteInput).toContain('now use the full thread')
+    expect(replyExecuteInput).toContain('context-image.png')
+    expect(replyExecuteInput).toContain(contextFileUrl)
   })
 
   it('stages large Slack file attachments without exceeding session input line limits', async () => {
@@ -3469,6 +3481,7 @@ type PatchedSlackApi = {
   failStreamAppendsAfter(count: number, error: string): void
   failStreamStopsLongerThan(maxChars: number): void
   reset(): void
+  setMessageFiles(ts: string, files: Record<string, unknown>[]): void
   setUserProfile(userId: string, profile: Record<string, unknown>): void
   userProfileMethodRequestCount(userId: string, method: string): number
   userProfileRequestCount(userId: string): number
@@ -3504,6 +3517,7 @@ type SlackStreamTranscript = {
 async function startPatchedSlackApi(emulatorUrl: string): Promise<PatchedSlackApi> {
   const upstreamUrl = loopbackUrl(emulatorUrl)
   const calls: StreamCall[] = []
+  const messageFiles = new Map<string, Record<string, unknown>[]>()
   const userProfiles = new Map<string, Record<string, unknown>>()
   const userProfileRequests = new Map<string, number>()
   const threadNotFoundReplies = new Set<string>()
@@ -3516,6 +3530,7 @@ async function startPatchedSlackApi(emulatorUrl: string): Promise<PatchedSlackAp
       appendFailure,
       calls,
       maxStreamStopChars,
+      messageFiles,
       port,
       streams,
       threadNotFoundReplies,
@@ -3548,8 +3563,12 @@ async function startPatchedSlackApi(emulatorUrl: string): Promise<PatchedSlackAp
       appendFailure.error = ''
       threadNotFoundReplies.clear()
       streams.clear()
+      messageFiles.clear()
       userProfiles.clear()
       userProfileRequests.clear()
+    },
+    setMessageFiles(ts: string, files: Record<string, unknown>[]) {
+      messageFiles.set(ts, files)
     },
     setUserProfile(userId: string, profile: Record<string, unknown>) {
       userProfiles.set(userId, profile)
@@ -3571,6 +3590,7 @@ async function handlePatchedSlackRequest(
     appendFailure: { error: string; remaining: number }
     calls: StreamCall[]
     maxStreamStopChars: number | null
+    messageFiles: Map<string, Record<string, unknown>[]>
     port: number
     streams: Map<string, StreamRecord>
     threadNotFoundReplies: Set<string>
@@ -3683,6 +3703,22 @@ async function handlePatchedSlackRequest(
       await sendWebResponse(res, Response.json({ ok: false, error: 'thread_not_found' }))
       return
     }
+    const bodyBytes = await request.arrayBuffer()
+    const proxied = await fetch(new URL(`${path}${url.search}`, input.upstreamUrl), {
+      method: request.method,
+      headers: request.headers,
+      body: bodyBytes.byteLength > 0 ? bodyBytes : undefined
+    })
+    const payload = (await proxied.json()) as Record<string, unknown>
+    const messages = Array.isArray(payload.messages) ? payload.messages : []
+    for (const message of messages) {
+      if (!message || typeof message !== 'object' || Array.isArray(message)) continue
+      const record = message as Record<string, unknown>
+      const files = input.messageFiles.get(stringField(record.ts))
+      if (files) record.files = files
+    }
+    await sendWebResponse(res, Response.json(payload, { status: proxied.status }))
+    return
   }
 
   const body = await request.arrayBuffer()

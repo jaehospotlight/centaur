@@ -35,6 +35,7 @@ import { isAllowedSlackMessage, isAllowedSlackWebhookBody } from './slack-events
 import type {
   ForwardSessionInput,
   SlackbotV2,
+  SlackbotV2ApiAttachment,
   SlackbotV2ApiMessage,
   SlackbotV2ExecuteSessionResponse,
   SlackbotV2MessageMode,
@@ -1370,7 +1371,7 @@ function slackApiMessageFromSlack(
   const actorId = slackActorId(message)
   const isBot = Boolean(message.bot_id || message.bot_profile)
   return {
-    attachments: [],
+    attachments: slackAttachmentsFromApiMessage(message),
     author: {
       fullName: actorId,
       isBot,
@@ -1390,6 +1391,34 @@ function slackApiMessageFromSlack(
     threadId: currentMessage.threadId,
     timestamp: slackTimestampToIso(id)
   }
+}
+
+function slackAttachmentsFromApiMessage(message: Record<string, unknown>): SlackbotV2ApiAttachment[] {
+  const files = Array.isArray(message.files) ? message.files : []
+  return files
+    .filter((file): file is Record<string, unknown> => {
+      return Boolean(file) && typeof file === 'object' && !Array.isArray(file)
+    })
+    .map(file => {
+      const mimeType = stringField(file.mimetype) || stringField(file.mime_type)
+      return {
+        height: numberField(file.height) ?? numberField(file.original_h),
+        mimeType,
+        name: stringField(file.name) || stringField(file.title) || stringField(file.id),
+        size: numberField(file.size),
+        type: slackAttachmentType(mimeType),
+        url: stringField(file.url_private_download)
+          || stringField(file.url_private)
+          || stringField(file.permalink),
+        width: numberField(file.width) ?? numberField(file.original_w)
+      }
+    })
+}
+
+function slackAttachmentType(mimeType: string): SlackbotV2ApiAttachment['type'] {
+  if (mimeType.startsWith('image/')) return 'image'
+  if (mimeType.startsWith('video/')) return 'video'
+  return 'file'
 }
 
 function slackRawRecord(message: ChatMessage): Record<string, unknown> {
@@ -1423,6 +1452,10 @@ function isSelfSlackBotMessage(
 
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function numberField(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function compareSlackTs(a: string, b: string): number {
