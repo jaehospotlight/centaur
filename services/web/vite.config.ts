@@ -9,6 +9,9 @@ export default defineConfig({
     outDir: 'dist/client',
     emptyOutDir: true
   },
+  optimizeDeps: {
+    include: ['eventemitter3', 'use-sync-external-store/shim', 'use-sync-external-store/shim/with-selector']
+  },
   server: {
     port: 5173,
     proxy: {
