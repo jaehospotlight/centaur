@@ -180,7 +180,9 @@ impl IronControlToolReconciler {
             for source in &self.tool_git_sources {
                 source.sync()?;
                 let tools_dir = source.tools_dir();
-                if source.repo_cache_path.is_some() && !tools_dir.is_dir() {
+                // Skip sources without a tools tree (chart-defaulted subdirs
+                // make this a normal case for non-tool overlay repos).
+                if !tools_dir.is_dir() {
                     continue;
                 }
                 dirs.push(tools_dir);
@@ -318,11 +320,15 @@ impl ToolGitSource {
             }
         }
 
+        // A synced source without the tools subdir is skipped by callers, not
+        // an error: with chart-defaulted subdirs, workflows- or skills-only
+        // overlay repos legitimately carry no tools tree.
         if !self.tools_dir().is_dir() {
-            return Err(ServerError::ToolSource(format!(
-                "configured tools subdir does not exist after sync: {}",
-                self.tools_dir().display()
-            )));
+            warn!(
+                repo = %self.repo,
+                tools_dir = %self.tools_dir().display(),
+                "tools subdir missing after sync; skipping tools source"
+            );
         }
         Ok(())
     }
@@ -569,6 +575,8 @@ struct SandboxArgs {
     workflow_host_image: Option<String>,
     #[arg(long = "workflow-host-command", env = "WORKFLOW_HOST_COMMAND")]
     workflow_host_command: Option<String>,
+    #[arg(long = "kubernetes-workflow-dirs", env = "KUBERNETES_WORKFLOW_DIRS")]
+    kubernetes_workflow_dirs: Option<String>,
     #[command(flatten)]
     tools_source: ToolsArgs,
     #[arg(
@@ -779,27 +787,18 @@ impl SandboxArgs {
     }
 
     fn agent_k8s_workflow_dirs(&self) -> String {
-        let Some(config) = self.tools_source.to_config() else {
-            return "/opt/centaur/workflows".to_owned();
-        };
-        // The base tools repo and every `extra_sources` entry each ship a
-        // `workflows/` tree at the repo root (sibling of the tools subdir). The
-        // workflow host must discover all of them, so emit a colon-separated
-        // path that fans out across extra sources exactly like tool discovery
-        // does (see ToolGitSource::from_config). Without this only the base
-        // repo's workflows load, and lanes shipped via an overlay extra_source
-        // (e.g. an org's webhook/schedule workflows) silently 404.
-        let mut dirs = vec![format!(
-            "{SANDBOX_REPOS_MOUNT_PATH}/{}/workflows",
-            config.repo
-        )];
-        dirs.extend(
-            config
-                .extra_sources
-                .iter()
-                .map(|source| format!("{SANDBOX_REPOS_MOUNT_PATH}/{}/workflows", source.repo)),
-        );
-        dirs.join(":")
+        if let Some(value) = clean_optional_value(self.kubernetes_workflow_dirs.as_deref()) {
+            return value;
+        }
+        let source_repos = self.tools_source.source_repos();
+        if !source_repos.is_empty() {
+            return source_repos
+                .into_iter()
+                .map(|repo| format!("{SANDBOX_REPOS_MOUNT_PATH}/{repo}/workflows"))
+                .collect::<Vec<_>>()
+                .join(":");
+        }
+        "/opt/centaur/workflows".to_owned()
     }
 
     fn default_workflow_host_path(&self) -> String {
@@ -1119,7 +1118,9 @@ impl SandboxArgs {
             for source in sources {
                 source.sync()?;
                 let tools_dir = source.tools_dir();
-                if source.repo_cache_path.is_some() && !tools_dir.is_dir() {
+                // Skip sources without a tools tree (chart-defaulted subdirs
+                // make this a normal case for non-tool overlay repos).
+                if !tools_dir.is_dir() {
                     continue;
                 }
                 dirs.push(tools_dir);
@@ -1289,6 +1290,31 @@ struct ToolsArgs {
 }
 
 impl ToolsArgs {
+    fn source_repos(&self) -> Vec<String> {
+        let Some(repo) = clean_optional_value(self.repo.as_deref()) else {
+            return Vec::new();
+        };
+        let mut repos = vec![repo];
+        repos.extend(self.extra_sources().into_iter().map(|source| source.repo));
+        repos
+    }
+
+    fn extra_sources(&self) -> Vec<ToolSource> {
+        let Some(value) = clean_optional_value(self.extra_sources.as_deref()) else {
+            return Vec::new();
+        };
+        match serde_json::from_str::<Vec<ToolSourceArg>>(&value) {
+            Ok(sources) => sources
+                .into_iter()
+                .filter_map(ToolSourceArg::into_source)
+                .collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "invalid KUBERNETES_TOOLS_EXTRA_SOURCES; ignoring extra tool sources");
+                Vec::new()
+            }
+        }
+    }
+
     /// `None` when no repo or runner image is configured (tools disabled).
     fn to_config(&self) -> Option<ToolsConfig> {
         let repo = clean_optional_value(self.repo.as_deref())?;
@@ -1307,19 +1333,7 @@ impl ToolsArgs {
             });
         }
         config.repo_cache_path = clean_optional_value(self.repo_cache_path.as_deref());
-        if let Some(value) = clean_optional_value(self.extra_sources.as_deref()) {
-            match serde_json::from_str::<Vec<ToolSourceArg>>(&value) {
-                Ok(sources) => {
-                    config.extra_sources = sources
-                        .into_iter()
-                        .filter_map(ToolSourceArg::into_source)
-                        .collect();
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "invalid KUBERNETES_TOOLS_EXTRA_SOURCES; ignoring extra tool sources");
-                }
-            }
-        }
+        config.extra_sources = self.extra_sources();
         Some(config)
     }
 }
@@ -1969,6 +1983,8 @@ mod tests {
             "/home/agent/github/paradigmxyz/centaur/tools",
             "--tools-overlay-path",
             "/home/agent/github/tempoxyz/centaur-tempo/tools",
+            "--kubernetes-workflow-dirs",
+            "/home/agent/github/paradigmxyz/centaur/workflows:/home/agent/github/tempoxyz/centaur-tempo/workflows",
             "--session-sandbox-passthrough-env",
             "TOOLS_PATH,TOOLS_OVERLAY_PATH",
         ])
@@ -1997,6 +2013,15 @@ mod tests {
                 .find(|env| env.name == "TOOLS_OVERLAY_PATH")
                 .map(|env| env.value.as_str()),
             Some("/home/agent/github/tempoxyz/centaur-tempo/tools")
+        );
+        assert_eq!(
+            spec.env
+                .iter()
+                .find(|env| env.name == "WORKFLOW_DIRS")
+                .map(|env| env.value.as_str()),
+            Some(
+                "/home/agent/github/paradigmxyz/centaur/workflows:/home/agent/github/tempoxyz/centaur-tempo/workflows"
+            )
         );
     }
 

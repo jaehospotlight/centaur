@@ -59,6 +59,56 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 {{- end -}}
 
+{{- define "centaur.overlaySources" -}}
+{{- $sources := list -}}
+{{- with .Values.overlays.sources -}}
+{{- range . -}}
+{{- if .repo -}}
+{{- $source := dict "repo" .repo -}}
+{{- with .ref }}{{- $_ := set $source "ref" . -}}{{- end -}}
+{{- /*
+Subdir defaults: an omitted key falls back to the conventional layout
+(tools, workflows, .agents/skills); a key explicitly set to "" disables
+that surface for the source. Missing directories are skipped at runtime,
+so the defaults are safe for repos that only carry some surfaces.
+*/ -}}
+{{- if hasKey . "toolsSubdir" -}}
+{{- with .toolsSubdir }}{{- $_ := set $source "toolsSubdir" . -}}{{- end -}}
+{{- else -}}
+{{- $_ := set $source "toolsSubdir" "tools" -}}
+{{- end -}}
+{{- if hasKey . "workflowsSubdir" -}}
+{{- with .workflowsSubdir }}{{- $_ := set $source "workflowsSubdir" . -}}{{- end -}}
+{{- else -}}
+{{- $_ := set $source "workflowsSubdir" "workflows" -}}
+{{- end -}}
+{{- if hasKey . "skillsSubdir" -}}
+{{- with .skillsSubdir }}{{- $_ := set $source "skillsSubdir" . -}}{{- end -}}
+{{- else -}}
+{{- $_ := set $source "skillsSubdir" ".agents/skills" -}}
+{{- end -}}
+{{- with .promptPath }}{{- $_ := set $source "promptPath" . -}}{{- end -}}
+{{- with .personasSubdir }}{{- $_ := set $source "personasSubdir" . -}}{{- end -}}
+{{- $sources = append $sources $source -}}
+{{- end -}}
+{{- end -}}
+{{- else -}}
+{{- if and .Values.toolServer.enabled .Values.toolServer.repo -}}
+{{- $source := dict "repo" .Values.toolServer.repo "toolsSubdir" (default "tools" .Values.toolServer.subdir) "workflowsSubdir" "workflows" "skillsSubdir" ".agents/skills" -}}
+{{- with .Values.toolServer.ref }}{{- $_ := set $source "ref" . -}}{{- end -}}
+{{- $sources = append $sources $source -}}
+{{- range .Values.toolServer.extraSources -}}
+{{- if .repo -}}
+{{- $source := dict "repo" .repo "toolsSubdir" (default "tools" .subdir) "workflowsSubdir" (default "workflows" .workflowsSubdir) "skillsSubdir" (default ".agents/skills" .skillsSubdir) -}}
+{{- with .ref }}{{- $_ := set $source "ref" . -}}{{- end -}}
+{{- $sources = append $sources $source -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $sources -}}
+{{- end -}}
+
 {{- define "centaur.httpRouteName" -}}
 {{- $suffix := default (printf "route-%v" .index) .route.name -}}
 {{- printf "%s-%s" (include "centaur.fullname" .root) $suffix | trunc 63 | trimSuffix "-" -}}
