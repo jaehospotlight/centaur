@@ -10,9 +10,13 @@
 {{- $apiWorkflowDirList := list -}}
 {{- $sandboxWorkflowDirList := list -}}
 {{- $skillDirs := list -}}
+{{- $repoCacheOverlayDir := "" -}}
 {{- range $source := $overlaySources -}}
 {{- $repo := get $source "repo" | default "" -}}
 {{- if $repo -}}
+{{- if gt (len $overlaySources) 1 -}}
+{{- $repoCacheOverlayDir = printf "/home/agent/github/%s" $repo -}}
+{{- end -}}
 {{- with (get $source "toolsSubdir") -}}
 {{- $toolSource := dict "repo" $repo "subdir" . -}}
 {{- with (get $source "ref") }}{{- $_ := set $toolSource "ref" . -}}{{- end -}}
@@ -250,6 +254,9 @@ spec:
 {{- $sandboxEnvList := list }}
 {{- if and .Values.repoCache.enabled (gt (len $skillDirs) 0) }}
 {{- $sandboxEnvList = append $sandboxEnvList (dict "name" "CENTAUR_SKILL_DIRS" "value" (join ":" $skillDirs)) }}
+{{- end }}
+{{- if and .Values.repoCache.enabled $repoCacheOverlayDir }}
+{{- $sandboxEnvList = append $sandboxEnvList (dict "name" "CENTAUR_OVERLAY_DIR" "value" $repoCacheOverlayDir) }}
 {{- end }}
 {{- range $k, $v := .Values.sandbox.extraEnv }}
 {{- $sandboxEnvList = append $sandboxEnvList (dict "name" $k "value" ($v | toString)) }}
