@@ -1,6 +1,6 @@
 use axum::response::sse::Event;
 use centaur_session_core::{
-    HarnessType, SessionEvent, SessionMessage, SessionMessageInput, ThreadKey, empty_object,
+    HarnessType, SessionEvent, SessionMessage, SessionMessageInput, ThreadKey,
 };
 use centaur_session_runtime::SESSION_OUTPUT_LINE_EVENT;
 use serde::{Deserialize, Serialize};
@@ -47,24 +47,6 @@ pub struct ExecuteSessionResponse {
     pub execution_id: String,
     pub thread_key: ThreadKey,
     pub status: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CreateFeedbackRequest {
-    pub source: Option<String>,
-    pub message: String,
-    pub user_id: Option<String>,
-    pub channel_id: Option<String>,
-    pub thread_ts: Option<String>,
-    pub execution_id: Option<String>,
-    #[serde(default = "empty_object")]
-    pub metadata: Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CreateFeedbackResponse {
-    pub ok: bool,
-    pub feedback_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

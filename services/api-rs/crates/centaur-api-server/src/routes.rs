@@ -22,7 +22,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose};
 use centaur_session_core::{Session, ThreadKey};
 use centaur_session_runtime::{ExecuteSessionInput, SandboxRuntime, SessionRuntime};
-use centaur_session_sqlx::{CreateFeedbackInput, PgSessionStore};
+use centaur_session_sqlx::PgSessionStore;
 use centaur_telemetry::{
     PrometheusHandle, http_status_class, prometheus_handle, record_http_request_finished,
     record_http_request_started,
@@ -41,11 +41,11 @@ use tracing::Span;
 use crate::{
     ApiError,
     types::{
-        AppendMessagesRequest, AppendMessagesResponse, CreateFeedbackRequest,
-        CreateFeedbackResponse, CreateSessionRequest, EmitWorkflowEventRequest, EventLogQuery,
-        EventsQuery, ExecuteSessionRequest, ExecuteSessionResponse, ListEventsResponse,
-        ListMessagesResponse, ListPersonasResponse, ListWorkflowRunsQuery, PersonaRecord,
-        SessionSseEvent, SetSessionTitleRequest, SetSessionTitleResponse, stream_error_sse,
+        AppendMessagesRequest, AppendMessagesResponse, CreateSessionRequest,
+        EmitWorkflowEventRequest, EventLogQuery, EventsQuery, ExecuteSessionRequest,
+        ExecuteSessionResponse, ListEventsResponse, ListMessagesResponse, ListPersonasResponse,
+        ListWorkflowRunsQuery, PersonaRecord, SessionSseEvent, SetSessionTitleRequest,
+        SetSessionTitleResponse, stream_error_sse,
     },
 };
 
@@ -104,7 +104,6 @@ pub fn build_router_with_session_and_workflow_runtime(
         .route("/api/session/{thread_key}/event-log", get(list_events))
         .route("/api/session/{thread_key}/events", get(stream_events))
         .route("/api/session/{thread_key}/title", post(set_session_title))
-        .route("/api/feedback", post(create_feedback))
         .route("/api/sandboxes/drain", post(drain_sandboxes))
         .route("/api/workflows/schedules", get(list_workflow_schedules))
         .route(
@@ -323,62 +322,6 @@ async fn drain_sandboxes(State(state): State<AppState>) -> Result<Json<Value>, A
         "stopped": report.stopped,
         "failed": failed,
     })))
-}
-
-async fn create_feedback(
-    State(state): State<AppState>,
-    Json(request): Json<CreateFeedbackRequest>,
-) -> Result<Json<CreateFeedbackResponse>, ApiError> {
-    let message = request.message.trim().to_owned();
-    if message.is_empty() {
-        return Err(ApiError::BadRequest(
-            "feedback message must not be empty".to_owned(),
-        ));
-    }
-    if message.len() > 20_000 {
-        return Err(ApiError::PayloadTooLarge(
-            "feedback message is too large".to_owned(),
-        ));
-    }
-
-    let source = request
-        .source
-        .as_deref()
-        .map(str::trim)
-        .filter(|source| !source.is_empty())
-        .unwrap_or("unknown")
-        .to_owned();
-    if source.len() > 64 {
-        return Err(ApiError::BadRequest(
-            "feedback source must be at most 64 characters".to_owned(),
-        ));
-    }
-
-    let feedback = state
-        .runtime
-        .create_feedback(CreateFeedbackInput {
-            source,
-            message,
-            user_id: trim_optional(request.user_id),
-            channel_id: trim_optional(request.channel_id),
-            thread_ts: trim_optional(request.thread_ts),
-            execution_id: trim_optional(request.execution_id),
-            metadata: request.metadata,
-        })
-        .await?;
-
-    Ok(Json(CreateFeedbackResponse {
-        ok: true,
-        feedback_id: feedback.feedback_id,
-    }))
-}
-
-fn trim_optional(value: Option<String>) -> Option<String> {
-    value
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 async fn stream_events(

@@ -18,8 +18,7 @@ use centaur_session_core::{
     SessionMessage, SessionMessageInput, ThreadKey,
 };
 use centaur_session_sqlx::{
-    CreateFeedbackInput, PgSessionStore, SessionEventListener, SessionStoreError, UserFeedback,
-    default_metadata,
+    PgSessionStore, SessionEventListener, SessionStoreError, default_metadata,
 };
 use centaur_telemetry::{
     record_sandbox_warm_pool_claim, record_session_execution_finished,
@@ -391,13 +390,6 @@ impl SessionRuntime {
             }
         }
         Ok(report)
-    }
-
-    pub async fn create_feedback(
-        &self,
-        input: CreateFeedbackInput,
-    ) -> Result<UserFeedback, SessionRuntimeError> {
-        Ok(self.store.create_feedback(input).await?)
     }
 
     pub async fn get_session(
@@ -1467,10 +1459,11 @@ impl SandboxRuntime {
 
     pub fn backend(backend: Arc<dyn SandboxBackend>, spec: SandboxSpec) -> Self {
         let warm_spec = spec.clone();
-        let spec_factory = move |_thread_key: &ThreadKey,
-                                 _execution_id: &str,
-                                 _harness_type: &HarnessType,
-                                 _persona_id: Option<&str>| { spec.clone() };
+        let spec_factory =
+            move |_thread_key: &ThreadKey,
+                  _execution_id: &str,
+                  _harness_type: &HarnessType,
+                  _persona_id: Option<&str>| { spec.clone() };
         let warm_spec_factory = move || warm_spec.clone();
         Self::backend_with_warm_spec_factory(backend, spec_factory, warm_spec_factory)
     }
