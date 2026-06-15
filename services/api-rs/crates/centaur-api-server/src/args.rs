@@ -790,8 +790,13 @@ impl SandboxArgs {
         if let Some(value) = clean_optional_value(self.kubernetes_workflow_dirs.as_deref()) {
             return value;
         }
-        if let Some(repo) = clean_optional_value(self.tools_source.repo.as_deref()) {
-            return format!("{SANDBOX_REPOS_MOUNT_PATH}/{repo}/workflows");
+        let source_repos = self.tools_source.source_repos();
+        if !source_repos.is_empty() {
+            return source_repos
+                .into_iter()
+                .map(|repo| format!("{SANDBOX_REPOS_MOUNT_PATH}/{repo}/workflows"))
+                .collect::<Vec<_>>()
+                .join(":");
         }
         "/opt/centaur/workflows".to_owned()
     }
@@ -1285,6 +1290,31 @@ struct ToolsArgs {
 }
 
 impl ToolsArgs {
+    fn source_repos(&self) -> Vec<String> {
+        let Some(repo) = clean_optional_value(self.repo.as_deref()) else {
+            return Vec::new();
+        };
+        let mut repos = vec![repo];
+        repos.extend(self.extra_sources().into_iter().map(|source| source.repo));
+        repos
+    }
+
+    fn extra_sources(&self) -> Vec<ToolSource> {
+        let Some(value) = clean_optional_value(self.extra_sources.as_deref()) else {
+            return Vec::new();
+        };
+        match serde_json::from_str::<Vec<ToolSourceArg>>(&value) {
+            Ok(sources) => sources
+                .into_iter()
+                .filter_map(ToolSourceArg::into_source)
+                .collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, "invalid KUBERNETES_TOOLS_EXTRA_SOURCES; ignoring extra tool sources");
+                Vec::new()
+            }
+        }
+    }
+
     /// `None` when no repo or runner image is configured (tools disabled).
     fn to_config(&self) -> Option<ToolsConfig> {
         let repo = clean_optional_value(self.repo.as_deref())?;
@@ -1303,19 +1333,7 @@ impl ToolsArgs {
             });
         }
         config.repo_cache_path = clean_optional_value(self.repo_cache_path.as_deref());
-        if let Some(value) = clean_optional_value(self.extra_sources.as_deref()) {
-            match serde_json::from_str::<Vec<ToolSourceArg>>(&value) {
-                Ok(sources) => {
-                    config.extra_sources = sources
-                        .into_iter()
-                        .filter_map(ToolSourceArg::into_source)
-                        .collect();
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "invalid KUBERNETES_TOOLS_EXTRA_SOURCES; ignoring extra tool sources");
-                }
-            }
-        }
+        config.extra_sources = self.extra_sources();
         Some(config)
     }
 }
