@@ -44,7 +44,8 @@ use crate::{
     types::{
         AppendMessagesRequest, AppendMessagesResponse, CreateSessionRequest, CreateSessionResponse,
         EmitWorkflowEventRequest, EventsQuery, ExecuteSessionRequest, ExecuteSessionResponse,
-        ListWorkflowRunsQuery, OnHarnessConflict, SessionSseEvent, stream_error_sse,
+        ListWorkflowRunsQuery, OnHarnessConflict, SessionSseEvent, SessionTurnRequest,
+        SessionTurnResponse, stream_error_sse,
     },
 };
 
@@ -93,6 +94,10 @@ pub fn build_router_with_session_and_workflow_runtime(
         .route(
             "/api/session/{thread_key}/execute",
             post(execute_session).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/session/{thread_key}/turn",
+            post(session_turn).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/session/{thread_key}/events", get(stream_events))
         .route("/api/sandboxes/drain", post(drain_sandboxes))
@@ -196,10 +201,7 @@ async fn create_or_get_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> Result<Json<CreateSessionResponse>, ApiError> {
     let thread_key = ThreadKey::try_from(raw_thread_key)?;
-    let on_harness_conflict = match request.on_harness_conflict {
-        Some(OnHarnessConflict::Restart) => HarnessConflictPolicy::Restart,
-        Some(OnHarnessConflict::Reject) | None => HarnessConflictPolicy::Reject,
-    };
+    let on_harness_conflict = harness_conflict_policy(request.on_harness_conflict);
     let outcome = state
         .runtime
         .create_or_get_session(
@@ -213,6 +215,61 @@ async fn create_or_get_session(
     Ok(Json(CreateSessionResponse {
         session: outcome.session,
         harness_switched: outcome.harness_switched,
+    }))
+}
+
+async fn session_turn(
+    State(state): State<AppState>,
+    Path(raw_thread_key): Path<String>,
+    Json(request): Json<SessionTurnRequest>,
+) -> Result<Json<SessionTurnResponse>, ApiError> {
+    let thread_key = ThreadKey::try_from(raw_thread_key)?;
+    let SessionTurnRequest {
+        harness_type,
+        persona_id,
+        metadata,
+        on_harness_conflict,
+        messages,
+        execute,
+    } = request;
+    let outcome = state
+        .runtime
+        .create_or_get_session(
+            &thread_key,
+            &harness_type,
+            persona_id.as_deref(),
+            metadata,
+            harness_conflict_policy(on_harness_conflict),
+        )
+        .await?;
+    let message_ids = if messages.is_empty() {
+        Vec::new()
+    } else {
+        state
+            .runtime
+            .append_messages(&thread_key, &messages)
+            .await?
+    };
+    let execution = state
+        .runtime
+        .execute_session(
+            &thread_key,
+            ExecuteSessionInput {
+                idempotency_key: execute.idempotency_key,
+                metadata: execute.metadata,
+                input_lines: execute.input_lines,
+                idle_timeout_ms: execute.idle_timeout_ms,
+                max_duration_ms: execute.max_duration_ms,
+            },
+        )
+        .await?;
+    Ok(Json(SessionTurnResponse {
+        ok: true,
+        execution_id: execution.execution_id,
+        thread_key: execution.thread_key,
+        status: execution.status.to_string(),
+        harness_switched: outcome.harness_switched,
+        message_ids,
     }))
 }
 
@@ -257,6 +314,15 @@ async fn execute_session(
         thread_key: execution.thread_key,
         status: execution.status.to_string(),
     }))
+}
+
+fn harness_conflict_policy(
+    on_harness_conflict: Option<OnHarnessConflict>,
+) -> HarnessConflictPolicy {
+    match on_harness_conflict {
+        Some(OnHarnessConflict::Restart) => HarnessConflictPolicy::Restart,
+        Some(OnHarnessConflict::Reject) | None => HarnessConflictPolicy::Reject,
+    }
 }
 
 async fn drain_sandboxes(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {

@@ -12,7 +12,9 @@ import type {
   SlackbotV2ExecuteSessionResponse,
   SlackbotV2Options,
   SlackbotV2RendererSource,
-  SlackbotV2SessionMessage
+  SlackbotV2SessionMessage,
+  SlackbotV2SessionTurnRequest,
+  SlackbotV2SessionTurnResponse
 } from './types'
 import { elapsedMs, isJsonObject, nowMs, stringValue, toAsyncIterable, traceLog } from './utils'
 
@@ -149,6 +151,34 @@ export async function forwardToSessionApi(
   input: ForwardSessionInput,
   callbacks: ForwardSessionApiCallbacks = {}
 ): Promise<AsyncIterable<SlackbotV2RendererSource> | null> {
+  if (input.executeMessage && !input.harnessType) {
+    try {
+      const turnStartedAtMs = nowMs()
+      const execution = await executeSessionTurn(options, input)
+      traceLog(options, 'slackbotv2_session_turn_complete', input.trace, {
+        execution_id: execution.execution_id,
+        harness_switched: execution.harness_switched,
+        message_count: input.messages.length,
+        phase_ms: elapsedMs(turnStartedAtMs)
+      })
+      if (input.messages.length > 0) {
+        await callbacks.onMessagesAppended?.()
+      }
+      await callbacks.onExecutionStarted?.(execution)
+      if (!input.openStream) return null
+
+      return openSessionEventStream(options, {
+        ...input,
+        executionId: input.executionId ?? execution.execution_id
+      })
+    } catch (error) {
+      if (!isSessionTurnUnavailableError(error)) throw error
+      traceLog(options, 'slackbotv2_session_turn_unavailable', input.trace, {
+        error: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
+
   const createStartedAtMs = nowMs()
   const created = await createSession(
     options,
@@ -405,11 +435,32 @@ async function postCreateSession(
   onHarnessConflict?: 'reject' | 'restart'
 ): Promise<Response> {
   const fetchFn = options.fetch ?? fetch
+  const body = await createSessionRequestBody(
+    options,
+    threadId,
+    harnessType,
+    message,
+    onHarnessConflict
+  )
+  return fetchFn(apiSessionUrl(options.apiUrl, threadId), {
+    method: 'POST',
+    headers: apiHeaders(options),
+    body: JSON.stringify(body)
+  })
+}
+
+async function createSessionRequestBody(
+  options: SlackbotV2Options,
+  threadId: string,
+  harnessType: string,
+  message?: SlackbotV2ApiMessage,
+  onHarnessConflict?: 'reject' | 'restart'
+): Promise<SlackbotV2CreateSessionRequest> {
   // The conversation name becomes the session principal's display name in
   // iron-control; resolve it here so it rides the create-session metadata that
   // api-rs reads when it registers the principal.
   const conversationName = message ? await resolveConversationName(options, message) : undefined
-  const body: SlackbotV2CreateSessionRequest = {
+  return {
     harness_type: harnessType,
     metadata: {
       source: 'slackbotv2',
@@ -420,11 +471,6 @@ async function postCreateSession(
     },
     ...(onHarnessConflict ? { on_harness_conflict: onHarnessConflict } : {})
   }
-  return fetchFn(apiSessionUrl(options.apiUrl, threadId), {
-    method: 'POST',
-    headers: apiHeaders(options),
-    body: JSON.stringify(body)
-  })
 }
 
 async function harnessSwitchedFromResponse(response: Response): Promise<boolean> {
@@ -793,7 +839,103 @@ async function executeSession(
 ): Promise<SlackbotV2ExecuteSessionResponse> {
   const fetchFn = options.fetch ?? fetch
   const requesterIdentity = await resolveRequesterIdentity(options, message)
-  const body: SlackbotV2ExecuteSessionRequest = {
+  const body = executeSessionRequestBody(
+    options,
+    threadId,
+    message,
+    requesterIdentity,
+    model,
+    contextMessages,
+    contextPreamble
+  )
+  const response = await fetchFn(apiSessionUrl(options.apiUrl, threadId, 'execute'), {
+    method: 'POST',
+    headers: apiHeaders(options),
+    body: JSON.stringify(body)
+  })
+  await ensureApiOk(response, 'execute session')
+  return (await response.json()) as SlackbotV2ExecuteSessionResponse
+}
+
+async function executeSessionTurn(
+  options: SlackbotV2Options,
+  input: ForwardSessionInput
+): Promise<SlackbotV2SessionTurnResponse> {
+  const message = input.executeMessage
+  if (!message) throw new Error('execute message is required for a session turn')
+
+  const requested = options.defaultHarnessType ?? DEFAULT_HARNESS_TYPE
+  const response = await postSessionTurn(options, input, requested)
+  if (response.ok) return (await response.json()) as SlackbotV2SessionTurnResponse
+
+  let body = ''
+  try {
+    body = await response.text()
+  } catch {
+    body = ''
+  }
+  const existing = response.status === 409 ? existingHarnessFromConflict(body) : undefined
+  if (existing && existing !== requested) {
+    const retry = await postSessionTurn(options, input, existing)
+    await ensureApiOk(retry, 'session turn')
+    return (await retry.json()) as SlackbotV2SessionTurnResponse
+  }
+  throw new SessionApiError({
+    action: 'session turn',
+    body,
+    retryable: isRetryableApiStatus(response.status),
+    status: response.status,
+    statusText: response.statusText
+  })
+}
+
+async function postSessionTurn(
+  options: SlackbotV2Options,
+  input: ForwardSessionInput,
+  harnessType: string
+): Promise<Response> {
+  const message = input.executeMessage
+  if (!message) throw new Error('execute message is required for a session turn')
+  const fetchFn = options.fetch ?? fetch
+  const requesterIdentity = await resolveRequesterIdentity(options, message)
+  const createRequest = await createSessionRequestBody(
+    options,
+    input.threadId,
+    harnessType,
+    sessionRequesterMessage(input)
+  )
+  const body: SlackbotV2SessionTurnRequest = {
+    ...createRequest,
+    execute: executeSessionRequestBody(
+      options,
+      input.threadId,
+      message,
+      requesterIdentity,
+      input.model,
+      input.executeContextMessages,
+      input.contextPreamble
+    ),
+    messages: await Promise.all(
+      input.messages.map(item => toSessionMessage(options, item, false))
+    )
+  }
+  return fetchFn(apiSessionUrl(options.apiUrl, input.threadId, 'turn'), {
+    method: 'POST',
+    headers: apiHeaders(options),
+    body: JSON.stringify(body)
+  })
+}
+
+function executeSessionRequestBody(
+  options: SlackbotV2Options,
+  threadId: string,
+  message: SlackbotV2ApiMessage,
+  requesterIdentity: RequesterIdentity,
+  model?: string,
+  contextMessages?: SlackbotV2ApiMessage[],
+  contextPreamble?: string
+): SlackbotV2ExecuteSessionRequest {
+  return {
     idempotency_key: message.id,
     metadata: sessionMetadata(message, { action: 'execute' }, requesterIdentity),
     input_lines: toCodexInputLines(
@@ -807,13 +949,6 @@ async function executeSession(
     ...(options.idleTimeoutMs === undefined ? {} : { idle_timeout_ms: options.idleTimeoutMs }),
     ...(options.maxDurationMs === undefined ? {} : { max_duration_ms: options.maxDurationMs })
   }
-  const response = await fetchFn(apiSessionUrl(options.apiUrl, threadId, 'execute'), {
-    method: 'POST',
-    headers: apiHeaders(options),
-    body: JSON.stringify(body)
-  })
-  await ensureApiOk(response, 'execute session')
-  return (await response.json()) as SlackbotV2ExecuteSessionResponse
 }
 
 async function ensureApiOk(response: Response, action: string): Promise<void> {
@@ -835,6 +970,14 @@ async function ensureApiOk(response: Response, action: string): Promise<void> {
 
 function isRetryableApiStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
+function isSessionTurnUnavailableError(error: unknown): boolean {
+  return (
+    error instanceof SessionApiError
+    && error.action === 'session turn'
+    && (error.status === 404 || error.status === 405 || error.status === 501)
+  )
 }
 
 async function streamSessionNotifications(
@@ -863,7 +1006,7 @@ async function streamSessionNotifications(
 function apiSessionUrl(
   apiUrl: string,
   threadId: string,
-  suffix?: 'messages' | 'execute' | 'events'
+  suffix?: 'messages' | 'execute' | 'events' | 'turn'
 ): string {
   const path = `/api/session/${encodeURIComponent(threadId)}${suffix ? `/${suffix}` : ''}`
   return new URL(path, ensureTrailingSlash(apiUrl)).toString()

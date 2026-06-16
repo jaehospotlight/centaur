@@ -61,7 +61,9 @@ export type {
   SlackbotV2Fetch,
   SlackbotV2Options,
   SlackbotV2SessionMessage,
-  SlackbotV2SessionMessageRole
+  SlackbotV2SessionMessageRole,
+  SlackbotV2SessionTurnRequest,
+  SlackbotV2SessionTurnResponse
 } from './types'
 
 type WaitUntilContext = {
@@ -1141,14 +1143,30 @@ async function renderExecutionStream(
     )
     return
   }
-  const titleStartedAtMs = nowMs()
-  await setAssistantTitle(thread, titleFromMessage(message.text, options.userName))
+  const metadataStartedAtMs = nowMs()
+  const metadataUpdates = [
+    scheduleAssistantTitle(
+      thread,
+      titleFromMessage(message.text, options.userName),
+      options,
+      'slackbotv2_render_slack_metadata_set',
+      trace
+    )
+  ]
   if (!assistantStatusVisible) {
-    await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...')
+    metadataUpdates.push(
+      scheduleAssistantStatus(
+        thread,
+        options.assistantStatus ?? 'Thinking...',
+        options,
+        'slackbotv2_render_slack_metadata_set',
+        trace
+      )
+    )
   }
-  traceLog(options, 'slackbotv2_render_slack_metadata_set', trace, {
+  traceLog(options, 'slackbotv2_render_slack_metadata_scheduled', trace, {
     assistant_status_already_visible: assistantStatusVisible,
-    phase_ms: elapsedMs(titleStartedAtMs)
+    phase_ms: elapsedMs(metadataStartedAtMs)
   })
   try {
     const visibleStream = await streamAfterFirstChunk(
@@ -1169,6 +1187,7 @@ async function renderExecutionStream(
       )
     )
   } finally {
+    await Promise.allSettled(metadataUpdates)
     await setAssistantStatus(thread, '')
   }
 }
@@ -1184,11 +1203,25 @@ async function renderRecoveredExecutionStream(
     await renderPlainTextExecutionStream(thread, stream, message, options, trace)
     return
   }
-  const titleStartedAtMs = nowMs()
-  await setAssistantTitle(thread, titleFromMessage(message.text, options.userName))
-  await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...')
-  traceLog(options, 'slackbotv2_render_slack_metadata_set', trace, {
-    phase_ms: elapsedMs(titleStartedAtMs)
+  const metadataStartedAtMs = nowMs()
+  const metadataUpdates = [
+    scheduleAssistantTitle(
+      thread,
+      titleFromMessage(message.text, options.userName),
+      options,
+      'slackbotv2_render_slack_metadata_set',
+      trace
+    ),
+    scheduleAssistantStatus(
+      thread,
+      options.assistantStatus ?? 'Thinking...',
+      options,
+      'slackbotv2_render_slack_metadata_set',
+      trace
+    )
+  ]
+  traceLog(options, 'slackbotv2_render_slack_metadata_scheduled', trace, {
+    phase_ms: elapsedMs(metadataStartedAtMs)
   })
   try {
     const visibleStream = await streamAfterFirstChunk(
@@ -1212,6 +1245,7 @@ async function renderRecoveredExecutionStream(
       }
     )
   } finally {
+    await Promise.allSettled(metadataUpdates)
     await setAssistantStatus(thread, '')
   }
 }
@@ -1225,14 +1259,30 @@ async function renderPlainTextExecutionStream(
   assistantStatusVisible = false
 ): Promise<void> {
   const fallback = new SlackRenderFallback()
-  const titleStartedAtMs = nowMs()
-  await setAssistantTitle(thread, titleFromMessage(message.text, options.userName))
+  const metadataStartedAtMs = nowMs()
+  const metadataUpdates = [
+    scheduleAssistantTitle(
+      thread,
+      titleFromMessage(message.text, options.userName),
+      options,
+      'slackbotv2_render_plain_text_metadata_set',
+      trace
+    )
+  ]
   if (!assistantStatusVisible) {
-    await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...')
+    metadataUpdates.push(
+      scheduleAssistantStatus(
+        thread,
+        options.assistantStatus ?? 'Thinking...',
+        options,
+        'slackbotv2_render_plain_text_metadata_set',
+        trace
+      )
+    )
   }
-  traceLog(options, 'slackbotv2_render_plain_text_metadata_set', trace, {
+  traceLog(options, 'slackbotv2_render_plain_text_metadata_scheduled', trace, {
     assistant_status_already_visible: assistantStatusVisible,
-    phase_ms: elapsedMs(titleStartedAtMs)
+    phase_ms: elapsedMs(metadataStartedAtMs)
   })
   try {
     const chatStream = fallback.collectChatSdk(
@@ -1256,6 +1306,7 @@ async function renderPlainTextExecutionStream(
     })
     await thread.post(text)
   } finally {
+    await Promise.allSettled(metadataUpdates)
     await setAssistantStatus(thread, '')
   }
 }
@@ -1659,7 +1710,12 @@ function rendererOptions(thread: Thread, options: SlackbotV2Options): CodexAppSe
     async onRendererEvent(event: RendererEvent) {
       await mapper?.onRendererEvent?.(event)
       if (event.type === 'renderer.title.update') {
-        await setAssistantTitle(thread, event.title)
+        void scheduleAssistantTitle(
+          thread,
+          event.title,
+          options,
+          'slackbotv2_render_slack_metadata_set'
+        )
       }
     }
   }
@@ -1720,15 +1776,66 @@ async function setAssistantStatus(thread: Thread, status: string): Promise<boole
   )
 }
 
-async function setAssistantTitle(thread: Thread, title: string | undefined): Promise<void> {
+async function setAssistantTitle(thread: Thread, title: string | undefined): Promise<boolean> {
   const normalized = title?.trim()
-  if (!normalized) return
+  if (!normalized) return false
   const target = slackAssistantTarget(thread)
   const adapter = thread.adapter as SlackAssistantAdapter
-  if (!target || !adapter.setAssistantTitle) return
-  await ignoreAssistantError(() =>
+  if (!target || !adapter.setAssistantTitle) return false
+  return await ignoreAssistantError(() =>
     adapter.setAssistantTitle!(target.channel, target.threadTs, clipOneLine(normalized, 80))
   )
+}
+
+function scheduleAssistantStatus(
+  thread: Thread,
+  status: string,
+  options: SlackbotV2Options,
+  eventName: string,
+  trace?: SlackbotV2Trace
+): Promise<void> {
+  return scheduleAssistantMetadataUpdate(options, eventName, 'status', trace, () =>
+    setAssistantStatus(thread, status)
+  )
+}
+
+function scheduleAssistantTitle(
+  thread: Thread,
+  title: string | undefined,
+  options: SlackbotV2Options,
+  eventName: string,
+  trace?: SlackbotV2Trace
+): Promise<void> {
+  return scheduleAssistantMetadataUpdate(options, eventName, 'title', trace, () =>
+    setAssistantTitle(thread, title)
+  )
+}
+
+function scheduleAssistantMetadataUpdate(
+  options: SlackbotV2Options,
+  eventName: string,
+  kind: 'status' | 'title',
+  trace: SlackbotV2Trace | undefined,
+  update: () => Promise<boolean>
+): Promise<void> {
+  const startedAtMs = nowMs()
+  const promise = update()
+    .then(visible => {
+      traceLog(options, eventName, trace, {
+        kind,
+        phase_ms: elapsedMs(startedAtMs),
+        visible
+      })
+    })
+    .catch(error => {
+      traceLog(options, `${eventName}_failed`, trace, {
+        error: errorMessage(error),
+        kind,
+        phase_ms: elapsedMs(startedAtMs)
+      })
+    })
+  backgroundWaitUntil(promise)
+  return promise
 }
 
 async function ignoreAssistantError(fn: () => Promise<void>): Promise<boolean> {

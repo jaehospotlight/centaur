@@ -18,7 +18,8 @@ import {
   type SlackbotV2ApiMessage,
   type SlackbotV2CreateSessionRequest,
   type SlackbotV2ExecuteSessionRequest,
-  type SlackbotV2SessionMessage
+  type SlackbotV2SessionMessage,
+  type SlackbotV2SessionTurnRequest
 } from '../src/index'
 import { clearRequesterIdentityCacheForTests } from '../src/session-api'
 
@@ -3263,6 +3264,7 @@ type MockSessionApi = {
   holdNextExecute(): () => void
   reset(): void
   streamCount: number
+  turns: MockSessionRequest<SlackbotV2SessionTurnRequest>[]
   url: string
 }
 
@@ -3272,6 +3274,8 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
   const eventRequests: MockSessionEventRequest[] = []
   const events: MockSessionEvent[] = []
   const executes: MockSessionRequest<SlackbotV2ExecuteSessionRequest>[] = []
+  const turns: MockSessionRequest<SlackbotV2SessionTurnRequest>[] = []
+  const turnAppendedClientMessageIds = new Map<string, Set<string>>()
   const idempotentExecutions = new Map<string, string>()
   const streams = new Set<ServerResponse>()
   let autoRespond = true
@@ -3293,6 +3297,8 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
       events,
       eventRequests,
       executes,
+      turnAppendedClientMessageIds,
+      turns,
       get autoRespond() {
         return autoRespond
       },
@@ -3336,12 +3342,15 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
     creates,
     eventRequests,
     executes,
+    turns,
     reset() {
       appends.length = 0
       creates.length = 0
       eventRequests.length = 0
       events.length = 0
       executes.length = 0
+      turns.length = 0
+      turnAppendedClientMessageIds.clear()
       idempotentExecutions.clear()
       executeHoldRelease?.()
       executeHold = null
@@ -3441,17 +3450,19 @@ async function handleMockCodexRequest(
     failNextExecuteAfterAccept: boolean
     failNextEvents: boolean
     failNextExecute: boolean
-      idempotentExecutions: Map<string, string>
+    idempotentExecutions: Map<string, string>
     nextEventId(): number
     port: number
     setFailNextEvents(value: boolean): void
     setFailNextExecute(value: boolean): void
     setFailNextExecuteAfterAccept(value: boolean): void
     streams: Set<ServerResponse>
+    turnAppendedClientMessageIds: Map<string, Set<string>>
+    turns: MockSessionRequest<SlackbotV2SessionTurnRequest>[]
   }
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${input.port}`)
-  const match = /^\/api\/session\/([^/]+)(?:\/(messages|execute|events))?$/.exec(url.pathname)
+  const match = /^\/api\/session\/([^/]+)(?:\/(messages|execute|events|turn))?$/.exec(url.pathname)
   if (!match?.[1]) {
     await sendWebResponse(res, new Response('not found', { status: 404 }))
     return
@@ -3517,7 +3528,78 @@ async function handleMockCodexRequest(
     return
   }
 
+  if (endpoint === 'turn') {
+    const body = (await request.json()) as SlackbotV2SessionTurnRequest
+    input.turns.push({ threadKey, body })
+    input.creates.push({
+      threadKey,
+      body: {
+        harness_type: body.harness_type,
+        metadata: body.metadata,
+        ...(body.on_harness_conflict
+          ? { on_harness_conflict: body.on_harness_conflict }
+          : {})
+      }
+    })
+    if (
+      body.messages.length > 0
+      && hasNewTurnAppendMessages(input.turnAppendedClientMessageIds, threadKey, body.messages)
+    ) {
+      input.appends.push({ threadKey, body: { messages: body.messages } })
+    }
+    await handleMockExecute(res, input, threadKey, body.execute, {
+      harness_switched: false,
+      message_ids: body.messages.map((_, index) => `msg-${index + 1}`)
+    })
+    return
+  }
+
   const body = (await request.json()) as SlackbotV2ExecuteSessionRequest
+  await handleMockExecute(res, input, threadKey, body)
+}
+
+function hasNewTurnAppendMessages(
+  appendedClientMessageIds: Map<string, Set<string>>,
+  threadKey: string,
+  messages: SlackbotV2SessionMessage[]
+): boolean {
+  let threadIds = appendedClientMessageIds.get(threadKey)
+  if (!threadIds) {
+    threadIds = new Set()
+    appendedClientMessageIds.set(threadKey, threadIds)
+  }
+  let hasNew = false
+  for (const message of messages) {
+    const clientMessageId = message.client_message_id
+    if (!clientMessageId) {
+      hasNew = true
+      continue
+    }
+    if (!threadIds.has(clientMessageId)) hasNew = true
+    threadIds.add(clientMessageId)
+  }
+  return hasNew
+}
+
+async function handleMockExecute(
+  res: ServerResponse,
+  input: {
+    autoRespond: boolean
+    events: MockSessionEvent[]
+    executeHold: Promise<void> | null
+    executes: MockSessionRequest<SlackbotV2ExecuteSessionRequest>[]
+    failNextExecuteAfterAccept: boolean
+    failNextExecute: boolean
+    idempotentExecutions: Map<string, string>
+    nextEventId(): number
+    setFailNextExecute(value: boolean): void
+    setFailNextExecuteAfterAccept(value: boolean): void
+    streams: Set<ServerResponse>
+  },
+  threadKey: string,
+  body: SlackbotV2ExecuteSessionRequest,
+  responseExtra: Record<string, unknown> = {}
+): Promise<void> {
   input.executes.push({ threadKey, body })
   if (input.failNextExecute) {
     input.setFailNextExecute(false)
@@ -3562,6 +3644,7 @@ async function handleMockCodexRequest(
     Response.json({
       ok: true,
       execution_id: executionId,
+      ...responseExtra,
       thread_key: threadKey,
       status: 'completed'
     })

@@ -62,6 +62,28 @@ pub struct ExecuteSessionResponse {
     pub status: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SessionTurnRequest {
+    pub harness_type: HarnessType,
+    pub persona_id: Option<String>,
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub on_harness_conflict: Option<OnHarnessConflict>,
+    #[serde(default)]
+    pub messages: Vec<SessionMessageInput>,
+    pub execute: ExecuteSessionRequest,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SessionTurnResponse {
+    pub ok: bool,
+    pub execution_id: String,
+    pub thread_key: ThreadKey,
+    pub status: String,
+    pub harness_switched: bool,
+    pub message_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct EventsQuery {
     pub after_event_id: Option<i64>,

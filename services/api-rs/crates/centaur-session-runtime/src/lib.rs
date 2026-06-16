@@ -1063,37 +1063,83 @@ impl SessionRuntime {
                     .claim(thread_key.as_str(), iron_control_principal)
                     .await
                 {
-                    Ok(Some(sandbox_id)) => {
-                        record_sandbox_warm_pool_claim("hit");
-                        span.record("centaur.sandbox_id", sandbox_id.as_str());
-                        span.record("sandbox_id", sandbox_id.as_str());
-                        self.store
-                            .update_sandbox_id(thread_key, Some(sandbox_id.as_str()))
-                            .await?;
-                        self.store
-                            .append_event(
-                                thread_key,
-                                None,
-                                "session.warm_sandbox_claimed",
+                    Ok(outcome) => {
+                        for stale in &outcome.stale {
+                            record_sandbox_warm_pool_claim(stale.reason.metric_label());
+                        }
+                        let stale_count = outcome.stale.len();
+                        let stale_reasons = outcome
+                            .stale
+                            .iter()
+                            .map(|stale| stale.reason.as_str())
+                            .collect::<Vec<_>>();
+                        let stale_sandboxes = outcome
+                            .stale
+                            .iter()
+                            .map(|stale| {
                                 json!({
-                                    "sandbox_id": sandbox_id.as_str(),
-                                    "workload_key": warm_pool.workload_key(),
-                                    "iron_control_principal": iron_control_principal,
-                                }),
-                            )
-                            .await?;
-                        info!(
-                            component = COMPONENT_SESSION_RUNTIME,
-                            event = "sandbox_ensure_warm_claimed",
-                            thread_key = %thread_key,
-                            execution_id,
-                            sandbox_id = %sandbox_id,
-                            workload_key = warm_pool.workload_key(),
-                            "claimed warm session sandbox"
-                        );
-                        return Ok(sandbox_id);
+                                    "sandbox_id": stale.sandbox_id.as_str(),
+                                    "reason": stale.reason.as_str(),
+                                    "detail": stale.detail.as_str(),
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        if stale_count > 0 {
+                            warn!(
+                                component = COMPONENT_SESSION_RUNTIME,
+                                event = "sandbox_ensure_warm_stale_skipped",
+                                thread_key = %thread_key,
+                                execution_id,
+                                stale_count,
+                                stale_reasons = ?stale_reasons,
+                                workload_key = warm_pool.workload_key(),
+                                "skipped stale warm session sandboxes"
+                            );
+                        }
+                        if let Some(sandbox_id) = outcome.sandbox_id {
+                            record_sandbox_warm_pool_claim(if stale_count == 0 {
+                                "hit"
+                            } else {
+                                "hit_after_stale"
+                            });
+                            span.record("centaur.sandbox_id", sandbox_id.as_str());
+                            span.record("sandbox_id", sandbox_id.as_str());
+                            self.store
+                                .update_sandbox_id(thread_key, Some(sandbox_id.as_str()))
+                                .await?;
+                            self.store
+                                .append_event(
+                                    thread_key,
+                                    None,
+                                    "session.warm_sandbox_claimed",
+                                    json!({
+                                        "sandbox_id": sandbox_id.as_str(),
+                                        "workload_key": warm_pool.workload_key(),
+                                        "iron_control_principal": iron_control_principal,
+                                        "stale_skipped": stale_count,
+                                        "stale_reasons": stale_reasons,
+                                        "stale_sandboxes": stale_sandboxes,
+                                    }),
+                                )
+                                .await?;
+                            info!(
+                                component = COMPONENT_SESSION_RUNTIME,
+                                event = "sandbox_ensure_warm_claimed",
+                                thread_key = %thread_key,
+                                execution_id,
+                                sandbox_id = %sandbox_id,
+                                workload_key = warm_pool.workload_key(),
+                                stale_skipped = stale_count,
+                                "claimed warm session sandbox"
+                            );
+                            return Ok(sandbox_id);
+                        }
+                        record_sandbox_warm_pool_claim(if stale_count == 0 {
+                            "miss"
+                        } else {
+                            "miss_after_stale"
+                        });
                     }
-                    Ok(None) => record_sandbox_warm_pool_claim("miss"),
                     Err(error) => {
                         record_sandbox_warm_pool_claim("error");
                         return Err(SessionRuntimeError::WarmPool(error));

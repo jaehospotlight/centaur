@@ -16,6 +16,41 @@ pub struct WarmPoolConfig {
     pub bootstrap_iron_control_principal: Option<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct WarmPoolClaimOutcome {
+    pub sandbox_id: Option<String>,
+    pub stale: Vec<WarmPoolStaleSandbox>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WarmPoolStaleSandbox {
+    pub sandbox_id: String,
+    pub reason: WarmPoolStaleReason,
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WarmPoolStaleReason {
+    NotFound,
+    NotRunning,
+}
+
+impl WarmPoolStaleReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::NotRunning => "not_running",
+        }
+    }
+
+    pub fn metric_label(self) -> &'static str {
+        match self {
+            Self::NotFound => "stale_not_found",
+            Self::NotRunning => "stale_not_running",
+        }
+    }
+}
+
 pub struct WarmPoolManager {
     manager: Arc<SandboxManager>,
     store: PgSessionStore,
@@ -63,18 +98,22 @@ impl WarmPoolManager {
         &self,
         thread_key: &str,
         iron_control_principal: Option<&str>,
-    ) -> Result<Option<String>, WarmPoolError> {
+    ) -> Result<WarmPoolClaimOutcome, WarmPoolError> {
+        let mut stale = Vec::new();
         loop {
             let Some(sandbox_id) = self
                 .store
                 .claim_ready_warm_sandbox(self.workload_key.as_str(), thread_key)
                 .await?
             else {
-                return Ok(None);
+                return Ok(WarmPoolClaimOutcome {
+                    sandbox_id: None,
+                    stale,
+                });
             };
 
             let id = SandboxId::new(sandbox_id.as_str());
-            let failure = match self.manager.status(&id).await {
+            let (failure, stale_reason) = match self.manager.status(&id).await {
                 // Only `Running` accepts `open_io`. `Created` means the
                 // runtime regressed after the replenisher saw it running
                 // (backends wait for readiness before returning from create),
@@ -93,10 +132,19 @@ impl WarmPoolManager {
                             .await;
                         return Err(WarmPoolError::Sandbox(error));
                     }
-                    return Ok(Some(sandbox_id));
+                    return Ok(WarmPoolClaimOutcome {
+                        sandbox_id: Some(sandbox_id),
+                        stale,
+                    });
                 }
-                Ok(status) => format!("claimed warm sandbox was not running: {status:?}"),
-                Err(SandboxError::NotFound(_)) => "claimed warm sandbox was not found".to_owned(),
+                Ok(status) => (
+                    format!("claimed warm sandbox was not running: {status:?}"),
+                    WarmPoolStaleReason::NotRunning,
+                ),
+                Err(SandboxError::NotFound(_)) => (
+                    "claimed warm sandbox was not found".to_owned(),
+                    WarmPoolStaleReason::NotFound,
+                ),
                 Err(error) => {
                     let error_message = error.to_string();
                     warn!(%sandbox_id, error = %error_message);
@@ -108,6 +156,11 @@ impl WarmPoolManager {
                 }
             };
             warn!(%sandbox_id, error = %failure, thread_key);
+            stale.push(WarmPoolStaleSandbox {
+                sandbox_id: sandbox_id.clone(),
+                reason: stale_reason,
+                detail: failure.clone(),
+            });
             self.store
                 .mark_warm_sandbox_failed(&sandbox_id, &failure)
                 .await?;

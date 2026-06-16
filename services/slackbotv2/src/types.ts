@@ -76,6 +76,20 @@ export type SlackbotV2ExecuteSessionResponse = {
   thread_key: string
 }
 
+export type SlackbotV2SessionTurnRequest = {
+  execute: SlackbotV2ExecuteSessionRequest
+  harness_type: string
+  messages: SlackbotV2SessionMessage[]
+  metadata: JsonObject
+  /** 'restart': switch the thread to harness_type if it's pinned to another harness. */
+  on_harness_conflict?: 'reject' | 'restart'
+}
+
+export type SlackbotV2SessionTurnResponse = SlackbotV2ExecuteSessionResponse & {
+  harness_switched: boolean
+  message_ids: string[]
+}
+
 export type SlackbotV2Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
 export type SlackbotV2Options = {

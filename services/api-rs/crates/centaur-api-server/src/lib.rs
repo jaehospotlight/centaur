@@ -141,6 +141,32 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
+    #[tokio::test]
+    async fn session_turn_does_not_apply_a_session_body_limit() {
+        let pool =
+            PgPool::connect_lazy("postgres://postgres:postgres@localhost/centaur_test").unwrap();
+        let app = build_router_with_runtime(
+            PgSessionStore::new(pool),
+            SandboxRuntime::backend(Arc::new(TestBackend::default()), SandboxSpec::new("test")),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/session/slack%3AC123%3A123.456/turn")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::CONTENT_LENGTH, (256 * 1024 * 1024 + 1).to_string())
+                    .body(Body::from(r#"{"messages":"not-an-array"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
     #[derive(Default)]
     struct TestBackend {
         next_id: AtomicU64,

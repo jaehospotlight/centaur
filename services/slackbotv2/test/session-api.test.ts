@@ -58,6 +58,22 @@ function fakeApi(responses: { createSession?: Array<{ body?: unknown; status: nu
     const url = String(input)
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
     requests.push({ body, url })
+    if (url.endsWith('/turn')) {
+      if (createResponses.length > 0) {
+        const next = createResponses.shift()!
+        if (next.status >= 400) {
+          return Response.json(next.body ?? { ok: false }, { status: next.status })
+        }
+      }
+      return Response.json({
+        execution_id: 'exec-1',
+        harness_switched: false,
+        message_ids: (body?.messages ?? []).map((_: unknown, index: number) => `msg-${index + 1}`),
+        ok: true,
+        status: 'running',
+        thread_key: 'slack:C1:1700000000.000100'
+      })
+    }
     if (url.endsWith('/execute')) {
       return Response.json({
         execution_id: 'exec-1',
@@ -88,7 +104,7 @@ describe('forwardToSessionApi overrides', () => {
   test('creates session with default codex harness', async () => {
     const { fetchFn, requests } = fakeApi()
     await forwardToSessionApi(options(fetchFn), forwardInput(apiMessage('hi')))
-    const create = requests.find(request => request.url.endsWith('.000100'))
+    const create = requests.find(request => request.url.endsWith('/turn'))
     expect((create?.body as { harness_type?: string }).harness_type).toBe('codex')
   })
 
@@ -123,8 +139,10 @@ describe('forwardToSessionApi overrides', () => {
   test('omits model field when no override is set', async () => {
     const { fetchFn, requests } = fakeApi()
     await forwardToSessionApi(options(fetchFn), forwardInput(apiMessage('hi')))
-    const execute = requests.find(request => request.url.endsWith('/execute'))
-    const line = JSON.parse((execute?.body as { input_lines: string[] }).input_lines[0]!)
+    const turn = requests.find(request => request.url.endsWith('/turn'))
+    const line = JSON.parse(
+      (turn?.body as { execute: { input_lines: string[] } }).execute.input_lines[0]!
+    )
     expect('model' in line).toBe(false)
   })
 
@@ -171,19 +189,19 @@ describe('forwardToSessionApi overrides', () => {
       ]
     })
     await forwardToSessionApi(options(fetchFn), forwardInput(apiMessage('hi')))
-    const creates = requests.filter(request => request.url.endsWith('.000100'))
+    const creates = requests.filter(request => request.url.endsWith('/turn'))
     expect(creates.map(request => (request.body as { harness_type: string }).harness_type)).toEqual(
       ['codex', 'amp']
     )
   })
 
-  test('surfaces non-conflict create failures', async () => {
+  test('surfaces non-conflict turn failures', async () => {
     const { fetchFn } = fakeApi({
       createSession: [{ body: { error: 'boom', ok: false }, status: 500 }]
     })
     await expect(
       forwardToSessionApi(options(fetchFn), forwardInput(apiMessage('hi')))
-    ).rejects.toThrow('create session failed: 500')
+    ).rejects.toThrow('session turn failed: 500')
   })
 })
 
@@ -201,7 +219,7 @@ describe('forwardToSessionApi harness restart', () => {
   test('default create does not request restart', async () => {
     const { fetchFn, requests } = fakeApi()
     await forwardToSessionApi(options(fetchFn), forwardInput(apiMessage('hi')))
-    const create = requests.find(request => request.url.endsWith('.000100'))
+    const create = requests.find(request => request.url.endsWith('/turn'))
     expect('on_harness_conflict' in (create?.body as object)).toBe(false)
   })
 
@@ -297,7 +315,9 @@ describe('session principal display name', () => {
   }
 
   function createBody(requests: RecordedRequest[]): { metadata?: { slack_conversation_name?: string } } {
-    return (requests.find(request => request.url.endsWith('.000100'))?.body ?? {}) as {
+    return (requests.find(request => request.url.endsWith('/turn'))?.body
+      ?? requests.find(request => request.url.endsWith('.000100'))?.body
+      ?? {}) as {
       metadata?: { slack_conversation_name?: string }
     }
   }
