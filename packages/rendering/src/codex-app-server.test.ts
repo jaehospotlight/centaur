@@ -150,6 +150,36 @@ describe('CodexAppServerRendererEventMapper', () => {
     })
   })
 
+  it('deduplicates overlapping non-canonical assistant text snapshots', () => {
+    const mapper = new CodexAppServerRendererEventMapper()
+
+    mapper.process({
+      type: 'item.started',
+      item: { id: 'cmd-1', type: 'commandExecution', command: 'true' }
+    })
+
+    const chunks = [
+      'Test',
+      'Tested tempo',
+      'tempo-obs',
+      '-obs across',
+      ' across all datasources'
+    ]
+    const deltas = chunks.flatMap(text =>
+      mapper.process({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text }] }
+      })
+    )
+
+    expect(
+      deltas
+        .filter(event => event.type === 'renderer.message.delta')
+        .map(event => (event.type === 'renderer.message.delta' ? event.delta : ''))
+        .join('')
+    ).toBe('Tested tempo-obs across all datasources')
+  })
+
   it('maps app-server agent message deltas keyed by turnId', () => {
     const mapper = new CodexAppServerRendererEventMapper()
     const events = mapper.process({

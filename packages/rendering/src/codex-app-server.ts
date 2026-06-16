@@ -505,7 +505,7 @@ export class CodexAppServerRendererEventMapper
       } else if (assistantText.startsWith(before)) {
         this.state[key] = assistantText
       } else {
-        this.state[key] = before + assistantText
+        this.state[key] = appendWithOverlap(before, assistantText)
       }
       recomposeBuffers(this.state)
       return { bufferChanged: true }
@@ -891,6 +891,18 @@ function assistantEventLooksCanonical(event: any): boolean {
       message?.model ||
       message?.usage
   )
+}
+
+function appendWithOverlap(previous: string, next: string): string {
+  if (!previous) return next
+  if (!next) return previous
+  const max = Math.min(previous.length, next.length)
+  for (let length = max; length > 0; length -= 1) {
+    if (previous.endsWith(next.slice(0, length))) {
+      return previous + next.slice(length)
+    }
+  }
+  return previous + next
 }
 
 function textHash(value: string): string {
