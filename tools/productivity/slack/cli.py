@@ -1050,7 +1050,7 @@ def feedback(
 
         console.print("\n[green]✓ Improvement agent dispatched[/]")
         console.print(f"  Thread key: {result['thread_key']}")
-        console.print(f"  Execution id: {result['execution_id']}")
+        console.print(f"  Run id: {result['run_id']}")
 
     elif action == "loop":
         console.print("[bold]Starting auto-improvement loop...[/]")
@@ -1074,7 +1074,7 @@ def feedback(
             )
             console.print(f"  Actionable: {result['actionable_items']}")
             if result["dispatched"]:
-                console.print(f"  Execution id: {result['execution_id']}")
+                console.print(f"  Run id: {result['run_id']}")
                 console.print(f"  Thread key: {result['thread_key']}")
             elif dry_run and result["actionable_items"]:
                 print(result["prompt"])

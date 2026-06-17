@@ -10,7 +10,6 @@ import re
 import sqlite3
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -113,13 +112,13 @@ class SaveFeedbackResult:
 
 
 class CentaurAgentClient:
-    """Minimal client for starting a background improvement agent run."""
+    """Minimal client for starting a background improvement workflow run."""
 
     def __init__(self, base_url: str | None = None, api_key: str | None = None):
         self.base_url = (base_url or os.environ.get("CENTAUR_API_URL") or "http://api:8000").rstrip("/")
         self.api_key = api_key or _load_centaur_api_key()
         if not self.api_key:
-            raise RuntimeError("CENTAUR_AGENT_API_KEY not set")
+            raise RuntimeError("SLACK_FEEDBACK_API_KEY not set")
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = {
@@ -159,49 +158,31 @@ class CentaurAgentClient:
         persona_id: str = "eng",
         thread_key: str | None = None,
     ) -> dict[str, Any]:
-        """Spawn, message, and execute a background improvement agent run."""
-        thread_key = thread_key or f"feedback-improvement:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}:{uuid.uuid4().hex[:8]}"
-        spawn = self._request_json(
+        """Start a background improvement workflow run."""
+        thread_key = thread_key or f"feedback-improvement:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        run = self._request_json(
             "POST",
-            "/agent/spawn",
+            "/workflows/runs",
             {
-                "thread_key": thread_key,
-                "harness": harness,
-                "persona_id": persona_id,
-            },
-        )
-        assignment_generation = spawn["assignment_generation"]
-
-        self._request_json(
-            "POST",
-            "/agent/message",
-            {
-                "thread_key": thread_key,
-                "assignment_generation": assignment_generation,
-                "role": "user",
-                "parts": [{"type": "text", "text": prompt}],
-                "metadata": {"source": "slack-feedback-loop"},
-            },
-        )
-
-        execute = self._request_json(
-            "POST",
-            "/agent/execute",
-            {
-                "thread_key": thread_key,
-                "assignment_generation": assignment_generation,
-                "execute_id": f"feedback-improvement-{uuid.uuid4().hex[:12]}",
-                "harness": harness,
-                "delivery": {"platform": "dev"},
-                "metadata": {"source": "slack-feedback-loop"},
+                "workflow_name": "slack_feedback_improvement",
+                "trigger_key": thread_key,
+                "input": {
+                    "thread_key": thread_key,
+                    "prompt": prompt,
+                    "harness": harness,
+                    "persona_id": persona_id,
+                    "metadata": {"source": "slack-feedback-loop"},
+                    "delivery": {"platform": "dev"},
+                },
+                "eager_start": True,
             },
         )
 
         return {
             "thread_key": thread_key,
-            "assignment_generation": assignment_generation,
-            "execution_id": execute["execution_id"],
-            "status": execute.get("status"),
+            "run_id": run["run_id"],
+            "execution_id": run.get("execution_id") or run["run_id"],
+            "status": run.get("status"),
         }
 
 
@@ -244,7 +225,7 @@ def _severity_filter_clause(min_severity: str | None) -> tuple[str, list[str]]:
 
 
 def _load_centaur_api_key() -> str | None:
-    return os.environ.get("CENTAUR_AGENT_API_KEY")
+    return os.environ.get("SLACK_FEEDBACK_API_KEY")
 
 
 def _bot_message_looks_like_error(text: str) -> bool:

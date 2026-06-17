@@ -125,7 +125,7 @@ After deploy:
 
 ```bash
 kubectl exec -n centaur-system deploy/centaur-centaur-api -- \
-  curl -fsS http://localhost:8000/health/tools | jq
+  curl -fsS http://localhost:8000/health/ready | jq
 ```
 
 Check that the tool appears and that missing-secret warnings match what you

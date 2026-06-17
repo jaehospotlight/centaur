@@ -277,9 +277,6 @@ kubectl exec -n centaur-system deploy/centaur-centaur-api -- \
 
 kubectl exec -n centaur-system deploy/centaur-centaur-api -- \
   curl -fsS http://localhost:8000/health/ready | jq
-
-kubectl exec -n centaur-system deploy/centaur-centaur-api -- \
-  curl -fsS http://localhost:8000/health/tools | jq
 ```
 
 If you need to call operator routes from outside the cluster, create an admin
@@ -295,31 +292,20 @@ kubectl exec -n centaur-system deploy/centaur-centaur-api -- \
 External operator calls then use:
 
 ```bash
-curl -s "$CENTAUR_API_URL/health/tools" \
+curl -s "$CENTAUR_API_URL/health/ready" \
   -H "X-Api-Key: $ADMIN_KEY" | jq
 ```
 
 Run one agent turn from inside the API deployment:
 
 ```bash
-THREAD_KEY=production-smoke-codex
-
-SPAWN=$(kubectl exec -n centaur-system deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/spawn \
+RUN=$(kubectl exec -n centaur-system deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/workflows/runs \
   -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\"}")
-ASSIGNMENT_GENERATION=$(printf '%s' "$SPAWN" | jq -r '.assignment_generation')
-
-kubectl exec -n centaur-system deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/message \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly PONG.\"}]}"
-
-EXECUTE=$(kubectl exec -n centaur-system deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/execute \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"delivery\":{\"platform\":\"dev\"}}")
-EXECUTION_ID=$(printf '%s' "$EXECUTE" | jq -r '.execution_id')
+  -d '{"workflow_name":"slack_thread_turn","trigger_key":"production-smoke-codex","input":{"thread_key":"slack:production-smoke:1","text":"Reply with exactly PONG.","delivery":{"platform":"dev"}},"eager_start":true}')
+RUN_ID=$(printf '%s' "$RUN" | jq -r '.run_id')
 
 kubectl exec -n centaur-system deploy/centaur-centaur-api -- curl -s \
-  "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
+  "http://localhost:8000/workflows/runs/${RUN_ID}" | jq
 ```
 
 Then run the same prompt through Slack:
@@ -342,7 +328,7 @@ execution before retrying:
 
 ```bash
 kubectl exec -n centaur-system deploy/centaur-centaur-api -- curl -s \
-  "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
+  "http://localhost:8000/workflows/runs/${RUN_ID}" | jq
 
 kubectl logs -n centaur-system deploy/centaur-centaur-api --tail=200
 kubectl get pods -n centaur-system -l centaur.ai/managed=true

@@ -74,8 +74,8 @@ def test_run_improvement_cycle_dispatches_only_actionable_items(tmp_path, monkey
             assert "git-branch paradigmxyz/centaur" in prompt
             return {
                 "thread_key": "feedback-improvement:test",
-                "assignment_generation": 7,
-                "execution_id": "exec-test-123",
+                "run_id": "run-test-123",
+                "execution_id": "run-test-123",
                 "status": "queued",
             }
 
@@ -100,7 +100,7 @@ def test_run_improvement_cycle_dispatches_only_actionable_items(tmp_path, monkey
 
     row_by_id = {row["id"]: row for row in rows}
     assert row_by_id[actionable_id]["status"] == "in_progress"
-    assert row_by_id[actionable_id]["agent_execution_id"] == "exec-test-123"
+    assert row_by_id[actionable_id]["agent_execution_id"] == "run-test-123"
     assert row_by_id[success_id]["status"] == "new"
     assert row_by_id[success_id]["agent_execution_id"] is None
 

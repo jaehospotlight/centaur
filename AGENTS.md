@@ -44,23 +44,12 @@ just up
 From inside the API deployment (localhost bypass — no key needed):
 
 ```bash
-THREAD_KEY=test-e2e-1
-
-SPAWN=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/spawn \
+RUN=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/workflows/runs \
   -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"harness\":\"amp\"}")
-ASSIGNMENT_GENERATION=$(printf '%s' "$SPAWN" | jq -r '.assignment_generation')
+  -d '{"workflow_name":"slack_thread_turn","trigger_key":"test-e2e-1","input":{"thread_key":"slack:test-e2e:1","text":"Reply with exactly PONG and nothing else.","delivery":{"platform":"dev"}},"eager_start":true}')
+RUN_ID=$(printf '%s' "$RUN" | jq -r '.run_id')
 
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/message \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly PONG and nothing else.\"}]}"
-
-EXECUTE=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/execute \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"harness\":\"amp\",\"delivery\":{\"platform\":\"dev\"}}")
-EXECUTION_ID=$(printf '%s' "$EXECUTE" | jq -r '.execution_id')
-
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
+kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://localhost:8000/workflows/runs/${RUN_ID}" | jq
 ```
 
 Or create a DB-backed key for external use (see [API Key Management](#api-key-management)).
@@ -84,130 +73,31 @@ Centaur is a modular service architecture. Each service communicates through wel
 
 **Client → API** (durable control-plane protocol):
 
-Clients (slackbot, CLI, external integrations) should stay thin. They persist input with `spawn -> message -> execute`, stream or replay output from the durable events endpoint, and only fall back to durable terminal state when the live stream is gone. The API owns runtime assignment, execution serialization, cancellation, and final-delivery recovery; Postgres is the source of truth.
+Clients (slackbot, CLI, external integrations) should stay thin. User turns enter through workflow runs; the workflow owns runtime assignment, transcript persistence, execution, and final delivery. Postgres is the source of truth.
 
-**Step 1: Assign or reuse a runtime** (`POST /agent/spawn`)
+**Start a user turn** (`POST /workflows/runs`)
 
-Pins one warm runtime to the thread and returns the current `assignment_generation`.
+Workflows are the user-turn entrypoint. Slackbot starts `slack_thread_turn`; local smoke tests can do the same through localhost bypass from inside the API deployment.
 
 ```
-POST /agent/spawn
+POST /workflows/runs
 {
-  "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "harness": "amp"
-}
-
-← {
+  "workflow_name": "slack_thread_turn",
+  "trigger_key": "slack:C0AJ07U8Z1N:1773364194.179929",
+  "input": {
     "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-    "runtime_id": "rtm_123",
-    "assignment_generation": 12,
-    "state": "assigned_idle"
-  }
-```
-
-**Step 2: Persist the user turn** (`POST /agent/message`)
-
-Writes one durable transcript event. Inline base64 image/document blocks are extracted into `attachments` and rewritten to lightweight `attachment_ref` parts.
-
-```
-POST /agent/message
-{
-  "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "assignment_generation": 12,
-  "role": "user",
-  "parts": [{"type": "text", "text": "analyze this"}],
-  "user_id": "U123",
-  "metadata": {"user_name": "alice", "platform": "slack"}
+    "text": "analyze this",
+    "delivery": {"platform": "slack"}
+  },
+  "eager_start": true
 }
 
-← {"ok": true, "message_id": "msg_123"}
+← {"ok": true, "run_id": "run_123", "status": "queued"}
 ```
 
-**Step 3: Enqueue execution** (`POST /agent/execute`)
+**Inspect the run** (`GET /workflows/runs/{run_id}`)
 
-Creates a durable execution request plus final-delivery obligation. The worker drives the attached container; the response is just the execution handle.
-
-```
-POST /agent/execute
-{
-  "thread_key": "slack:C0AJ07U8Z1N:1773364194.179929",
-  "assignment_generation": 12,
-  "harness": "amp",
-  "delivery": {"platform": "slack"}
-}
-
-← {"ok": true, "execution_id": "exe_123", "status": "queued"}
-```
-
-**Step 4: Stream or replay output** (`GET /agent/threads/{thread_key}/events`)
-
-Consumers tail durable events for one execution. On disconnect, reconnect with the last seen event id. If the execution already finished and no more rows remain, the API emits the terminal `execution_state` snapshot.
-
-```
-GET /agent/threads/slack:C0AJ07U8Z1N:1773364194.179929/events?execution_id=exe_123&after_event_id=0
-
-← SSE event: amp_raw_event
-← data: {"type":"assistant","message":{...}}
-← SSE event: turn.done
-← data: {"type":"turn.done","result":"..."}
-← SSE event: execution_state
-← data: {"status":"completed","result_text":"..."}
-```
-
-**Step 5: Release only when you really want to end the assignment** (`POST /agent/threads/{thread_key}/release`)
-
-Releases the thread-to-runtime pin and optionally cancels any non-terminal execution still tied to that assignment generation.
-
-**Inspect the active runtime for a thread** (`GET /agent/runtime?key={thread_key}`)
-
-Returns `{persona_id, persona, harness, engine, overlay: {loaded, mount_api, mount_sandbox, image}, available_personas, …}`. Sandboxes call this through `call agent runtime '?key='"$CENTAUR_THREAD_KEY"`; clients can call it directly to confirm what persona/overlay an assignment is actually running.
-
-**Durable state written for one turn:**
-
-| Table | What |
-|-------|------|
-| `agent_runtime_assignments` | Thread-to-runtime pin and active assignment generation |
-| `agent_message_requests` | Durable inbound transcript events |
-| `attachments` | Extracted attachment bytes for inline multimodal content |
-| `agent_execution_requests` | Queued/running/terminal execution row |
-| `agent_execution_events` | Replayable raw + projected execution events |
-| `agent_final_delivery_outbox` | Final-result delivery obligation for reconnect/retry paths |
-
-`POST /agent/connect` and `POST /agent/reconnect` are legacy endpoints now kept only as explicit `410 LEGACY_ENDPOINT_REMOVED` stubs. Do not build new clients on them.
-
-**API → Sandbox** (stdin/stdout, NDJSON):
-
-The API communicates with sandbox Pods through the active sandbox backend's attach stream. The wire format is **Anthropic message format** — this is the canonical protocol between the API and all sandboxes, regardless of which harness runs inside.
-
-```
-→ stdin:  {"type":"turn.start","turn_id":1,"text":"analyze this"}
-→ stdin:  {"type":"turn.start","turn_id":2,"content":[             // Anthropic content blocks
-             {"type":"text","text":"what is this?"},
-             {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
-           ]}
-→ stdin:  {"type":"interrupt"}
-
-← stdout: {"type":"system","subtype":"init","session_id":"T-..."}
-← stdout: {"type":"assistant","message":{"role":"assistant","content":[...]}}
-← stdout: {"type":"result","subtype":"success","result":"..."}
-← stdout: {"type":"turn.done","turn_id":1,"result":"..."}
-```
-
-**Sandbox harness adapter** (`services/sandbox/harness_session.py`):
-
-The sandbox's `harness_session.py` translates the standard Anthropic format into whatever each harness CLI actually accepts:
-
-| Harness | Translation |
-|---------|-------------|
-| **claude-code** | Pass through directly (native Anthropic format) |
-| **amp** | Materialize image/document blocks to files on disk, replace with `@/path` text mentions (Amp stdin only accepts text blocks) |
-| **codex / pi-mono** | Extract text from content blocks, pass as CLI argument |
-
-This means clients and the API never need to know about harness-specific quirks. They speak Anthropic format; the sandbox adapter handles the rest.
-
-**Sandbox → API** (REST over Kubernetes services):
-
-Agents call tools through the generated `centaur-tools` catalog and direct tool CLIs. The tool runtime handles routing and credential access.
+Workflow and execution state are persisted in Postgres. Reconnects and process restarts recover from the run, execution rows, events, attachments, and final-delivery outbox.
 
 ### Network Isolation
 
@@ -704,60 +594,15 @@ just up
 All E2E curl commands below use `kubectl exec` for localhost bypass (no API key needed).
 To test from outside the container, create a DB-backed key via the [admin API](#api-key-management).
 
-### 2. Spawn a runtime assignment
+### 2. Start a workflow run
 
 ```bash
-THREAD_KEY=test-e2e-1
-
-SPAWN=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/spawn \
+RUN=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/workflows/runs \
   -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"harness\":\"amp\"}")
-ASSIGNMENT_GENERATION=$(printf '%s' "$SPAWN" | jq -r '.assignment_generation')
-```
+  -d '{"workflow_name":"slack_thread_turn","trigger_key":"test-e2e-1","input":{"thread_key":"slack:test-e2e:1","text":"Reply with exactly PONG and nothing else.","delivery":{"platform":"dev"}},"eager_start":true}')
+RUN_ID=$(printf '%s' "$RUN" | jq -r '.run_id')
 
-### 3. Persist a message
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/message \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly PONG and nothing else.\"}]}"
-```
-
-### 4. Enqueue execution
-
-```bash
-EXECUTE=$(kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST http://localhost:8000/agent/execute \
-  -H "Content-Type: application/json" \
-  -d "{\"thread_key\":\"${THREAD_KEY}\",\"assignment_generation\":${ASSIGNMENT_GENERATION},\"harness\":\"amp\",\"delivery\":{\"platform\":\"dev\"}}")
-EXECUTION_ID=$(printf '%s' "$EXECUTE" | jq -r '.execution_id')
-```
-
-### 5. Tail durable events (or reconnect later)
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -N \
-  "http://localhost:8000/agent/threads/${THREAD_KEY}/events?execution_id=${EXECUTION_ID}&after_event_id=0"
-```
-
-If this stream disconnects, reconnect with the last seen `event_id` as `after_event_id`. If the execution already finished, the endpoint emits the terminal `execution_state` snapshot.
-
-### 6. Inspect or cancel
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://localhost:8000/agent/executions/${EXECUTION_ID}" | jq
-
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST \
-  "http://localhost:8000/agent/executions/${EXECUTION_ID}/cancel" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-### 7. Release the assignment when finished
-
-```bash
-kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s -X POST "http://localhost:8000/agent/threads/${THREAD_KEY}/release" \
-  -H "Content-Type: application/json" \
-  -d '{"release_id":"rel-test-e2e-1","cancel_inflight":true}'
+kubectl exec -n centaur deploy/centaur-centaur-api -- curl -s "http://localhost:8000/workflows/runs/${RUN_ID}" | jq
 ```
 
 ### Debugging

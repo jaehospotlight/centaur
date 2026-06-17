@@ -42,13 +42,11 @@ Centaur is a self-hosted agent platform for teams that want one shared agent ins
 # 3. Progress and the final answer are delivered back to Slack.
 ```
 
-You can also drive Centaur directly through the API:
+You can also drive Centaur directly through the workflow API:
 
 ```text
-POST /agent/spawn      # assign or reuse a sandbox
-POST /agent/message    # store the user turn
-POST /agent/execute    # start the agent
-GET  /agent/threads/{thread_key}/events
+POST /workflows/runs             # start a durable workflow run
+GET  /workflows/runs/{run_id}    # inspect terminal state
 ```
 
 The platform handles sandbox lifecycle, durable transcript storage, tool access, credential injection, workflow execution, and final delivery.

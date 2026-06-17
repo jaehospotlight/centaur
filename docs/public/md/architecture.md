@@ -30,11 +30,10 @@ the API and follow the event stream.
 
 | Step | Endpoint | What it saves |
 |------|----------|----------------|
-| Start or reuse a sandbox | `POST /agent/spawn` | The thread's current sandbox assignment. |
-| Persist input | `POST /agent/message` | Writes the user turn and extracts large multimodal attachments. |
-| Run the agent | `POST /agent/execute` | A run row with status and final result. |
-| Follow output | `GET /agent/threads/{thread}/events` | Tool calls, model output, status changes, and final text. |
-| Clean up | `POST /agent/threads/{thread}/release` | Releases the sandbox and can cancel running work. |
+| Start user turn | `POST /workflows/runs` | A durable workflow run for the requested thread/trigger. |
+| Inspect state | `GET /workflows/runs/{run_id}` | Workflow status, output, execution linkage, and failure state. |
+
+Workflow steps persist runtime assignment, input, execution events, attachments, and final-delivery obligations in Postgres.
 
 Because each step is stored, a Slack reconnect, browser refresh, API restart,
 pod replacement, or worker failover does not erase the run. The event stream is
@@ -112,7 +111,7 @@ and does not protect against.
 |---------|-------------------|
 | Client disconnects | Reconnect to the event stream with `after_event_id`. |
 | API restarts | Reload assignments, executions, and terminal state from Postgres. |
-| Sandbox pod dies | The execution becomes terminal, the event trail remains in Postgres, and operators inspect `GET /agent/executions/{execution_id}` plus API/sandbox logs before retrying the turn. |
+| Sandbox pod dies | The workflow run becomes terminal, the event trail remains in Postgres, and operators inspect `GET /workflows/runs/{run_id}` plus API/sandbox logs before retrying the turn. |
 | Workflow worker restarts | Re-run the handler and skip completed checkpoints. |
 | Proxy restarts | Rebuild the key-injection map from the secret-manager cache. |
 | Tool changes | Discovery reloads plugin metadata; agents see the updated methods. |
