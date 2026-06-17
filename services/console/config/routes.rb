@@ -52,6 +52,7 @@ Rails.application.routes.draw do
   end
   get "console/credentials/:id", to: "console#credential", as: :console_credential
   get "console/oauth_apps", to: "console#oauth_apps", as: :console_oauth_apps
+  get "console/tools", to: "console/tools#index", as: :console_tools
   # Create/edit forms for OAuth apps. Declared before the show route so
   # /console/oauth_apps/new wins over the generic `:id` match. Named
   # `*_oauth_app_form*` so the form helpers don't collide with the read

@@ -1,0 +1,69 @@
+<% content_for :title, "Tools · Centaur Console" %>
+
+<div class="mb-8">
+  <h1 class="page-title">Tools</h1>
+  <p class="page-subtitle"><%= pluralize(@tools.size, "tool") %> discovered from <%= pluralize(@catalog.tool_dirs.size, "tool directory") %>.</p>
+</div>
+
+<% if @catalog.tool_dirs.any? %>
+  <div class="mb-6 flex flex-wrap gap-2">
+    <% @catalog.tool_dirs.each do |dir| %>
+      <span class="label-chip"><%= dir %></span>
+    <% end %>
+  </div>
+<% end %>
+
+<% if @tools.empty? %>
+  <p class="empty-state">No tools discovered. Set TOOL_DIRS to one or more repo-cache tool roots.</p>
+<% else %>
+  <div class="console-scroll-panel">
+    <table class="console-table">
+      <thead class="console-table-head">
+        <tr>
+          <th class="console-th">Tool</th>
+          <th class="console-th">Module</th>
+          <th class="console-th">Secrets</th>
+          <th class="console-th">Path</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-ink-700">
+        <% @tools.each do |tool| %>
+          <% secrets = tool.secrets + tool.optional_secrets %>
+          <tr class="align-top console-row-hover">
+            <td class="console-td-nowrap">
+              <div class="font-semibold text-zinc-100"><%= tool.name %></div>
+            </td>
+            <td class="console-td-nowrap text-zinc-400">
+              <%= tool.module_path || "—" %>
+            </td>
+            <td class="console-td">
+              <% if secrets.any? %>
+                <div class="space-y-2">
+                  <% secrets.each do |secret| %>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="resource-badge"><%= secret.name %></span>
+                      <span class="text-xs uppercase tracking-wider text-zinc-500"><%= secret.type %></span>
+                      <span class="text-xs text-zinc-500"><%= secret.mode %></span>
+                      <span class="text-xs text-zinc-500"><%= secret.target %></span>
+                      <% if secret.optional %>
+                        <span class="rounded bg-zinc-500/10 px-1.5 py-0.5 text-[11px] text-zinc-400 ring-1 ring-zinc-500/20">optional</span>
+                      <% end %>
+                      <% secret.hosts.each do |host| %>
+                        <span class="label-chip"><%= host %></span>
+                      <% end %>
+                    </div>
+                  <% end %>
+                </div>
+              <% else %>
+                <span class="text-zinc-600">—</span>
+              <% end %>
+            </td>
+            <td class="console-td">
+              <div class="max-w-2xl break-all text-xs text-zinc-500"><%= tool.path %></div>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </div>
+<% end %>

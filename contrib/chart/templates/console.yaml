@@ -3,6 +3,23 @@
 {{- $secretEnv := include "centaur.secretEnvName" . }}
 {{- $prefix := .Values.secretManager.envPrefix }}
 {{- $dbName := $console.database.name }}
+{{- $overlaySources := include "centaur.overlaySources" . | fromJsonArray -}}
+{{- $toolSources := list -}}
+{{- range $source := $overlaySources -}}
+{{- $repo := get $source "repo" | default "" -}}
+{{- if $repo -}}
+{{- with (get $source "toolsSubdir") -}}
+{{- $toolSources = append $toolSources (dict "repo" $repo "subdir" .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $toolsUseRepoCache := and .Values.repoCache.enabled (gt (len $toolSources) 0) -}}
+{{- $toolDirs := list -}}
+{{- if $toolsUseRepoCache -}}
+{{- range $source := $toolSources }}
+{{- $toolDirs = append $toolDirs (printf "%s/%s/%s" $.Values.repoCache.hostPath (get $source "repo") (get $source "subdir")) -}}
+{{- end -}}
+{{- end -}}
 # console — Rails control plane for authenticated API access and encrypted
 # secret storage. The chart owns the Deployment shape (image, port, env,
 # security context) so operators tune it via `helm upgrade`. It runs against a
@@ -168,6 +185,12 @@ spec:
               value: "1"
             - name: RAILS_SERVE_STATIC_FILES
               value: "1"
+{{- if $toolsUseRepoCache }}
+            # Read-only tool catalog roots. The console scans these manifests so
+            # operators can see which tools are available in the repo cache.
+            - name: TOOL_DIRS
+              value: {{ join ":" $toolDirs | quote }}
+{{- end }}
           ports:
             - containerPort: {{ $console.service.httpPort }}
               name: http
@@ -199,6 +222,19 @@ spec:
               type: RuntimeDefault
           resources:
 {{ toYaml $console.resources | nindent 12 }}
+{{- if $toolsUseRepoCache }}
+          volumeMounts:
+            - name: repo-cache
+              mountPath: {{ .Values.repoCache.hostPath | quote }}
+              readOnly: true
+{{- end }}
+{{- if $toolsUseRepoCache }}
+      volumes:
+        - name: repo-cache
+          hostPath:
+            path: {{ .Values.repoCache.hostPath | quote }}
+            type: DirectoryOrCreate
+{{- end }}
 {{- if .Values.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
