@@ -1346,6 +1346,95 @@ mod tests {
     }
 
     #[test]
+    fn pg_dsn_listeners_can_share_a_database_with_distinct_roles() {
+        let temp = temp_dir("api-rs-tools-pg-dsn-shared-db");
+        let base = temp.join("base");
+        write_tool(
+            &base.join("infra").join("centaur_investigator"),
+            r#"
+[project]
+description = "investigate centaur"
+
+[tool.centaur]
+secrets = [{type = "pg_dsn", name = "CENTAUR_READONLY_DSN", database = "centaur", secret_ref = "DATABASE_URL", role = "centaur_readonly"}]
+"#,
+        );
+        write_tool(
+            &base.join("productivity").join("company_context"),
+            r#"
+[project]
+description = "company context"
+
+[tool.centaur]
+secrets = [{type = "pg_dsn", name = "COMPANY_CONTEXT_DSN", database = "centaur", secret_ref = "DATABASE_URL", role = "centaur_slack_reader", settings = [{name = "centaur.slack_channel_id", value_from = {principal_label = "slack_channel_id"}}]}]
+"#,
+        );
+
+        let discovered = discover_tool_proxy_fragment(std::slice::from_ref(&base)).unwrap();
+
+        assert_eq!(discovered.secret_count, 2);
+        assert_eq!(discovered.fragment.postgres.len(), 2);
+
+        let company_context = discovered
+            .fragment
+            .postgres
+            .iter()
+            .find(|listener| listener.name.as_deref() == Some("company_context_dsn"))
+            .expect("company context postgres listener");
+        assert_eq!(
+            company_context
+                .sandbox_env
+                .as_ref()
+                .and_then(|env| env.name.as_deref()),
+            Some("COMPANY_CONTEXT_DSN")
+        );
+        assert_eq!(
+            company_context
+                .sandbox_env
+                .as_ref()
+                .and_then(|env| env.database.as_deref()),
+            Some("centaur")
+        );
+        assert_eq!(
+            company_context
+                .extra
+                .get("role")
+                .and_then(YamlValue::as_str),
+            Some("centaur_slack_reader")
+        );
+        assert_eq!(company_context.settings.len(), 1);
+        assert_eq!(company_context.settings[0].name, "centaur.slack_channel_id");
+
+        let readonly = discovered
+            .fragment
+            .postgres
+            .iter()
+            .find(|listener| listener.name.as_deref() == Some("centaur_readonly_dsn"))
+            .expect("centaur readonly postgres listener");
+        assert_eq!(
+            readonly
+                .sandbox_env
+                .as_ref()
+                .and_then(|env| env.name.as_deref()),
+            Some("CENTAUR_READONLY_DSN")
+        );
+        assert_eq!(
+            readonly
+                .sandbox_env
+                .as_ref()
+                .and_then(|env| env.database.as_deref()),
+            Some("centaur")
+        );
+        assert_eq!(
+            readonly.extra.get("role").and_then(YamlValue::as_str),
+            Some("centaur_readonly")
+        );
+        assert!(readonly.settings.is_empty());
+
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn discovers_http_oauth_and_overlay_shadowing() {
         let temp = temp_dir("api-rs-tools");
         let base = temp.join("base");

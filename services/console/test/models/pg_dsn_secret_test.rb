@@ -55,11 +55,10 @@ class PgDsnSecretTest < ActiveSupport::TestCase
     assert_includes dup.errors[:foreign_id], "has already been taken"
   end
 
-  test "database is unique within a namespace" do
+  test "database can be shared by distinct logical credentials" do
     with_dsn(PgDsnSecret.new(base_attrs(foreign_id: "first-pg", database: "shared-db"))).save!
-    dup = with_dsn(PgDsnSecret.new(base_attrs(foreign_id: "second-pg", database: "shared-db")))
-    assert_not dup.valid?
-    assert_includes dup.errors[:database], "has already been taken"
+    other = with_dsn(PgDsnSecret.new(base_attrs(foreign_id: "second-pg", database: "shared-db")))
+    assert other.valid?
   end
 
   test "an inline DSN whose database matches is valid" do

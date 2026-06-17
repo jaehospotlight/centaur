@@ -183,6 +183,26 @@ class PrincipalTest < ActiveSupport::TestCase
     assert_equal({ "type" => "env", "var" => "PG_ANALYTICS_DSN" }, entries.first["dsn"])
   end
 
+  test "sync_postgres keeps same-database PgDsnSecrets distinct by foreign_id" do
+    existing = pg_dsn_secrets(:acme_analytics_pg)
+    shared = PgDsnSecret.new(
+      namespace: existing.namespace,
+      foreign_id: "pg-analytics-shared-role",
+      name: "analytics shared role",
+      database: existing.database,
+      role: "readonly_alt",
+      created_by: users(:acme_admin)
+    )
+    shared.dsn_source = SecretSource.new(source_type: "env", config: { "var" => "PG_ANALYTICS_SHARED_DSN" })
+    shared.save!
+
+    entries = principal_with_grants(existing, shared).sync_postgres
+
+    assert_equal 2, entries.length
+    assert_equal %w[pg-analytics pg-analytics-shared-role], entries.map { |entry| entry["foreign_id"] }.sort
+    assert_equal [ "analytics" ], entries.map { |entry| entry["database"] }.uniq
+  end
+
   test "sync_postgres resolves value_from settings against the principal" do
     principal = principals(:globex_user)
     principal.update!(labels: { "slack_channel_id" => "C999" })

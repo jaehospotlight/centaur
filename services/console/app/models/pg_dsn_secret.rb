@@ -1,10 +1,12 @@
 # A Postgres upstream credential: a connection-string (DSN) resolved from a
 # secret source, plus an optional SET ROLE for the upstream session. Delivered to
-# iron-proxy in the single-listener `postgres` list, where it is keyed for routing
-# by `database` (the dbname a client sends to reach this upstream). `database` is
-# therefore required and must match the database the DSN connects to; centaur-console
-# enforces that match where the DSN is inspectable (control_plane/inline) and
-# documents it otherwise (the proxy returns FATAL 3D000 on a mismatch).
+# iron-proxy in the single-listener `postgres` list. `database` is the dbname a
+# client sends to reach this upstream, while `foreign_id` is the logical
+# credential identity used by the control plane and sandbox env-var derivation.
+# Multiple logical credentials can target the same database with different
+# roles/settings; centaur-console enforces that `database` matches the DSN where
+# the DSN is inspectable (control_plane/inline) and documents it otherwise (the
+# proxy returns FATAL 3D000 on a mismatch).
 #
 # `foreign_id` is also required: it identifies the upstream for credential
 # delivery (env-var supplied DSNs) and is the stable handle operators reference.
@@ -37,10 +39,9 @@ class PgDsnSecret < ApplicationRecord
   has_many :grants, dependent: :destroy
   belongs_to :created_by, class_name: "User"
 
-  # One entry in the proxy's synced `postgres` list, keyed for routing by
-  # `database`. The opaque id is carried too so the proxy can refer back to the
-  # canonical resource (it ignores fields it does not use). The DSN reuses the
-  # shared secrets source shape.
+  # One entry in the proxy's synced `postgres` list. The opaque id is carried
+  # too so the proxy can refer back to the canonical resource (it ignores fields
+  # it does not use). The DSN reuses the shared secrets source shape.
   def to_proxy_dsn(principal: nil)
     entry = {
       "id" => oid,
@@ -70,7 +71,7 @@ class PgDsnSecret < ApplicationRecord
   validates :namespace, presence: true, format: { with: URL_SAFE_FORMAT, message: URL_SAFE_MESSAGE }
   validates :foreign_id, presence: true, uniqueness: { scope: :namespace },
             format: { with: URL_SAFE_FORMAT, message: URL_SAFE_MESSAGE }
-  validates :database, presence: true, uniqueness: { scope: :namespace }
+  validates :database, presence: true
   validate :labels_is_a_hash
   validate :settings_are_valid
   validate :dsn_source_present

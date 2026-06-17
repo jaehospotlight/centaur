@@ -42,10 +42,10 @@ const PROXY_TLS_CA_CERT_PATH: &str = "/etc/iron-proxy/ca.crt";
 const PROXY_TLS_CA_KEY_PATH: &str = "/etc/iron-proxy/ca.key";
 const PROXY_LOG_LEVEL: &str = "info";
 // iron-control multiplexes every Postgres upstream through a single listener,
-// routing by database name; the control plane owns each upstream DSN/role/
-// database. api-rs binds one local port (matching the chart's pgPort) and one
-// shared client credential (random per sandbox) the sandbox presents on every
-// DSN. These are the deploy-level env vars iron-proxy reads for that listener.
+// while the control plane owns each upstream DSN/role/database. api-rs binds
+// one local port (matching the chart's pgPort) and one shared client credential
+// (random per sandbox) the sandbox presents on every DSN. These are the
+// deploy-level env vars iron-proxy reads for that listener.
 const PG_LISTENER_PORT: u16 = 5432;
 const PG_LISTEN_ENV: &str = "IRON_PROXY_PG_LISTEN";
 const PG_CLIENT_USER_ENV: &str = "IRON_PROXY_PG_CLIENT_USER";
@@ -132,9 +132,9 @@ pub(crate) struct ResolvedIronProxy {
 }
 
 /// The single Postgres listener the proxy multiplexes every upstream through.
-/// iron-control owns each upstream DSN/role/database and routes by database
-/// name; api-rs only assigns the local listen port and the shared client
-/// credential the sandbox presents (random per sandbox).
+/// iron-control owns each upstream DSN/role/database; api-rs only assigns the
+/// local listen port and the shared client credential the sandbox presents
+/// (random per sandbox).
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolvedPg {
     /// Local listen address the proxy binds (e.g. ``0.0.0.0:5432``).
@@ -238,11 +238,11 @@ impl AgentSandboxBackend {
     /// sandboxes — created under the roleless bootstrap principal — are still
     /// born with the full DSN set and a live listener; the reassignable proxy
     /// enforces per-principal access at runtime by routing only the claimed
-    /// principal's granted databases. iron-proxy multiplexes every upstream
-    /// through one listener, so the DSNs differ only by database; api-rs binds a
-    /// single local port and a shared client credential (random per sandbox,
-    /// set on both the proxy CLIENT_PASSWORD and every sandbox DSN). Returns
-    /// `None` when no fragment declares a `pg_dsn`.
+    /// principal's granted Postgres credentials. iron-proxy multiplexes every
+    /// upstream through one listener; api-rs binds a single local port and a
+    /// shared client credential (random per sandbox, set on both the proxy
+    /// CLIENT_PASSWORD and every sandbox DSN). Returns `None` when no fragment
+    /// declares a `pg_dsn`.
     fn resolved_pg_from_fragments(&self) -> Option<ResolvedPg> {
         let iron_proxy = self.config.iron_proxy.as_ref()?;
         let dsns: Vec<ResolvedPgDsn> = pg_sandbox_dsns(&iron_proxy.fragments)
@@ -859,9 +859,8 @@ pub(crate) fn apply_proxy_env(spec: &mut SandboxSpec, resolved: &ResolvedIronPro
         set_missing_env(spec, name, value);
     }
     // Each Postgres upstream reaches the sandbox as a DSN env var. They all
-    // point at the proxy's single listener with the same shared credential and
-    // differ only by database; iron-proxy routes on the database and fronts the
-    // real upstream.
+    // point at the proxy's single listener with the same shared credential; the
+    // control plane sync supplies the upstream DSN, role, and settings.
     if let Some(pg) = &resolved.pg {
         for dsn in &pg.dsns {
             let value = format!(
