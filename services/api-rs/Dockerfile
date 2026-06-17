@@ -30,7 +30,9 @@ COPY --from=planner /build/recipe.json recipe.json
 ARG RUST_BUILD_PROFILE=release
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=secret,id=DEPOT_TOKEN,env=SCCACHE_WEBDAV_TOKEN \
     --mount=type=cache,target=/sccache,sharing=shared \
+    if [ -n "${SCCACHE_WEBDAV_TOKEN:-}" ]; then export SCCACHE_WEBDAV_ENDPOINT=https://cache.depot.dev; fi && \
     case "$RUST_BUILD_PROFILE" in \
       release) cargo chef cook --locked --release --package centaur-api-server --recipe-path recipe.json ;; \
       debug|dev) cargo chef cook --locked --package centaur-api-server --recipe-path recipe.json ;; \
@@ -44,7 +46,9 @@ COPY services/api-rs/ ./
 ARG RUST_BUILD_PROFILE=release
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=secret,id=DEPOT_TOKEN,env=SCCACHE_WEBDAV_TOKEN \
     --mount=type=cache,target=/sccache,sharing=shared \
+    if [ -n "${SCCACHE_WEBDAV_TOKEN:-}" ]; then export SCCACHE_WEBDAV_ENDPOINT=https://cache.depot.dev; fi && \
     case "$RUST_BUILD_PROFILE" in \
       release) cargo build --locked --release -p centaur-api-server && cp target/release/centaur-api-server /usr/local/bin/centaur-api-server ;; \
       debug|dev) cargo build --locked -p centaur-api-server && cp target/debug/centaur-api-server /usr/local/bin/centaur-api-server ;; \
