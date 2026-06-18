@@ -83,7 +83,7 @@ describe('CodexAppServerRendererEventMapper', () => {
     expect(task).toMatchObject({
       type: 'renderer.task.update',
       task: {
-        id: 'thinking-thinking-1',
+        id: 'thinking-commentary',
         title: 'Thinking',
         status: 'in_progress'
       }
@@ -97,8 +97,52 @@ describe('CodexAppServerRendererEventMapper', () => {
       item: { id: 'cmd-1', type: 'commandExecution', command: 'pnpm test' }
     })
     expect(next.find(event => event.type === 'renderer.task.update')).toMatchObject({
-      task: { id: 'thinking-thinking-1', title: 'Thinking', status: 'complete' }
+      task: { id: 'thinking-commentary', title: 'Thinking', status: 'complete' }
     })
+  })
+
+  it('coalesces commentary segments into one Thinking task', () => {
+    const mapper = new CodexAppServerRendererEventMapper()
+
+    mapper.process({
+      type: 'item.started',
+      item: { id: 'thinking-1', type: 'agentMessage', phase: 'commentary' }
+    })
+    mapper.process({
+      type: 'item.completed',
+      item: {
+        id: 'thinking-1',
+        type: 'agentMessage',
+        phase: 'commentary',
+        text: 'Checking the runtime.'
+      }
+    })
+    mapper.process({
+      type: 'item.started',
+      item: { id: 'thinking-2', type: 'agentMessage', phase: 'commentary' }
+    })
+    const events = mapper.process({
+      type: 'item.completed',
+      item: {
+        id: 'thinking-2',
+        type: 'agentMessage',
+        phase: 'commentary',
+        text: 'Inspecting the renderer.'
+      }
+    })
+
+    const tasks = events.filter(event => event.type === 'renderer.task.update')
+    expect(
+      new Set(tasks.map(event => (event.type === 'renderer.task.update' ? event.task.id : '')))
+    ).toEqual(new Set(['thinking-commentary']))
+    const task = tasks.at(-1)
+    expect(task).toMatchObject({
+      type: 'renderer.task.update',
+      task: { id: 'thinking-commentary', title: 'Thinking', status: 'in_progress' }
+    })
+    const details = plain(task?.type === 'renderer.task.update' ? task.task.details : undefined)
+    expect(details).toContain('Checking the runtime.')
+    expect(details).toContain('Inspecting the renderer.')
   })
 
   it('keeps one Thinking task in_progress across reasoning deltas until the item seals', () => {

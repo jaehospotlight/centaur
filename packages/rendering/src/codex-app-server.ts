@@ -15,6 +15,7 @@ import type {
 } from './types'
 
 const COMMAND_EXECUTION_TITLE = 'Command execution'
+const COMMENTARY_THINKING_TASK_ID = 'thinking-commentary'
 const PRE_STREAM_GRACE_MS = 500
 
 const limits = {
@@ -862,10 +863,9 @@ function commentaryItemId(event: any): string {
 function startThinkingTask(state: CodexMapperState, event: any): boolean {
   if (event?.type !== 'item.started') return false
   if (agentMessageItemPhase(event?.item) !== 'commentary') return false
-  const id = commentaryItemId(event)
-  if (!id || state.taskByUseId.has(`thinking-${id}`)) return false
-  state.taskByUseId.set(`thinking-${id}`, {
-    id: `thinking-${id}`,
+  if (!commentaryItemId(event) || state.taskByUseId.has(COMMENTARY_THINKING_TASK_ID)) return false
+  state.taskByUseId.set(COMMENTARY_THINKING_TASK_ID, {
+    id: COMMENTARY_THINKING_TASK_ID,
     title: 'Thinking',
     status: 'in_progress',
     details: [],
@@ -883,11 +883,12 @@ function upsertThinkingTask(state: CodexMapperState, event: any): void {
     state.commentaryByItemId.set(id, body)
     recomposeBuffers(state)
   }
-  state.taskByUseId.set(`thinking-${id}`, {
-    id: `thinking-${id}`,
+  const details = state.commentaryText.trim() || body
+  state.taskByUseId.set(COMMENTARY_THINKING_TASK_ID, {
+    id: COMMENTARY_THINKING_TASK_ID,
     title: 'Thinking',
     status: 'complete',
-    details: [section([text(body)])],
+    details: [section([text(details)])],
     output: []
   })
 }
