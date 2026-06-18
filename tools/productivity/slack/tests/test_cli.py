@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from slack.cli import _upload_target_and_files
+from typer.testing import CliRunner
+
+from slack.cli import _upload_target_and_files, app
+
+
+runner = CliRunner()
 
 
 def test_upload_target_defaults_when_first_arg_is_file(tmp_path: Path) -> None:
@@ -30,3 +35,24 @@ def test_upload_target_single_missing_path_uses_default_context() -> None:
 
     assert channel is None
     assert files == ["chart.png"]
+
+
+def test_upload_single_file_with_default_context_does_not_index_missing_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    upload = tmp_path / "chart.png"
+    upload.write_bytes(b"png")
+    calls = []
+
+    def fake_upload_file(**kwargs):
+        calls.append(kwargs)
+        return {"permalink": "https://slack.example/files/chart.png"}
+
+    monkeypatch.setattr("slack.client.upload_file", fake_upload_file)
+
+    result = runner.invoke(app, ["upload", str(upload), "--comment", "chart"])
+
+    assert result.exit_code == 0
+    assert calls[0]["channel"] is None
+    assert calls[0]["filename"] == "chart.png"
+    assert calls[0]["comment"] == "chart"

@@ -92,10 +92,12 @@ pub(crate) fn run_blocks_app_server<H: HarnessServer>(harness: &H) -> Result<()>
                 input,
                 client_user_message_id,
                 model,
+                thread_key,
                 // Reasoning effort only applies to the codex harness; the
                 // emulated (claude/amp) app-server has no equivalent knob.
                 reasoning: _,
             }) => {
+                set_current_thread_key(thread_key.as_deref());
                 if let Some(model) = model {
                     state.model = model;
                 }
@@ -200,6 +202,7 @@ pub(crate) enum BlocksCommand {
         client_user_message_id: Option<String>,
         model: Option<String>,
         reasoning: Option<String>,
+        thread_key: Option<String>,
     },
     Interrupt,
     AttachmentChunk,
@@ -234,6 +237,8 @@ struct BlocksLine {
     model: Option<String>,
     #[serde(default)]
     reasoning: Option<String>,
+    #[serde(default)]
+    thread_key: Option<String>,
     #[serde(rename = "attachmentId", default)]
     attachment_id: Option<String>,
     #[serde(default)]
@@ -346,6 +351,10 @@ pub(crate) fn parse_blocks_line_with_state(
                     .reasoning
                     .map(|reasoning| reasoning.trim().to_owned())
                     .filter(|reasoning| !reasoning.is_empty()),
+                thread_key: parsed
+                    .thread_key
+                    .map(|thread_key| thread_key.trim().to_owned())
+                    .filter(|thread_key| !thread_key.is_empty()),
             })
         }
         "attachment.chunk" => {
@@ -356,6 +365,14 @@ pub(crate) fn parse_blocks_line_with_state(
         kind => Err(HarnessServerError::InvalidBlocksInput {
             message: format!("unsupported blocks input type `{kind}`"),
         }),
+    }
+}
+
+pub(crate) fn set_current_thread_key(thread_key: Option<&str>) {
+    if let Some(thread_key) = thread_key {
+        unsafe {
+            env::set_var("CENTAUR_THREAD_KEY", thread_key);
+        }
     }
 }
 
@@ -1158,12 +1175,28 @@ mod tests {
     #[test]
     fn parses_blocks_user_line_with_model_override() {
         let line = r#"{"type":"user","thread_key":"web:t1","model":"claude-sonnet-4-6","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#;
-        let BlocksCommand::User { model, input, .. } = parse_blocks_line(line).expect("parses")
+        let BlocksCommand::User {
+            model,
+            input,
+            thread_key,
+            ..
+        } = parse_blocks_line(line).expect("parses")
         else {
             panic!("expected user command");
         };
         assert_eq!(model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(thread_key.as_deref(), Some("web:t1"));
         assert_eq!(input.len(), 1);
+    }
+
+    #[test]
+    fn ignores_blank_thread_key_on_blocks_user_line() {
+        let line = r#"{"type":"user","thread_key":"  ","text":"hi"}"#;
+        let BlocksCommand::User { thread_key, .. } = parse_blocks_line(line).expect("parses")
+        else {
+            panic!("expected user command");
+        };
+        assert_eq!(thread_key, None);
     }
 
     #[test]

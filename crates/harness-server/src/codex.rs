@@ -7,7 +7,10 @@ use std::thread;
 use codex_app_server_protocol::UserInput;
 use serde_json::{Value, json};
 
-use crate::server::{BlocksCommand, BlocksState, parse_blocks_line_with_state, write_blocks_error};
+use crate::server::{
+    BlocksCommand, BlocksState, parse_blocks_line_with_state, set_current_thread_key,
+    write_blocks_error,
+};
 use crate::util::write_value;
 use crate::{AppServerRuntime, HarnessServerError, Result};
 
@@ -141,7 +144,9 @@ pub(crate) fn run_codex_blocks_server(config: CodexHarnessServer) -> Result<()> 
                 client_user_message_id,
                 model,
                 reasoning,
+                thread_key,
             }) => {
+                set_current_thread_key(thread_key.as_deref());
                 if let Err(error) = run_codex_user_turn(
                     &mut codex,
                     &mut stdout,
