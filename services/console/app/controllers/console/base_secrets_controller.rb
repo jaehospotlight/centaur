@@ -15,6 +15,7 @@ module Console
 
     def new
       @secret = model.new(namespace: "default")
+      assign_form(@secret) if params[:prefill].present?
     end
 
     def create

@@ -1,0 +1,130 @@
+<% content_for :title, "#{@tool.name} · Tools · Centaur Console" %>
+
+<div class="mb-8">
+  <a href="<%= console_tools_path %>" class="back-link">← back to tools</a>
+  <div class="mt-2 flex flex-wrap items-center gap-3">
+    <h1 class="page-title"><%= @tool.name %></h1>
+    <% if @tool.category.present? %><span class="resource-badge"><%= @tool.category %></span><% end %>
+  </div>
+  <% if @tool.description.present? %>
+    <p class="mt-3 max-w-2xl text-sm text-zinc-500"><%= @tool.description %></p>
+  <% end %>
+  <div class="mt-3 text-xs text-zinc-500">
+    <span>Manifest</span>
+    <span class="mx-1 text-zinc-700">·</span>
+    <code class="break-all text-zinc-400"><%= @tool.manifest_path %></code>
+  </div>
+</div>
+
+<% if @tool.errors.any? %>
+  <div class="alert-error">
+    <p class="mb-1 font-semibold">Manifest errors</p>
+    <ul class="list-disc space-y-0.5 pl-5">
+      <% @tool.errors.each do |error| %>
+        <li><%= error %></li>
+      <% end %>
+    </ul>
+  </div>
+<% end %>
+
+<section class="mb-8">
+  <h2 class="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-500">Tool Hosts</h2>
+  <% if @tool.hosts.any? %>
+    <div class="flex flex-wrap gap-1">
+      <% @tool.hosts.each do |host| %>
+        <span class="rounded bg-ink-700 px-2 py-1 text-xs text-zinc-300"><%= host %></span>
+      <% end %>
+    </div>
+  <% else %>
+    <div class="empty-state">No top-level hosts declared.</div>
+  <% end %>
+</section>
+
+<section>
+  <h2 class="mb-3 text-xs font-semibold uppercase tracking-wider text-zinc-500">Secret Requirements</h2>
+  <% if @tool.secrets.empty? %>
+    <div class="empty-state">This tool declares no secrets.</div>
+  <% else %>
+    <div class="space-y-4">
+      <% @tool.secrets.each do |secret| %>
+        <% matches = @matches_by_secret.fetch(secret, []) %>
+        <div class="console-panel p-5">
+          <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-sm font-semibold text-zinc-100"><%= secret.name %></h3>
+                <span class="resource-badge"><%= secret_kind_label(secret.kind) %></span>
+                <% unless secret.required? %>
+                  <span class="rounded bg-ink-700 px-2 py-0.5 text-xs text-zinc-400">optional</span>
+                <% end %>
+              </div>
+              <p class="mt-1 text-xs text-zinc-500"><%= tool_secret_summary(secret) %></p>
+            </div>
+            <% if (path = tool_secret_creation_path(@tool, secret)) %>
+              <%= link_to "Add Secret", path, class: "btn-primary" %>
+            <% else %>
+              <span class="rounded border border-ink-600 px-3 py-1.5 text-sm text-zinc-600">No form yet</span>
+            <% end %>
+          </div>
+
+          <div class="grid gap-4 md:grid-cols-3">
+            <div>
+              <div class="mb-1 text-xs uppercase tracking-wider text-zinc-500">Expected Foreign ID</div>
+              <code class="break-all text-xs text-zinc-300"><%= tool_secret_expected_foreign_id(@tool, secret) %></code>
+            </div>
+            <div>
+              <div class="mb-1 text-xs uppercase tracking-wider text-zinc-500">Secret Refs</div>
+              <div class="flex flex-wrap gap-1"><%= tool_secret_source_refs(secret) %></div>
+            </div>
+            <div>
+              <div class="mb-1 text-xs uppercase tracking-wider text-zinc-500">Hosts</div>
+              <% if secret.hosts.any? %>
+                <div class="flex flex-wrap gap-1">
+                  <% secret.hosts.each do |host| %>
+                    <span class="rounded bg-ink-700 px-1.5 py-0.5 text-xs text-zinc-300"><%= host %></span>
+                  <% end %>
+                </div>
+              <% else %>
+                <span class="text-zinc-600">—</span>
+              <% end %>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <div class="mb-2 text-xs uppercase tracking-wider text-zinc-500">Matching Secrets</div>
+            <% if matches.any? %>
+              <div class="overflow-x-auto rounded-lg border border-ink-700">
+                <table class="console-table">
+                  <tbody class="divide-y divide-ink-700">
+                    <% matches.each do |match| %>
+                      <tr class="console-row-hover">
+                        <td class="console-td-nowrap">
+                          <%= link_to match.foreign_id.presence || match.oid, console_secret_path(secret.kind, match.oid), class: "console-link" %>
+                          <%= id_meta_line(match.namespace, oid: match.foreign_id.present? ? match.oid : nil) %>
+                        </td>
+                        <td class="console-td-nowrap text-zinc-300"><%= match.try(:name).presence || "unnamed" %></td>
+                        <td class="console-td">
+                          <% if match.labels.present? %>
+                            <div class="flex flex-wrap gap-1">
+                              <% match.labels.each do |key, value| %>
+                                <span class="label-chip"><%= key %>=<%= value %></span>
+                              <% end %>
+                            </div>
+                          <% else %>
+                            <span class="text-zinc-600">—</span>
+                          <% end %>
+                        </td>
+                      </tr>
+                    <% end %>
+                  </tbody>
+                </table>
+              </div>
+            <% else %>
+              <div class="rounded-lg border border-dashed border-ink-700 px-4 py-3 text-sm text-zinc-600">No matching secrets found.</div>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+</section>

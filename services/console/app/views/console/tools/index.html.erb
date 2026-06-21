@@ -1,0 +1,64 @@
+<% content_for :title, "Tools · Centaur Console" %>
+
+<div class="mb-8">
+  <h1 class="page-title">Tools</h1>
+  <p class="page-subtitle"><%= pluralize(@tools.size, "tool") %> discovered from <%= ToolCatalog.configured_roots.join(", ") %>.</p>
+</div>
+
+<% if @tools.empty? %>
+  <div class="empty-state">No tool manifests found. Configure <code>CENTAUR_TOOL_CATALOG_DIRS</code> or mount the repo cache.</div>
+<% else %>
+  <div class="console-scroll-panel">
+    <table class="console-table">
+      <thead class="console-table-head">
+        <tr>
+          <th class="console-th">Tool</th>
+          <th class="console-th">Category</th>
+          <th class="console-th">Secrets</th>
+          <th class="console-th">Hosts</th>
+          <th class="console-th">Status</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-ink-700">
+        <% @tools.each do |tool| %>
+          <tr class="align-top console-row-hover">
+            <td class="console-td-nowrap">
+              <%= link_to tool.name, console_tool_path(tool.key), class: "console-link" %>
+              <% if tool.description.present? %>
+                <div class="mt-0.5 max-w-md truncate text-xs text-zinc-500" title="<%= tool.description %>"><%= tool.description %></div>
+              <% end %>
+            </td>
+            <td class="console-td-nowrap text-zinc-400"><%= tool.category || "—" %></td>
+            <td class="console-td-nowrap">
+              <span class="resource-badge"><%= tool.required_secret_count %> required</span>
+              <% if tool.optional_secret_count.positive? %>
+                <span class="ml-1 rounded bg-ink-700 px-2 py-0.5 text-xs text-zinc-400"><%= tool.optional_secret_count %> optional</span>
+              <% end %>
+            </td>
+            <td class="console-td">
+              <% if tool.hosts.any? %>
+                <div class="flex max-w-xl flex-wrap gap-1">
+                  <% tool.hosts.first(4).each do |host| %>
+                    <span class="rounded bg-ink-700 px-1.5 py-0.5 text-xs text-zinc-300"><%= host %></span>
+                  <% end %>
+                  <% if tool.hosts.size > 4 %>
+                    <span class="text-xs text-zinc-500">+<%= tool.hosts.size - 4 %></span>
+                  <% end %>
+                </div>
+              <% else %>
+                <span class="text-zinc-600">—</span>
+              <% end %>
+            </td>
+            <td class="console-td-nowrap">
+              <% if tool.errors.any? %>
+                <span class="rounded bg-red-500/10 px-2 py-0.5 text-xs text-red-300 ring-1 ring-red-500/25">manifest error</span>
+              <% else %>
+                <span class="rounded bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-300 ring-1 ring-emerald-500/25">readable</span>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </div>
+<% end %>

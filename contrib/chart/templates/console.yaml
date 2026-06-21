@@ -3,6 +3,15 @@
 {{- $secretEnv := include "centaur.secretEnvName" . }}
 {{- $prefix := .Values.secretManager.envPrefix }}
 {{- $dbName := $console.database.name }}
+{{- $overlaySources := include "centaur.overlaySources" . | fromJsonArray -}}
+{{- $toolDirs := list -}}
+{{- range $source := $overlaySources -}}
+{{- $repo := get $source "repo" | default "" -}}
+{{- $toolsSubdir := get $source "toolsSubdir" | default "" -}}
+{{- if and $repo $toolsSubdir -}}
+{{- $toolDirs = append $toolDirs (printf "%s/%s/%s" $.Values.repoCache.hostPath $repo $toolsSubdir) -}}
+{{- end -}}
+{{- end -}}
 # console — Rails control plane for authenticated API access and encrypted
 # secret storage. The chart owns the Deployment shape (image, port, env,
 # security context) so operators tune it via `helm upgrade`. It runs against a
@@ -168,9 +177,19 @@ spec:
               value: "1"
             - name: RAILS_SERVE_STATIC_FILES
               value: "1"
+{{- if and .Values.repoCache.enabled $toolDirs }}
+            - name: CENTAUR_TOOL_CATALOG_DIRS
+              value: {{ join ":" $toolDirs | quote }}
+{{- end }}
           ports:
             - containerPort: {{ $console.service.httpPort }}
               name: http
+{{- if and .Values.repoCache.enabled $toolDirs }}
+          volumeMounts:
+            - name: repo-cache
+              mountPath: {{ .Values.repoCache.hostPath | quote }}
+              readOnly: true
+{{- end }}
           startupProbe:
             httpGet:
               path: /up
@@ -199,6 +218,13 @@ spec:
               type: RuntimeDefault
           resources:
 {{ toYaml $console.resources | nindent 12 }}
+{{- if and .Values.repoCache.enabled $toolDirs }}
+      volumes:
+        - name: repo-cache
+          hostPath:
+            path: {{ .Values.repoCache.hostPath | quote }}
+            type: DirectoryOrCreate
+{{- end }}
 {{- if .Values.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
