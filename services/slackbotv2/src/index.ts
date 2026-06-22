@@ -2182,6 +2182,7 @@ function rendererOptions(
   const mapper = options.mapper
   return {
     ...mapper,
+    taskOutput: 'omit',
     logInfo: rendererLogInfo(options, capture),
     async onRendererEvent(event: RendererEvent) {
       await mapper?.onRendererEvent?.(event)
@@ -2201,6 +2202,7 @@ function fallbackRendererOptions(options: SlackbotV2Options): CodexAppServerToCh
   const mapper = options.mapper
   return {
     ...mapper,
+    taskOutput: 'omit',
     logInfo: rendererLogInfo(options),
     async onRendererEvent(event: RendererEvent) {
       try {

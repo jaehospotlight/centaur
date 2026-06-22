@@ -1622,6 +1622,7 @@ function rendererOptions(
   const mapper = options.mapper;
   return {
     ...mapper,
+    taskOutput: "omit",
     async onRendererEvent(event: RendererEvent) {
       await mapper?.onRendererEvent?.(event);
     },
