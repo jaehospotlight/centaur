@@ -1214,6 +1214,9 @@ fn split_slack_thread_key(thread_key: &str) -> Option<(&str, &str)> {
         ["slack", channel, thread_ts] if !channel.is_empty() && !thread_ts.is_empty() => {
             Some((channel, thread_ts))
         }
+        ["slack", _team_id, channel, thread_ts] if !channel.is_empty() && !thread_ts.is_empty() => {
+            Some((channel, thread_ts))
+        }
         _ => None,
     }
 }
@@ -3377,6 +3380,28 @@ mod tests {
         assert_eq!(
             schedule.input.pointer("/metadata/no_delivery"),
             Some(&json!(true))
+        );
+    }
+
+    #[test]
+    fn workflow_schedule_delivery_uses_channel_from_team_scoped_slack_thread_key() {
+        let schedule = normalize_schedule(json!({
+            "workflow_name": "slack_sync",
+            "source_path": "workflows/slack_sync.py",
+            "schedule_id": "slack_sync",
+            "interval_seconds": 60,
+            "enabled": true,
+            "thread_key": "slack:T123:C123:1780000000.000000",
+        }))
+        .unwrap();
+
+        assert_eq!(
+            schedule.input.pointer("/delivery/channel"),
+            Some(&json!("C123"))
+        );
+        assert_eq!(
+            schedule.input.pointer("/delivery/thread_ts"),
+            Some(&json!("1780000000.000000"))
         );
     }
 
