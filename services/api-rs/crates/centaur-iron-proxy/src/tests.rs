@@ -3,7 +3,11 @@ use super::*;
 #[test]
 fn harness_auth_fragments_are_baked_in() {
     let codex = harness_auth_fragment("codex", "api_key").unwrap().unwrap();
-    assert!(placeholder_env(&[codex]).is_empty());
+    let codex_placeholders = placeholder_env(&[codex]);
+    assert_eq!(
+        codex_placeholders.get("OPENAI_API_KEY").map(String::as_str),
+        Some("OPENAI_API_KEY")
+    );
 
     // access_token carries the token-broker credential, not a replace
     // placeholder, so it contributes no sandbox placeholder env.
