@@ -96,8 +96,11 @@ fn reap_reason(
     now: SystemTime,
     config: &SandboxReaperConfig,
 ) -> Option<&'static str> {
-    if observed.status.is_terminal() {
+    if !config.is_enabled() {
         return None;
+    }
+    if observed.status.is_terminal() {
+        return Some("terminal");
     }
     if let (Some(idle_ttl), Some(suspended_since)) = (config.idle_ttl, observed.suspended_since)
         && matches!(observed.status, SandboxStatus::Suspended)
@@ -208,10 +211,10 @@ mod tests {
     }
 
     #[test]
-    fn ignores_terminal_sandboxes() {
+    fn reaps_terminal_sandboxes() {
         let now = SystemTime::now();
-        let sandbox =
-            observed(SandboxStatus::Gone).with_created_at(Some(now - Duration::from_secs(100_000)));
+        let sandbox = observed(SandboxStatus::Stopped)
+            .with_created_at(Some(now - Duration::from_secs(100_000)));
 
         let reason = reap_reason(
             &sandbox,
@@ -222,13 +225,13 @@ mod tests {
             ),
         );
 
-        assert_eq!(reason, None);
+        assert_eq!(reason, Some("terminal"));
     }
 
     #[test]
     fn disabled_config_reaps_nothing() {
         let now = SystemTime::now();
-        let sandbox = observed(SandboxStatus::Suspended)
+        let sandbox = observed(SandboxStatus::Stopped)
             .with_created_at(Some(now - Duration::from_secs(100_000)))
             .with_suspended_since(Some(now - Duration::from_secs(100_000)));
         let config = config(None, None);
