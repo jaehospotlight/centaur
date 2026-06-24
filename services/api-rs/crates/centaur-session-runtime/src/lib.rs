@@ -2362,6 +2362,14 @@ async fn run_stdout_pump(
             )
             .instrument(output_span)
             .await?;
+            retire_sandbox_after_stdout_failure(
+                &ctx,
+                &thread_key,
+                sandbox_id,
+                &execution.execution_id,
+                "stdout_eof_before_terminal",
+            )
+            .await?;
             ctx.execution_spans.lock().await.remove(&execution.execution_id);
             output_state.forget(&execution.execution_id);
         }
@@ -2420,6 +2428,69 @@ async fn record_stdout_pump_failure(
             TerminalOutput::Failed { error },
         )
         .await?;
+        retire_sandbox_after_stdout_failure(
+            ctx,
+            thread_key,
+            sandbox_id,
+            &execution.execution_id,
+            "stdout_pump_failed",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn retire_sandbox_after_stdout_failure(
+    ctx: &RuntimeContext,
+    thread_key: &ThreadKey,
+    sandbox_id: &str,
+    execution_id: &str,
+    reason: &str,
+) -> Result<(), SessionRuntimeError> {
+    let session = ctx.store.get_session(thread_key).await?;
+    let cleared_assignment = session.sandbox_id.as_deref() == Some(sandbox_id);
+    if cleared_assignment {
+        ctx.store.update_sandbox_id(thread_key, None).await?;
+    }
+    ctx.sandbox_pipes.remove(sandbox_id);
+    ctx.store
+        .append_event(
+            thread_key,
+            Some(execution_id),
+            "session.sandbox_retired",
+            json!({
+                "execution_id": execution_id,
+                "thread_key": thread_key.as_str(),
+                "sandbox_id": sandbox_id,
+                "reason": reason,
+                "cleared_assignment": cleared_assignment,
+            }),
+        )
+        .await?;
+    if let Err(error) = ctx.manager.stop(&SandboxId::new(sandbox_id)).await {
+        warn!(
+            component = COMPONENT_SESSION_RUNTIME,
+            event = "session_sandbox_retire_stop_failed",
+            thread_key = %thread_key,
+            execution_id,
+            sandbox_id,
+            %error,
+            "failed to stop sandbox after stdout failure"
+        );
+        ctx.store
+            .append_event(
+                thread_key,
+                Some(execution_id),
+                "session.sandbox_retire_failed",
+                json!({
+                    "execution_id": execution_id,
+                    "thread_key": thread_key.as_str(),
+                    "sandbox_id": sandbox_id,
+                    "reason": reason,
+                    "error": error.to_string(),
+                }),
+            )
+            .await?;
     }
     Ok(())
 }
@@ -5170,6 +5241,7 @@ mod adoption_tests {
         ios: Mutex<VecDeque<SandboxIo>>,
         recorded_output: Vec<String>,
         open_count: AtomicUsize,
+        stop_count: AtomicUsize,
         status: std::sync::Mutex<SandboxStatus>,
     }
 
@@ -5179,6 +5251,7 @@ mod adoption_tests {
                 ios: Mutex::new(VecDeque::new()),
                 recorded_output,
                 open_count: AtomicUsize::new(0),
+                stop_count: AtomicUsize::new(0),
                 status: std::sync::Mutex::new(status),
             }
         }
@@ -5189,6 +5262,10 @@ mod adoption_tests {
 
         fn opens(&self) -> usize {
             self.open_count.load(Ordering::SeqCst)
+        }
+
+        fn stops(&self) -> usize {
+            self.stop_count.load(Ordering::SeqCst)
         }
     }
 
@@ -5233,6 +5310,7 @@ mod adoption_tests {
         }
 
         async fn stop(&self, _id: &SandboxId) -> SandboxResult<()> {
+            self.stop_count.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -5430,6 +5508,57 @@ mod adoption_tests {
             }),
             "expected a live adoption event"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stdout_eof_before_terminal_retires_sandbox_assignment() {
+        let Some(store) = test_store().await else {
+            return;
+        };
+        let _serial = TEST_LOCK.lock().await;
+        let thread_key =
+            ThreadKey::parse(format!("test:stdout-eof-{}", uuid::Uuid::new_v4())).unwrap();
+        let execution_id = orphaned_execution(&store, &thread_key, Some("sbx-mock"), true).await;
+
+        let backend = Arc::new(MockBackend::new(SandboxStatus::Running, Vec::new()));
+        let (io, stdout, _stdin) = mock_io();
+        backend.push_io(io).await;
+
+        let runtime = runtime_with(&store, backend.clone());
+        runtime.adopt_orphaned_executions().await;
+        assert_eq!(backend.opens(), 1);
+
+        drop(stdout);
+
+        wait_for_event(&store, &thread_key, "session.sandbox_retired").await;
+        let session = store
+            .get_session(&thread_key)
+            .await
+            .expect("get session after retire");
+        assert_eq!(session.sandbox_id, None);
+        assert_eq!(backend.stops(), 1);
+
+        let all = events(&store, &thread_key).await;
+        let failed = all
+            .iter()
+            .find(|event| event.event_type == "session.execution_failed")
+            .expect("execution failed event");
+        assert_eq!(failed.execution_id.as_deref(), Some(execution_id.as_str()));
+        assert_eq!(
+            failed.payload["error"].as_str(),
+            Some("sandbox stdout closed before terminal output")
+        );
+        let retired = all
+            .iter()
+            .find(|event| event.event_type == "session.sandbox_retired")
+            .expect("sandbox retired event");
+        assert_eq!(retired.execution_id.as_deref(), Some(execution_id.as_str()));
+        assert_eq!(retired.payload["sandbox_id"], json!("sbx-mock"));
+        assert_eq!(
+            retired.payload["reason"],
+            json!("stdout_eof_before_terminal")
+        );
+        assert_eq!(retired.payload["cleared_assignment"], json!(true));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
