@@ -33,11 +33,6 @@ pub struct PrincipalRef {
     pub labels: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PrincipalContext<'a> {
-    pub teams_tenant_id: Option<&'a str>,
-}
-
 impl PrincipalRef {
     /// Build the upsert body for this principal in ``namespace``, tagging it as
     /// Centaur-managed.
@@ -74,20 +69,6 @@ pub fn derive_principal(
     thread_key: &str,
     actor_user_id: Option<&str>,
     conversation_name: Option<&str>,
-) -> PrincipalRef {
-    derive_principal_with_context(
-        thread_key,
-        actor_user_id,
-        conversation_name,
-        PrincipalContext::default(),
-    )
-}
-
-pub fn derive_principal_with_context(
-    thread_key: &str,
-    actor_user_id: Option<&str>,
-    conversation_name: Option<&str>,
-    context: PrincipalContext<'_>,
 ) -> PrincipalRef {
     let display_name = conversation_name
         .map(str::trim)
@@ -142,39 +123,23 @@ pub fn derive_principal_with_context(
         if let Some(thread) = thread_id {
             labels.insert("teams_thread_id".to_owned(), thread.to_owned());
         }
-        let tenant_id = context
-            .teams_tenant_id
-            .map(str::trim)
-            .filter(|tenant| !tenant.is_empty());
-        if let Some(tenant) = tenant_id {
-            labels.insert("teams_tenant_id".to_owned(), tenant.to_owned());
-        }
-        let tenant_scope = tenant_id
-            .map(|tenant| format!("{}-", slugify(tenant)))
-            .unwrap_or_default();
-        let tenant_suffix = tenant_id
-            .map(|tenant| format!(" (tenant {tenant})"))
-            .unwrap_or_default();
         if let Some(user) = actor_user_id.map(str::trim).filter(|user| !user.is_empty())
             && !conversation_id.starts_with("19:")
         {
             labels.insert("teams_user_id".to_owned(), user.to_owned());
             return PrincipalRef {
-                foreign_id: format!("teams-user-{tenant_scope}{}", slugify(user)),
+                foreign_id: format!("teams-user-{}", slugify(user)),
                 name: display_name
                     .map(|name| format!("Teams User @{name}"))
-                    .unwrap_or_else(|| format!("Teams User {user}{tenant_suffix}")),
+                    .unwrap_or_else(|| format!("Teams User {user}")),
                 labels,
             };
         }
         return PrincipalRef {
-            foreign_id: format!(
-                "teams-conversation-{tenant_scope}{}",
-                slugify(&conversation_id)
-            ),
+            foreign_id: format!("teams-conversation-{}", slugify(&conversation_id)),
             name: display_name
                 .map(|name| format!("Teams Conversation {name}"))
-                .unwrap_or_else(|| format!("Teams Conversation {conversation_id}{tenant_suffix}")),
+                .unwrap_or_else(|| format!("Teams Conversation {conversation_id}")),
             labels,
         };
     }
@@ -450,17 +415,14 @@ mod tests {
     fn teams_adapter_conversation_keys_on_the_conversation() {
         let conversation = URL_SAFE_NO_PAD.encode("19:abc123@thread.tacv2");
         let service_url = URL_SAFE_NO_PAD.encode("https://smba.trafficmanager.net/amer/");
-        let principal = derive_principal_with_context(
+        let principal = derive_principal(
             &format!("teams:{conversation}:{service_url}"),
             Some("aad-user-1"),
             Some("general"),
-            PrincipalContext {
-                teams_tenant_id: Some("tenant-1"),
-            },
         );
         assert_eq!(
             principal.foreign_id,
-            "teams-conversation-tenant-1-19-abc123-thread-tacv2"
+            "teams-conversation-19-abc123-thread-tacv2"
         );
         assert_eq!(principal.name, "Teams Conversation general");
         assert_eq!(
@@ -477,10 +439,6 @@ mod tests {
                 .map(String::as_str),
             Some("https://smba.trafficmanager.net/amer/")
         );
-        assert_eq!(
-            principal.labels.get("teams_tenant_id").map(String::as_str),
-            Some("tenant-1")
-        );
     }
 
     #[test]
@@ -488,17 +446,14 @@ mod tests {
         let conversation =
             URL_SAFE_NO_PAD.encode("19:abc123@thread.tacv2;messageid=root-message-1");
         let service_url = URL_SAFE_NO_PAD.encode("https://smba.trafficmanager.net/amer/");
-        let principal = derive_principal_with_context(
+        let principal = derive_principal(
             &format!("teams:{conversation}:{service_url}"),
             Some("aad-user-1"),
             Some("general"),
-            PrincipalContext {
-                teams_tenant_id: Some("tenant-1"),
-            },
         );
         assert_eq!(
             principal.foreign_id,
-            "teams-conversation-tenant-1-19-abc123-thread-tacv2"
+            "teams-conversation-19-abc123-thread-tacv2"
         );
         assert_eq!(
             principal
@@ -517,23 +472,16 @@ mod tests {
     fn teams_adapter_dm_keys_on_the_actor_user() {
         let conversation = URL_SAFE_NO_PAD.encode("a:personal-conversation");
         let service_url = URL_SAFE_NO_PAD.encode("https://smba.trafficmanager.net/amer/");
-        let principal = derive_principal_with_context(
+        let principal = derive_principal(
             &format!("teams:{conversation}:{service_url}"),
             Some("aad-user-1"),
             Some("Casey"),
-            PrincipalContext {
-                teams_tenant_id: Some("tenant-1"),
-            },
         );
-        assert_eq!(principal.foreign_id, "teams-user-tenant-1-aad-user-1");
+        assert_eq!(principal.foreign_id, "teams-user-aad-user-1");
         assert_eq!(principal.name, "Teams User @Casey");
         assert_eq!(
             principal.labels.get("teams_user_id").map(String::as_str),
             Some("aad-user-1")
-        );
-        assert_eq!(
-            principal.labels.get("teams_tenant_id").map(String::as_str),
-            Some("tenant-1")
         );
     }
 

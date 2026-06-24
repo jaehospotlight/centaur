@@ -245,7 +245,6 @@ export function sessionMetadata(message: TeamsApiMessage, extra: JsonObject = {}
     team_id: message.teamId,
     channel_id: message.channelId,
     conversation_id: message.conversationId,
-    teams_tenant_id: message.tenantId,
     user_id: message.author.userId,
     user_name: message.author.userName,
     aad_object_id: message.author.aadObjectId,
@@ -406,7 +405,6 @@ function attachmentDescription(attachment: TeamsApiAttachment): string {
 function requesterMetadata(message?: TeamsApiMessage): JsonObject {
   const conversationName = teamsConversationName(message);
   return {
-    ...(message?.tenantId ? { teams_tenant_id: message.tenantId } : {}),
     ...(message?.teamId ? { team_id: message.teamId } : {}),
     ...(message?.channelId ? { channel_id: message.channelId } : {}),
     ...(message?.conversationId ? { conversation_id: message.conversationId } : {}),

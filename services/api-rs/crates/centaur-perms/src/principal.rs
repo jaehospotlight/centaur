@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use centaur_iron_control::{IdentityInput, PrincipalContext, derive_principal_with_context};
+use centaur_iron_control::{IdentityInput, derive_principal};
 
 /// Turn a `--principal` value (plus optional `--slack-user`) into the identity
 /// to upsert/look up.
@@ -15,19 +15,12 @@ use centaur_iron_control::{IdentityInput, PrincipalContext, derive_principal_wit
 pub fn resolve_principal(
     principal: &str,
     slack_user: Option<&str>,
-    teams_tenant_id: Option<&str>,
     namespace: &str,
 ) -> IdentityInput {
     if principal.contains(':') {
         // The CLI has no resolved conversation name; the synthetic display name
         // is fine for operator-driven lookups.
-        derive_principal_with_context(
-            principal,
-            slack_user,
-            None,
-            PrincipalContext { teams_tenant_id },
-        )
-        .to_identity_input(namespace)
+        derive_principal(principal, slack_user, None).to_identity_input(namespace)
     } else {
         IdentityInput {
             namespace: namespace.to_owned(),
@@ -44,35 +37,26 @@ mod tests {
 
     #[test]
     fn thread_key_is_derived() {
-        let id = resolve_principal(
-            "slack:T123:C456:1780000000.0001",
-            Some("U1"),
-            None,
-            "default",
-        );
+        let id = resolve_principal("slack:T123:C456:1780000000.0001", Some("U1"), "default");
         assert_eq!(id.foreign_id, "slack-channel-t123-c456");
     }
 
     #[test]
     fn dm_thread_key_keys_on_user() {
-        let id = resolve_principal("slack:D9:ts", Some("U07ABC"), None, "default");
+        let id = resolve_principal("slack:D9:ts", Some("U07ABC"), "default");
         assert_eq!(id.foreign_id, "slack-user-u07abc");
     }
 
     #[test]
-    fn teams_adapter_thread_key_can_be_tenant_scoped() {
+    fn teams_adapter_thread_key_is_derived() {
         let conversation = "MTk6YWJjMTIzQHRocmVhZC50YWN2Mg";
         let service_url = "aHR0cHM6Ly9zbWJhLnRyYWZmaWNtYW5hZ2VyLm5ldC9hbWVyLw";
         let id = resolve_principal(
             &format!("teams:{conversation}:{service_url}"),
             Some("aad-user-1"),
-            Some("tenant-1"),
             "default",
         );
-        assert_eq!(
-            id.foreign_id,
-            "teams-conversation-tenant-1-19-abc123-thread-tacv2"
-        );
+        assert_eq!(id.foreign_id, "teams-conversation-19-abc123-thread-tacv2");
     }
 
     #[test]
@@ -82,18 +66,14 @@ mod tests {
         let id = resolve_principal(
             &format!("teams:{conversation}:{service_url}"),
             Some("aad-user-1"),
-            Some("tenant-1"),
             "default",
         );
-        assert_eq!(
-            id.foreign_id,
-            "teams-conversation-tenant-1-19-abc123-thread-tacv2"
-        );
+        assert_eq!(id.foreign_id, "teams-conversation-19-abc123-thread-tacv2");
     }
 
     #[test]
     fn raw_foreign_id_is_verbatim() {
-        let id = resolve_principal("slack-channel-t1-c9", None, None, "default");
+        let id = resolve_principal("slack-channel-t1-c9", None, "default");
         assert_eq!(id.foreign_id, "slack-channel-t1-c9");
         assert_eq!(id.name, "slack-channel-t1-c9");
     }

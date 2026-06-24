@@ -435,16 +435,6 @@ impl SessionRuntime {
                 iron_control_enabled = self.iron_control.is_some(),
                 "creating or loading session"
             );
-            // Read the acting chat user before `metadata` is consumed below; it
-            // keys 1:1 Slack DM and Teams personal-chat principals and is only
-            // known here at session creation.
-            let actor_user_id = actor_user_id_from_session_metadata(metadata.as_ref());
-            // The human-readable conversation name the chat bot resolved
-            // (Slack channel/DM, Discord channel, Linear issue, or Teams
-            // chat/channel), used as the principal's display name. Read it here
-            // for the same reason, before `metadata` is consumed below.
-            let conversation_name = conversation_name_from_session_metadata(metadata.as_ref());
-            let teams_tenant_id = teams_tenant_id_from_session_metadata(metadata.as_ref());
             let mut harness_switched = false;
             let persona_resolution = self.resolve_persona_for_create(persona_id)?;
             let mut session_metadata = default_metadata(metadata);
@@ -457,7 +447,7 @@ impl SessionRuntime {
                     thread_key,
                     harness_type,
                     persona_resolution.persona_id.as_deref(),
-                    session_metadata,
+                    session_metadata.clone(),
                 )
                 .await
             {
@@ -507,14 +497,7 @@ impl SessionRuntime {
                 // to bind to, so a registration failure must fail session creation
                 // rather than silently boot a sandbox with a non-functional proxy.
                 let principal = registrar
-                    .register_session(
-                        thread_key.as_str(),
-                        actor_user_id.as_deref(),
-                        conversation_name.as_deref(),
-                        centaur_iron_control::PrincipalContext {
-                            teams_tenant_id: teams_tenant_id.as_deref(),
-                        },
-                    )
+                    .register_session(thread_key.as_str(), Some(&session_metadata))
                     .await?;
                 // Persist the principal OID on the session row so a resumed session
                 // can recreate its sandbox after a restart without re-deriving it.
@@ -4144,38 +4127,6 @@ fn execution_metadata(
     metadata
 }
 
-fn actor_user_id_from_session_metadata(metadata: Option<&Value>) -> Option<String> {
-    metadata
-        .and_then(|metadata| {
-            metadata
-                .get("slack_user_id")
-                .or_else(|| metadata.get("aad_object_id"))
-                .or_else(|| metadata.get("user_id"))
-        })
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn conversation_name_from_session_metadata(metadata: Option<&Value>) -> Option<String> {
-    metadata
-        .and_then(|metadata| {
-            metadata
-                .get("slack_conversation_name")
-                .or_else(|| metadata.get("discord_conversation_name"))
-                .or_else(|| metadata.get("linear_conversation_name"))
-                .or_else(|| metadata.get("teams_conversation_name"))
-        })
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn teams_tenant_id_from_session_metadata(metadata: Option<&Value>) -> Option<String> {
-    metadata?
-        .get("teams_tenant_id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
 fn idle_timeout_from_execution(execution: &SessionExecution) -> Option<Duration> {
     execution
         .metadata
@@ -4472,67 +4423,6 @@ mod tests {
         assert_eq!(metadata["source"], "test");
         assert_eq!(metadata["idle_timeout_ms"], 2_000);
         assert_eq!(metadata["max_duration_ms"], 5_000);
-    }
-
-    #[test]
-    fn actor_user_metadata_prefers_slack_user_then_teams_ids() {
-        assert_eq!(
-            actor_user_id_from_session_metadata(Some(&json!({
-                "slack_user_id": "U1",
-                "aad_object_id": "aad-user-1",
-                "user_id": "teams-user-1"
-            }))),
-            Some("U1".to_owned())
-        );
-        assert_eq!(
-            actor_user_id_from_session_metadata(Some(&json!({
-                "aad_object_id": "aad-user-1",
-                "user_id": "teams-user-1"
-            }))),
-            Some("aad-user-1".to_owned())
-        );
-        assert_eq!(
-            actor_user_id_from_session_metadata(Some(&json!({
-                "user_id": "teams-user-1"
-            }))),
-            Some("teams-user-1".to_owned())
-        );
-    }
-
-    #[test]
-    fn conversation_name_metadata_accepts_teams_name() {
-        assert_eq!(
-            conversation_name_from_session_metadata(Some(&json!({
-                "teams_conversation_name": "Casey Harper"
-            }))),
-            Some("Casey Harper".to_owned())
-        );
-    }
-
-    #[test]
-    fn teams_tenant_metadata_requires_explicit_key() {
-        assert_eq!(
-            teams_tenant_id_from_session_metadata(Some(&json!({
-                "teams_tenant_id": "tenant-explicit",
-                "tenant_id": "tenant-ignored",
-                "platform": "msteams"
-            }))),
-            Some("tenant-explicit".to_owned())
-        );
-        assert_eq!(
-            teams_tenant_id_from_session_metadata(Some(&json!({
-                "tenant_id": "tenant-ignored",
-                "platform": "msteams"
-            }))),
-            None
-        );
-        assert_eq!(
-            teams_tenant_id_from_session_metadata(Some(&json!({
-                "tenant_id": "not-teams",
-                "platform": "slack"
-            }))),
-            None
-        );
     }
 
     #[test]

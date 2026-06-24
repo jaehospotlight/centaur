@@ -234,10 +234,6 @@ struct PrincipalSelector {
     /// Acting Slack user id, used only to key a DM principal from a thread key.
     #[arg(long)]
     slack_user: Option<String>,
-
-    /// Teams tenant id, used to derive official `teams:<conversation>:<serviceUrl>` principals.
-    #[arg(long)]
-    teams_tenant_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -248,10 +244,6 @@ struct PrincipalGrantArgs {
     /// Acting Slack user id, used only to key a DM principal from a thread key.
     #[arg(long)]
     slack_user: Option<String>,
-
-    /// Teams tenant id, used to derive official `teams:<conversation>:<serviceUrl>` principals.
-    #[arg(long)]
-    teams_tenant_id: Option<String>,
 
     /// Tool name — registers its `tool-{slug}` role + secrets, then (un)assigns
     /// it. Repeatable.
@@ -388,12 +380,8 @@ async fn principals_show(
     client: &IronControlClient,
     args: &PrincipalSelector,
 ) -> Result<()> {
-    let identity = principal::resolve_principal(
-        &args.principal,
-        args.slack_user.as_deref(),
-        args.teams_tenant_id.as_deref(),
-        &cli.namespace,
-    );
+    let identity =
+        principal::resolve_principal(&args.principal, args.slack_user.as_deref(), &cli.namespace);
     let principal = get_principal_or_fail(client, &cli.namespace, &identity.foreign_id).await?;
     println!(
         "principal: {} ({}) — {}",
@@ -464,12 +452,8 @@ async fn principals_grant(
         bail!("--grant-id is only valid for `principals revoke`");
     }
     let policy = build_source_policy(cli)?;
-    let identity = principal::resolve_principal(
-        &args.principal,
-        args.slack_user.as_deref(),
-        args.teams_tenant_id.as_deref(),
-        &cli.namespace,
-    );
+    let identity =
+        principal::resolve_principal(&args.principal, args.slack_user.as_deref(), &cli.namespace);
     let principal_id = ensure_principal(client, &identity).await?;
     println!("principal: {} ({principal_id})", identity.foreign_id);
 
@@ -532,12 +516,8 @@ async fn principals_revoke(
     {
         bail!("nothing to revoke: pass at least one --tool, --role, --secret, or --grant-id");
     }
-    let identity = principal::resolve_principal(
-        &args.principal,
-        args.slack_user.as_deref(),
-        args.teams_tenant_id.as_deref(),
-        &cli.namespace,
-    );
+    let identity =
+        principal::resolve_principal(&args.principal, args.slack_user.as_deref(), &cli.namespace);
     let principal = get_principal_or_fail(client, &cli.namespace, &identity.foreign_id).await?;
     println!("principal: {} ({})", identity.foreign_id, principal.id);
 

@@ -68,7 +68,6 @@ describe('session API serialization', () => {
       channel_id: 'channel-1',
       conversation_id: 'conversation-1',
       teams_conversation_name: 'Casey',
-      teams_tenant_id: 'tenant-1',
       teams_user_id: 'teams-user-1',
       user_id: 'teams-user-1',
     });
