@@ -10,7 +10,7 @@
 use crate::IronControlClient;
 use crate::error::{IronControlError, Result};
 use crate::models::Principal;
-use crate::principal::derive_principal;
+use crate::principal::{PrincipalContext, derive_principal_with_context};
 
 /// Registers a session's principal against iron-control at session start.
 ///
@@ -38,12 +38,12 @@ impl SessionRegistrar {
         }
     }
 
-    /// Upsert the principal for ``thread_key``. ``slack_user_id`` keys a 1:1
-    /// DM principal; it is ignored for channel threads. ``conversation_name``
-    /// is the human-readable channel/DM name (when the slackbot resolved one)
-    /// used as the principal's display name. Returns the upserted principal
-    /// record (its ``id`` is the OID) so callers can bind the session's egress
-    /// proxy to the same identity.
+    /// Upsert the principal for ``thread_key``. ``actor_user_id`` keys a 1:1
+    /// Slack DM or Teams personal-chat principal; it is ignored for channel
+    /// threads. ``conversation_name`` is the human-readable channel/chat name
+    /// (when the ingress resolved one) used as the principal's display name.
+    /// Returns the upserted principal record (its ``id`` is the OID) so callers
+    /// can bind the session's egress proxy to the same identity.
     ///
     /// Default roles are assigned only when the principal does not already
     /// exist. Re-registering an existing channel/user still refreshes identity
@@ -52,10 +52,16 @@ impl SessionRegistrar {
     pub async fn register_session(
         &self,
         thread_key: &str,
-        slack_user_id: Option<&str>,
+        actor_user_id: Option<&str>,
         conversation_name: Option<&str>,
+        principal_context: PrincipalContext<'_>,
     ) -> Result<Principal> {
-        let principal = derive_principal(thread_key, slack_user_id, conversation_name);
+        let principal = derive_principal_with_context(
+            thread_key,
+            actor_user_id,
+            conversation_name,
+            principal_context,
+        );
         let input = principal.to_identity_input(&self.namespace);
         let exists = match self
             .client
@@ -106,6 +112,7 @@ mod tests {
                 "slack:T123:C123:1773364194.179929",
                 Some("U123"),
                 Some("general"),
+                PrincipalContext::default(),
             )
             .await
             .unwrap();
@@ -135,6 +142,7 @@ mod tests {
                 "slack:T123:C123:1773364194.179929",
                 Some("U123"),
                 Some("general"),
+                PrincipalContext::default(),
             )
             .await
             .unwrap();

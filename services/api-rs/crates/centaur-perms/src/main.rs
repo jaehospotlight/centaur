@@ -1,5 +1,5 @@
-//! `centaur-perms` — manage iron-control permissions for Centaur: which Slack
-//! principals (users / channels) and roles hold which tool roles and secrets.
+//! `centaur-perms` — manage iron-control permissions for Centaur: which chat
+//! principals (Slack, Discord, Teams) and roles hold which tool roles and secrets.
 //!
 //! Commands are resource-first: `centaur-perms <noun> <verb>`, where the noun is
 //! `principals`, `roles`, or `secrets`. The CLI reuses `centaur-iron-control`'s
@@ -227,23 +227,31 @@ struct FilterArgs {
 
 #[derive(Args, Debug)]
 struct PrincipalSelector {
-    /// Slack thread key (`slack:T…:C…[:ts]`, derived), a principal `foreign_id`
-    /// (e.g. `slack-channel-t1-c9`), or an OID (`prn_…`).
+    /// Slack/Teams/Discord thread key (derived), a principal `foreign_id`
+    /// (e.g. `slack-channel-t1-c9`), or an OID (`prn_...`).
     principal: String,
 
     /// Acting Slack user id, used only to key a DM principal from a thread key.
     #[arg(long)]
     slack_user: Option<String>,
+
+    /// Teams tenant id, used to derive official `teams:<conversation>:<serviceUrl>` principals.
+    #[arg(long)]
+    teams_tenant_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
 struct PrincipalGrantArgs {
-    /// Slack thread key (derived) or raw principal `foreign_id`.
+    /// Slack/Teams/Discord thread key (derived) or raw principal `foreign_id`.
     principal: String,
 
     /// Acting Slack user id, used only to key a DM principal from a thread key.
     #[arg(long)]
     slack_user: Option<String>,
+
+    /// Teams tenant id, used to derive official `teams:<conversation>:<serviceUrl>` principals.
+    #[arg(long)]
+    teams_tenant_id: Option<String>,
 
     /// Tool name — registers its `tool-{slug}` role + secrets, then (un)assigns
     /// it. Repeatable.
@@ -380,8 +388,12 @@ async fn principals_show(
     client: &IronControlClient,
     args: &PrincipalSelector,
 ) -> Result<()> {
-    let identity =
-        principal::resolve_principal(&args.principal, args.slack_user.as_deref(), &cli.namespace);
+    let identity = principal::resolve_principal(
+        &args.principal,
+        args.slack_user.as_deref(),
+        args.teams_tenant_id.as_deref(),
+        &cli.namespace,
+    );
     let principal = get_principal_or_fail(client, &cli.namespace, &identity.foreign_id).await?;
     println!(
         "principal: {} ({}) — {}",
@@ -452,8 +464,12 @@ async fn principals_grant(
         bail!("--grant-id is only valid for `principals revoke`");
     }
     let policy = build_source_policy(cli)?;
-    let identity =
-        principal::resolve_principal(&args.principal, args.slack_user.as_deref(), &cli.namespace);
+    let identity = principal::resolve_principal(
+        &args.principal,
+        args.slack_user.as_deref(),
+        args.teams_tenant_id.as_deref(),
+        &cli.namespace,
+    );
     let principal_id = ensure_principal(client, &identity).await?;
     println!("principal: {} ({principal_id})", identity.foreign_id);
 
@@ -516,8 +532,12 @@ async fn principals_revoke(
     {
         bail!("nothing to revoke: pass at least one --tool, --role, --secret, or --grant-id");
     }
-    let identity =
-        principal::resolve_principal(&args.principal, args.slack_user.as_deref(), &cli.namespace);
+    let identity = principal::resolve_principal(
+        &args.principal,
+        args.slack_user.as_deref(),
+        args.teams_tenant_id.as_deref(),
+        &cli.namespace,
+    );
     let principal = get_principal_or_fail(client, &cli.namespace, &identity.foreign_id).await?;
     println!("principal: {} ({})", identity.foreign_id, principal.id);
 

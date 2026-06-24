@@ -25,7 +25,9 @@ pub use models::{
     RequestRule, Role, SECRET_TYPES, SecretRecord, SecretSource, StaticSecretInput,
     normalize_gcp_id_token_header,
 };
-pub use principal::{PrincipalRef, derive_principal};
+pub use principal::{
+    PrincipalContext, PrincipalRef, derive_principal, derive_principal_with_context,
+};
 pub use registry::{
     GCP_AUTH_DEFAULT_SCOPE, RegisterError, RoleSpec, SecretInput, TranslateError,
     gcp_auth_scopes_or_default, grant_inputs_to_role, register_role, secret_inputs_from_fragment,
