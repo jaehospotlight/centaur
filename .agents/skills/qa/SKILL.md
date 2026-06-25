@@ -23,6 +23,7 @@ The smoke test passes only when all core workflows work from the running agent s
 - Slack overall message search works.
 - Current thread history works.
 - Company context can connect to the Paradigm database and return indexed documents or a valid empty result.
+- PitchBook brokered auth can complete a real search query.
 - VictoriaLogs and VictoriaMetrics queries work.
 
 Treat auth, permission, DNS, schema, and timeout errors as failures. Treat empty search results as warnings only when the tool successfully queried the backing service.
@@ -167,7 +168,17 @@ vlogs query "centaur.thread_key:\"${CENTAUR_THREAD_KEY}\"" --limit 10 --json
 
 Pass when VictoriaLogs is reachable and returns JSON log entries or a valid empty list for the thread-specific query. Fail on DNS, HTTP, or LogsQL errors.
 
-### 10. Metrics Via VictoriaMetrics
+### 10. PitchBook Brokered Auth
+
+Run a real search query through the brokered-auth path:
+
+```bash
+pitchbook raw GET /search --params-json '{"query":"Anduril Industries","perPage":3}'
+```
+
+Pass when PitchBook returns a successful search response, even if the result set is empty. Fail on auth, permission, DNS, timeout, malformed response, or non-search endpoint errors. Do not use `pitchbook health` or `pitchbook raw GET /` as the gating check; root or health 404s are not evidence that search auth is broken.
+
+### 11. Metrics Via VictoriaMetrics
 
 `vmetrics` may not have a direct CLI, so use the tool bridge:
 
@@ -188,7 +199,7 @@ Record the target environment, namespace or URL, commit/build if visible, curren
 
 - The target is serving traffic.
 - `centaur-tools list` succeeds from the running session.
-- Recent `vlogs errors --start 1h` or equivalent log query has no new critical errors for the QA run.
+- VictoriaLogs connectivity/query validity succeeds for the current QA run. Do not run broad error searches unless diagnosing a specific failed check.
 - The user-visible Slack thread receives the final QA report.
 
 ### Concurrent Agent Turns
@@ -264,6 +275,7 @@ responses; Slack does not render them reliably. Use this exact shape:
 
 *Data + Observability*
 - *Company context:* PASS - list 0, search 0, status ok
+- *PitchBook:* PASS - search "Anduril Industries", 3 results
 - *VictoriaLogs:* PASS - health ok, sample 3, thread query 0
 - *VictoriaMetrics:* PASS - health ok, up query ok, series ok
 
