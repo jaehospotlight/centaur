@@ -18,6 +18,13 @@ SECRET_ALIASES: dict[str, dict[str, str]] = {
     "tools/research/youtube": {"GOOGLE_API_KEY": "YOUTUBE_API_KEY"},
 }
 
+# These packages are kept without [project.scripts] because live code imports
+# them as implementation helpers rather than exposing them in the sandbox tool
+# catalog. Anything else without a script should either grow a CLI or be removed.
+LIBRARY_ONLY_TOOLS: dict[str, str] = {
+    "tools/research/docsend": "archiver standalone DocSend fallback imports client.py",
+}
+
 # Secret-looking values that intentionally do not map to HTTP proxy metadata.
 # Keep this list narrow: adding a wire credential here should include the reason
 # it cannot be represented by the current proxy metadata model.
@@ -164,18 +171,18 @@ def _is_classified_or_alias(project: ToolProject, name: str, declared: set[str])
     return name in CLASSIFIED_SECRET_USES.get(project.rel_dir, {})
 
 
-def test_agent_facing_tools_publish_console_scripts() -> None:
+def test_tool_packages_publish_console_scripts_or_are_library_only() -> None:
     findings: list[str] = []
     for project in _tool_projects():
-        if project.centaur.get("agent_facing", True) is False:
+        if project.rel_dir in LIBRARY_ONLY_TOOLS:
             continue
         if not _script_names(project):
             findings.append(
-                f"{project.path.relative_to(REPO_ROOT)}: add [project.scripts] "
-                "or set [tool.centaur].agent_facing = false"
+                f"{project.path.relative_to(REPO_ROOT)}: add [project.scripts], "
+                "move the helper under its owning tool, or remove the stale tool"
             )
 
-    assert not findings, "Tool shim audit found no-script tools:\n- " + "\n- ".join(findings)
+    assert not findings, "Tool shim audit found unsupported no-script tools:\n- " + "\n- ".join(findings)
 
 
 def test_tool_secret_calls_are_declared_or_classified() -> None:
