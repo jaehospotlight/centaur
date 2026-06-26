@@ -2137,6 +2137,7 @@ fn verify_webhook_auth(
         }
         WorkflowWebhookAuth::Github { secret_ref } => verify_hmac_signature(
             "X-Hub-Signature-256",
+            None,
             "sha256=",
             "hex",
             secret_ref,
@@ -2146,11 +2147,13 @@ fn verify_webhook_auth(
         WorkflowWebhookAuth::Hmac {
             secret_ref,
             signature_header,
+            timestamp_header,
             signature_prefix,
             encoding,
             ..
         } => verify_hmac_signature(
             signature_header,
+            timestamp_header.as_deref(),
             signature_prefix,
             encoding,
             secret_ref,
@@ -2162,6 +2165,7 @@ fn verify_webhook_auth(
 
 fn verify_hmac_signature(
     signature_header: &str,
+    timestamp_header: Option<&str>,
     signature_prefix: &str,
     encoding: &str,
     secret_ref: &str,
@@ -2194,6 +2198,15 @@ fn verify_hmac_signature(
             "webhook auth secret {secret_ref} is not valid HMAC key material"
         ))
     })?;
+    if let Some(timestamp_header) = timestamp_header {
+        let Some(timestamp) = header_value(headers, timestamp_header) else {
+            return Err(ApiError::Unauthorized(
+                "missing webhook timestamp".to_owned(),
+            ));
+        };
+        mac.update(timestamp.trim().as_bytes());
+        mac.update(b".");
+    }
     mac.update(raw_body);
     // `verify_slice` is a constant-time comparison.
     mac.verify_slice(&presented).map_err(|_| invalid())
@@ -2479,6 +2492,7 @@ mod webhook_tests {
             auth: WorkflowWebhookAuth::Hmac {
                 secret_ref: "TEST_WEBHOOK_SECRET".to_owned(),
                 signature_header: "X-Test-Signature".to_owned(),
+                timestamp_header: None,
                 algorithm: "sha256".to_owned(),
                 signature_prefix: "sha256=".to_owned(),
                 encoding: "hex".to_owned(),
@@ -2527,6 +2541,7 @@ mod webhook_tests {
         headers.insert("x-test-signature", signature.parse().unwrap());
         verify_hmac_signature(
             "X-Test-Signature",
+            None,
             "sha256=",
             "hex",
             secret_ref,
@@ -2621,6 +2636,7 @@ mod webhook_tests {
         headers.insert("x-test-signature", signature.parse().unwrap());
         verify_hmac_signature(
             "X-Test-Signature",
+            None,
             "sha256=",
             "hex",
             secret_ref,
@@ -2644,6 +2660,7 @@ mod webhook_tests {
         headers.insert("x-test-signature", signature.parse().unwrap());
         verify_hmac_signature(
             "X-Test-Signature",
+            None,
             "",
             "base64",
             secret_ref,
@@ -2651,6 +2668,61 @@ mod webhook_tests {
             raw_body,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn verifies_timestamp_prefixed_hmac_signature() {
+        let raw_body = br#"{"event":"Draft Published","data":{"draft_id":9664712}}"#;
+        let timestamp = "1782501461";
+        let secret_ref = "CENTRAUR_TEST_TYPEFULLY_WEBHOOK_SECRET";
+        unsafe {
+            env::set_var(secret_ref, "test-webhook-secret");
+        }
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"test-webhook-secret").unwrap();
+        mac.update(timestamp.as_bytes());
+        mac.update(b".");
+        mac.update(raw_body);
+        let signature = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        let mut headers = HeaderMap::new();
+        headers.insert("x-typefully-timestamp", timestamp.parse().unwrap());
+        headers.insert("x-typefully-signature", signature.parse().unwrap());
+        verify_hmac_signature(
+            "X-Typefully-Signature",
+            Some("X-Typefully-Timestamp"),
+            "sha256=",
+            "hex",
+            secret_ref,
+            &headers,
+            raw_body,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_timestamp_prefixed_hmac_signature_without_timestamp() {
+        let raw_body = br#"{"event":"Draft Published"}"#;
+        let secret_ref = "CENTRAUR_TEST_TYPEFULLY_WEBHOOK_SECRET_MISSING_TS";
+        unsafe {
+            env::set_var(secret_ref, "test-webhook-secret");
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-typefully-signature",
+            format!("sha256={}", hex::encode([0_u8; 32]))
+                .parse()
+                .unwrap(),
+        );
+        let error = verify_hmac_signature(
+            "X-Typefully-Signature",
+            Some("X-Typefully-Timestamp"),
+            "sha256=",
+            "hex",
+            secret_ref,
+            &headers,
+            raw_body,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ApiError::Unauthorized(_)));
     }
 
     #[test]
@@ -2671,6 +2743,7 @@ mod webhook_tests {
             headers.insert("x-test-signature", bad_signature.parse().unwrap());
             let error = verify_hmac_signature(
                 "X-Test-Signature",
+                None,
                 "sha256=",
                 "hex",
                 secret_ref,
@@ -2688,6 +2761,7 @@ mod webhook_tests {
         headers.insert("x-test-signature", "sha256=00".parse().unwrap());
         let error = verify_hmac_signature(
             "X-Test-Signature",
+            None,
             "sha256=",
             "hex",
             "CENTRAUR_TEST_WEBHOOK_SECRET_UNSET",

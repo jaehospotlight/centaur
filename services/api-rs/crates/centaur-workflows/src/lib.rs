@@ -306,6 +306,8 @@ pub enum WorkflowWebhookAuth {
         secret_ref: String,
         #[serde(default = "default_signature_header")]
         signature_header: String,
+        #[serde(default)]
+        timestamp_header: Option<String>,
         #[serde(default = "default_hmac_algorithm")]
         algorithm: String,
         #[serde(default = "default_signature_prefix")]
