@@ -140,8 +140,16 @@ function sessionApiTimeoutMs(options: SlackbotV2Options): number {
   return options.sessionApiTimeoutMs ?? DEFAULT_SESSION_API_TIMEOUT_MS
 }
 
-function slackApiTimeoutMs(options: SlackbotV2Options): number {
+export function slackApiTimeoutMs(options: SlackbotV2Options): number {
   return options.slackApiTimeoutMs ?? DEFAULT_SLACK_API_TIMEOUT_MS
+}
+
+export async function withSlackApiTimeout<T>(
+  options: SlackbotV2Options | undefined,
+  action: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  return options ? withTimeout(action, slackApiTimeoutMs(options), fn) : fn()
 }
 
 type ForwardSessionApiCallbacks = {
@@ -158,7 +166,8 @@ type ForwardSessionApiCallbacks = {
 
 export async function collectInitialContext(
   thread: { allMessages: AsyncIterable<Message> },
-  currentMessage: Message
+  currentMessage: Message,
+  options?: SlackbotV2Options
 ): Promise<SlackbotV2ApiMessage[]> {
   const messages: Message[] = []
   try {
@@ -167,7 +176,7 @@ export async function collectInitialContext(
     }
   } catch (error) {
     if (!isSlackThreadNotFoundError(error)) throw error
-    return [await serializeMessage(currentMessage)]
+    return [await serializeMessage(currentMessage, options)]
   }
 
   const currentIndex = messages.findIndex(message => message.id === currentMessage.id)
@@ -179,7 +188,7 @@ export async function collectInitialContext(
 
   const serialized: SlackbotV2ApiMessage[] = []
   for (const message of messages) {
-    serialized.push(await serializeMessage(message))
+    serialized.push(await serializeMessage(message, options))
   }
   return serialized
 }
@@ -196,10 +205,13 @@ function isSlackThreadNotFoundError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('thread_not_found')
 }
 
-export async function serializeMessage(message: Message): Promise<SlackbotV2ApiMessage> {
+export async function serializeMessage(
+  message: Message,
+  options?: SlackbotV2Options
+): Promise<SlackbotV2ApiMessage> {
   const attachments: SlackbotV2ApiAttachment[] = []
   for (const attachment of message.attachments) {
-    attachments.push(await serializeAttachment(attachment))
+    attachments.push(await serializeAttachment(attachment, options))
   }
   const displayText = renderSlackDisplayText({ raw: message.raw, text: message.text })
 
@@ -512,7 +524,10 @@ export const MAX_INLINE_ATTACHMENT_BYTES = 100 * 1024 * 1024
 const MAX_CODEX_INPUT_LINE_CHARS = 900 * 1024
 const STAGED_ATTACHMENT_CHUNK_CHARS = 700 * 1024
 
-export async function serializeAttachment(attachment: Attachment): Promise<SlackbotV2ApiAttachment> {
+export async function serializeAttachment(
+  attachment: Attachment,
+  options?: SlackbotV2Options
+): Promise<SlackbotV2ApiAttachment> {
   const serialized: SlackbotV2ApiAttachment = {
     fetchMetadata: attachment.fetchMetadata,
     height: attachment.height,
@@ -530,7 +545,7 @@ export async function serializeAttachment(attachment: Attachment): Promise<Slack
   }
 
   try {
-    const data = attachment.data ?? (await attachment.fetchData?.())
+    const data = attachment.data ?? (await fetchAttachmentData(attachment, options))
     if (data) {
       // Re-check the actual byte count: Slack size metadata can be absent.
       const byteLength = Buffer.isBuffer(data) ? data.length : data.size
@@ -545,6 +560,17 @@ export async function serializeAttachment(attachment: Attachment): Promise<Slack
   }
 
   return serialized
+}
+
+async function fetchAttachmentData(
+  attachment: Attachment,
+  options?: SlackbotV2Options
+): Promise<Buffer | Blob | undefined> {
+  if (!attachment.fetchData) return undefined
+  if (!options) return attachment.fetchData()
+  return withSlackApiTimeout(options, 'fetch Slack attachment', () =>
+    attachment.fetchData?.() ?? Promise.resolve(undefined)
+  )
 }
 
 function attachmentTooLargeError(bytes: number): string {
@@ -941,7 +967,7 @@ async function slackApiGet(
 ): Promise<JsonObject | null> {
   const url = slackApiMethodUrl(options.slackApiUrl, method)
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
-  return withTimeout(`Slack API ${method}`, slackApiTimeoutMs(options), async () => {
+  return withSlackApiTimeout(options, `Slack API ${method}`, async () => {
     const response = await fetchWithTimeout(
       fetch,
       url,

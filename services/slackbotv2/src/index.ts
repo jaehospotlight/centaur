@@ -33,7 +33,8 @@ import {
   serializeAttachment,
   serializeMessageLinks,
   serializeMessage,
-  sessionStreamError
+  sessionStreamError,
+  withSlackApiTimeout
 } from './session-api'
 import { extractMessageOverrides } from './overrides'
 import { isAllowedSlackMessage, isAllowedSlackWebhookBody } from './slack-events'
@@ -277,20 +278,29 @@ async function handleSlackMessageHandoff(
     subscribe: input.subscribe === true,
     trigger: input.trigger
   })
+  let initialAssistantStatusVisible = false
   const assistantStatus = input.assistantStatusRequested
     ? setInitialAssistantStatus(thread, input.options, trace)
+        .then(visible => {
+          initialAssistantStatusVisible = visible
+          return visible
+        })
     : Promise.resolve(false)
+  if (input.assistantStatusRequested) {
+    backgroundWaitUntil(assistantStatus.then(() => undefined).catch(() => undefined))
+  }
   try {
     if (input.subscribe) {
       await subscribeSlackThreadForHandoff(thread, input.options, trace, input.trigger)
     }
-    const assistantStatusVisible = await assistantStatus
     traceLog(input.options, 'slackbotv2_handoff_sync_starting', trace, {
-      initial_assistant_status_visible: assistantStatusVisible,
+      initial_assistant_status_deferred:
+        input.assistantStatusRequested && !initialAssistantStatusVisible,
+      initial_assistant_status_visible: initialAssistantStatusVisible,
       trigger: input.trigger
     })
     await syncThreadMessageToSession(thread, message, {
-      initialAssistantStatusVisible: assistantStatusVisible,
+      initialAssistantStatusVisible,
       mode: input.mode,
       options: input.options,
       state: input.state
@@ -303,7 +313,14 @@ async function handleSlackMessageHandoff(
       error: errorMessage(error),
       trigger: input.trigger
     })
-    if (await assistantStatus) await setAssistantStatus(thread, '', input.options, trace)
+    backgroundWaitUntil(
+      assistantStatus
+        .then(visible =>
+          visible ? setAssistantStatus(thread, '', input.options, trace) : undefined
+        )
+        .then(() => undefined)
+        .catch(() => undefined)
+    )
     throw error
   }
 }
@@ -535,15 +552,21 @@ async function syncThreadMessageToSession(
     history_forwarded: state.historyForwarded === true
   })
   const assistantStatusVisible = shouldStartExecution
-    ? input.initialAssistantStatusVisible ??
-      (await setInitialAssistantStatus(thread, input.options, trace))
+    ? input.initialAssistantStatusVisible === true
     : false
+  if (shouldStartExecution && input.initialAssistantStatusVisible === undefined) {
+    backgroundWaitUntil(
+      setInitialAssistantStatus(thread, input.options, trace)
+        .then(() => undefined)
+        .catch(() => undefined)
+    )
+  }
   if (!shouldStartExecution && input.initialAssistantStatusVisible) {
     await setAssistantStatus(thread, '', input.options, trace)
   }
 
   const serializeStartedAtMs = nowMs()
-  const serializedMessage = await serializeMessage(message)
+  const serializedMessage = await serializeMessage(message, input.options)
   const overrides = extractMessageOverrides(serializedMessage.text)
   setMessageText(serializedMessage, overrides.cleanedText)
   if (overrides.harnessType || overrides.model || overrides.provider || overrides.reasoning) {
@@ -563,18 +586,33 @@ async function syncThreadMessageToSession(
     phase_ms: elapsedMs(serializeStartedAtMs)
   })
   let context: SlackbotV2ApiMessage[] | undefined
+  let contextDegraded = false
 
   if (shouldIncludeContext) {
     const contextStartedAtMs = nowMs()
-    context = shouldRefreshThreadContext
-      ? await collectSlackThreadContext(input.options, message)
-      : await collectInitialContext(thread, message)
+    try {
+      context = shouldRefreshThreadContext
+        ? await withSlackApiTimeout(input.options, 'collect Slack thread context', () =>
+            collectSlackThreadContext(input.options, message)
+          )
+        : await withSlackApiTimeout(input.options, 'collect initial thread context', () =>
+            collectInitialContext(thread, message, input.options)
+          )
+    } catch (error) {
+      contextDegraded = true
+      context = [serializedMessage]
+      traceWarn(input.options, 'slackbotv2_forward_context_degraded', trace, {
+        error: errorMessage(error),
+        phase_ms: elapsedMs(contextStartedAtMs)
+      })
+    }
     // collectInitialContext re-serializes the current message; mirror the
     // flag-stripped text on that copy too.
     for (const item of context) {
       if (item.id === serializedMessage.id) copyMessageTextFields(item, serializedMessage)
     }
     traceLog(input.options, 'slackbotv2_forward_context_collected', trace, {
+      degraded: contextDegraded,
       message_count: context.length,
       phase_ms: elapsedMs(contextStartedAtMs)
     })
@@ -612,9 +650,28 @@ async function syncThreadMessageToSession(
   // The previous harness's conversation state dies with its sandbox on a
   // restart, so re-feed the Slack thread transcript with this turn.
   const handleSessionRestarted = async (): Promise<void> => {
-    const history = context ?? (await collectInitialContext(thread, message))
+    let history = context
+    let restartContextDegraded = contextDegraded
+    if (!history) {
+      const restartContextStartedAtMs = nowMs()
+      try {
+        history = await withSlackApiTimeout(
+          input.options,
+          'collect restart thread context',
+          () => collectInitialContext(thread, message, input.options)
+        )
+      } catch (error) {
+        restartContextDegraded = true
+        history = [serializedMessage]
+        traceWarn(input.options, 'slackbotv2_forward_restart_context_degraded', trace, {
+          error: errorMessage(error),
+          phase_ms: elapsedMs(restartContextStartedAtMs)
+        })
+      }
+    }
     forwardInput.contextPreamble = harnessRestartPreamble(history, serializedMessage.id)
     traceLog(input.options, 'slackbotv2_forward_restart_context_built', trace, {
+      degraded: restartContextDegraded,
       history_message_count: history.length,
       preamble_chars: forwardInput.contextPreamble?.length ?? 0
     })
@@ -626,7 +683,7 @@ async function syncThreadMessageToSession(
     for (const item of messagesToAppend) latestMessageIds.add(item.id)
     await thread.setState({
       forwardedMessageIds: Array.from(latestMessageIds).slice(-1000),
-      historyForwarded: latest.historyForwarded || shouldIncludeContext,
+      historyForwarded: latest.historyForwarded || (shouldIncludeContext && !contextDegraded),
       lastEventId
     })
     traceLog(input.options, 'slackbotv2_forward_messages_committed', trace, {
@@ -1688,7 +1745,7 @@ async function renderExecutionStream(
     return { diverged: false }
   }
   const titleStartedAtMs = nowMs()
-  await setAssistantTitle(thread, titleFromMessage(promptText, options.userName))
+  await setAssistantTitle(thread, titleFromMessage(promptText, options.userName), options, trace)
   if (!assistantStatusVisible) {
     await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...', options, trace)
   }
@@ -1738,7 +1795,7 @@ async function renderRecoveredExecutionStream(
     return { diverged: false }
   }
   const titleStartedAtMs = nowMs()
-  await setAssistantTitle(thread, titleFromMessage(promptText, options.userName))
+  await setAssistantTitle(thread, titleFromMessage(promptText, options.userName), options, trace)
   await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...', options, trace)
   traceLog(options, 'slackbotv2_render_slack_metadata_set', trace, {
     phase_ms: elapsedMs(titleStartedAtMs)
@@ -1781,7 +1838,12 @@ async function renderPlainTextExecutionStream(
 ): Promise<void> {
   const fallback = new SlackRenderFallback()
   const titleStartedAtMs = nowMs()
-  await setAssistantTitle(thread, titleFromMessage(slackMessagePromptText(message), options.userName))
+  await setAssistantTitle(
+    thread,
+    titleFromMessage(slackMessagePromptText(message), options.userName),
+    options,
+    trace
+  )
   if (!assistantStatusVisible) {
     await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...', options, trace)
   }
@@ -2025,19 +2087,21 @@ async function collectSlackThreadContext(
   const channel = stringField(raw.channel)
   const threadTs = stringField(raw.thread_ts)
   const currentTs = stringField(raw.ts) || currentMessage.id
-  if (!channel || !threadTs) return [await serializeMessage(currentMessage)]
+  if (!channel || !threadTs) return [await serializeMessage(currentMessage, options)]
 
   const messages: SlackbotV2ApiMessage[] = []
   let cursor: string | undefined
   do {
-    const response = await fetchSlackThreadReplies({
-      apiUrl: options.slackApiUrl,
-      channel,
-      cursor,
-      limit: 200,
-      token: options.botToken,
-      ts: threadTs
-    })
+    const response = await withSlackApiTimeout(options, 'fetch Slack thread replies', () =>
+      fetchSlackThreadReplies({
+        apiUrl: options.slackApiUrl,
+        channel,
+        cursor,
+        limit: 200,
+        token: options.botToken,
+        ts: threadTs
+      })
+    )
     const slackMessages = Array.isArray(response.messages) ? response.messages : []
     for (const rawMessage of slackMessages) {
       const message = rawMessage as Record<string, unknown>
@@ -2050,7 +2114,7 @@ async function collectSlackThreadContext(
   } while (cursor)
 
   const currentIndex = messages.findIndex(message => message.id === currentMessage.id)
-  const serializedCurrent = await serializeMessage(currentMessage)
+  const serializedCurrent = await serializeMessage(currentMessage, options)
   if (currentIndex >= 0) {
     messages[currentIndex] = serializedCurrent
   } else {
@@ -2112,7 +2176,7 @@ async function slackApiAttachmentsFromFiles(
     || stringField(rawCurrent.team_id)
   const attachments: SlackbotV2ApiAttachment[] = []
   for (const file of files.slice(0, MAX_SLACK_MESSAGE_ATTACHMENTS)) {
-    attachments.push(await serializeAttachment(slackFileAttachment(options, file, teamId)))
+    attachments.push(await serializeAttachment(slackFileAttachment(options, file, teamId), options))
   }
   if (files.length > MAX_SLACK_MESSAGE_ATTACHMENTS) {
     attachments.push({
@@ -2158,13 +2222,25 @@ function slackFileAttachment(
 
 async function fetchSlackFile(options: SlackbotV2Options, url: string): Promise<Buffer> {
   const fetchFn = options.fetch ?? fetch
-  const response = await fetchFn(url, {
-    headers: { authorization: `Bearer ${options.botToken}` }
-  })
-  if (!response.ok) {
-    throw new Error(`failed to fetch Slack file: ${response.status} ${response.statusText}`)
+  const controller = new AbortController()
+  try {
+    const response = await withSlackApiTimeout(options, 'fetch Slack file', () =>
+      fetchFn(url, {
+        headers: { authorization: `Bearer ${options.botToken}` },
+        signal: controller.signal
+      })
+    )
+    if (!response.ok) {
+      throw new Error(`failed to fetch Slack file: ${response.status} ${response.statusText}`)
+    }
+    const body = await withSlackApiTimeout(options, 'read Slack file', () =>
+      response.arrayBuffer()
+    )
+    return Buffer.from(body)
+  } catch (error) {
+    controller.abort()
+    throw error
   }
-  return Buffer.from(await response.arrayBuffer())
 }
 
 function slackFileAttachmentType(mimeType: string): Attachment['type'] {
@@ -2270,7 +2346,7 @@ function rendererOptions(
     async onRendererEvent(event: RendererEvent) {
       await mapper?.onRendererEvent?.(event)
       if (event.type === 'renderer.title.update') {
-        await setAssistantTitle(thread, event.title)
+        await setAssistantTitle(thread, event.title, options)
       }
     }
   }
@@ -2359,12 +2435,14 @@ async function setAssistantStatus(
       )
     : () => undefined
   try {
-    const visible = await ignoreAssistantError(() =>
-      adapter.setAssistantStatus!(
-        target.channel,
-        target.threadTs,
-        status,
-        status ? [status] : undefined
+    const visible = await withSlackApiTimeout(options, 'set assistant status', () =>
+      ignoreAssistantError(() =>
+        adapter.setAssistantStatus!(
+          target.channel,
+          target.threadTs,
+          status,
+          status ? [status] : undefined
+        )
       )
     )
     if (options) {
@@ -2383,21 +2461,38 @@ async function setAssistantStatus(
         phase_ms: elapsedMs(startedAtMs)
       })
     }
-    throw error
+    return false
   } finally {
     stopPendingLog()
   }
 }
 
-async function setAssistantTitle(thread: Thread, title: string | undefined): Promise<void> {
+async function setAssistantTitle(
+  thread: Thread,
+  title: string | undefined,
+  options?: SlackbotV2Options,
+  trace?: SlackbotV2Trace
+): Promise<void> {
   const normalized = title?.trim()
   if (!normalized) return
+  const startedAtMs = nowMs()
   const target = slackAssistantTarget(thread)
   const adapter = thread.adapter as SlackAssistantAdapter
   if (!target || !adapter.setAssistantTitle) return
-  await ignoreAssistantError(() =>
-    adapter.setAssistantTitle!(target.channel, target.threadTs, clipOneLine(normalized, 80))
-  )
+  try {
+    await withSlackApiTimeout(options, 'set assistant title', () =>
+      ignoreAssistantError(() =>
+        adapter.setAssistantTitle!(target.channel, target.threadTs, clipOneLine(normalized, 80))
+      )
+    )
+  } catch (error) {
+    if (options) {
+      traceWarn(options, 'slackbotv2_assistant_title_failed', trace, {
+        error: errorMessage(error),
+        phase_ms: elapsedMs(startedAtMs)
+      })
+    }
+  }
 }
 
 async function ignoreAssistantError(fn: () => Promise<void>): Promise<boolean> {
