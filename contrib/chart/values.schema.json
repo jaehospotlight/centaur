@@ -347,6 +347,47 @@
         }
       }
     },
+    "deploymentMetrics": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicaCount": { "type": "integer" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" },
+            "pullPolicy": { "type": "string" }
+          }
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "port": { "type": "integer" }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "scrapeAnnotations": { "type": "boolean" },
+            "path": { "type": "string" },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
+        "podLabels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "extraEnv": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "resources": { "type": "object" }
+      }
+    },
     "postgres": {
       "type": "object",
       "properties": {

@@ -1,0 +1,111 @@
+{{- if .Values.deploymentMetrics.enabled }}
+{{- $name := include "centaur.componentName" (dict "root" . "component" "deployment-metrics") -}}
+{{- $metricsAnnotations := dict -}}
+{{- if .Values.deploymentMetrics.metrics.scrapeAnnotations -}}
+{{- $metricsAnnotations = dict "prometheus.io/scrape" "true" "prometheus.io/path" .Values.deploymentMetrics.metrics.path "prometheus.io/port" (printf "%v" .Values.deploymentMetrics.service.port) -}}
+{{- $metricsAnnotations = mergeOverwrite $metricsAnnotations (.Values.deploymentMetrics.metrics.annotations | default dict) -}}
+{{- end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "deployment-metrics") | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "deployment-metrics") | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "deployment-metrics") | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "deployment-metrics") | nindent 4 }}
+spec:
+  replicas: {{ .Values.deploymentMetrics.replicaCount }}
+  selector:
+    matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "deployment-metrics") | nindent 6 }}
+  template:
+    metadata:
+{{- with $metricsAnnotations }}
+      annotations:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+      labels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "deployment-metrics") | nindent 8 }}
+{{- with .Values.deploymentMetrics.podLabels }}
+{{ toYaml . | nindent 8 }}
+{{- end }}
+    spec:
+      automountServiceAccountToken: true
+      serviceAccountName: {{ $name }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: deployment-metrics
+          image: {{ printf "%s:%s" .Values.deploymentMetrics.image.repository .Values.deploymentMetrics.image.tag | quote }}
+          imagePullPolicy: {{ .Values.deploymentMetrics.image.pullPolicy }}
+{{- with .Values.deploymentMetrics.extraEnv }}
+          env:
+{{- range $name, $value := . }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+{{- end }}
+{{- end }}
+          ports:
+            - containerPort: {{ .Values.deploymentMetrics.service.port }}
+              name: metrics
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.deploymentMetrics.metrics.path }}
+              port: metrics
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.deploymentMetrics.metrics.path }}
+              port: metrics
+            timeoutSeconds: 5
+          securityContext:
+{{ toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+{{ toYaml .Values.deploymentMetrics.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "deployment-metrics") | nindent 4 }}
+spec:
+  selector:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "deployment-metrics") | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.deploymentMetrics.service.port }}
+      targetPort: metrics
+{{- end }}

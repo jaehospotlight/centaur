@@ -404,6 +404,29 @@ slackbotv2:
   extraEnv: {}
   resources: {}
 
+# Optional deployment-metadata exporter. Some deployments run this alongside
+# Argo CD to expose current Centaur deploy labels and timestamps; label its pods
+# so the log collector can ingest and query exporter logs directly.
+deploymentMetrics:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: centaur-deployment-metrics
+    tag: latest
+    pullPolicy: Always
+  service:
+    port: 8080
+  metrics:
+    scrapeAnnotations: true
+    path: /metrics
+    annotations: {}
+  podLabels:
+    centaur.ai/metrics: deployment-metrics
+    centaur.ai/component: deployment-metrics
+    centaur.ai/logs: deployment-metrics
+  extraEnv: {}
+  resources: {}
+
 # Chat SDK Linear bot — Linear agent (actor=app) ingress. Receives
 # AgentSessionEvent webhooks on /api/webhooks/linear, forwards sessions to the
 # api-rs control plane (:8080), and renders runs as Linear agent activities.
