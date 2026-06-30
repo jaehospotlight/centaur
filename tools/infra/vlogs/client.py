@@ -22,6 +22,18 @@ def _field_expr(field: str, value: str) -> str:
     return f"{field}:{_quote_logsql_value(value)}"
 
 
+def _field_any_expr(fields: list[str], value: str) -> str:
+    return "(" + " OR ".join(_field_expr(field, value) for field in fields) + ")"
+
+
+def _field_exists_any_expr(fields: list[str]) -> str:
+    return "(" + " OR ".join(f"{field}:*" for field in fields) + ")"
+
+
+def _field_term_any_expr(fields: list[str], value: str) -> str:
+    return "(" + " OR ".join(f"{field}:{value}" for field in fields) + ")"
+
+
 class VictoriaLogsClient:
     """Client for the VictoriaLogs HTTP API.
 
@@ -200,6 +212,39 @@ class VictoriaLogsClient:
         return {k: v for k, v in entry.items() if k not in ("_stream_id", "_stream")}
 
     @staticmethod
+    def _entry_value(entry: dict, *fields: str, default: Any = "") -> Any:
+        for field in fields:
+            value = entry.get(field)
+            if value not in (None, ""):
+                return value
+        return default
+
+    @classmethod
+    def _normalize_entry(cls, entry: dict) -> dict:
+        """Add stable top-level aliases for VictoriaLogs' nested field formats."""
+        cleaned = cls._clean_entry(entry)
+        aliases = {
+            "component": ("component", "fields.component", "span.component"),
+            "duration_ms": ("duration_ms", "fields.duration_ms", "audit.duration_ms"),
+            "event": ("event", "fields.event", "span.event"),
+            "execution_id": ("execution_id", "fields.execution_id", "span.execution_id"),
+            "message": ("fields.message", "log_message", "_msg"),
+            "sandbox_id": ("sandbox_id", "fields.sandbox_id", "span.sandbox_id"),
+            "success": ("success", "fields.success"),
+            "thread_key": ("thread_key", "fields.thread_key", "span.thread_key"),
+            "tool_args": ("tool_args", "fields.tool_args"),
+            "tool_args_count": ("tool_args_count", "fields.tool_args_count"),
+            "tool_args_truncated": ("tool_args_truncated", "fields.tool_args_truncated"),
+            "tool_method": ("tool_method", "fields.tool_method"),
+            "tool_name": ("tool_name", "fields.tool_name"),
+        }
+        for alias, fields in aliases.items():
+            value = cls._entry_value(cleaned, *fields)
+            if value not in (None, ""):
+                cleaned.setdefault(alias, value)
+        return cleaned
+
+    @staticmethod
     def _time_prefix(start: str) -> str:
         """Convert a shorthand duration like '1h' into a LogsQL _time: prefix."""
         if start and _DURATION_RE.match(start):
@@ -292,14 +337,15 @@ class VictoriaLogsClient:
             start: Time range start (shorthand like '1h' or RFC3339).
             end: Time range end (RFC3339).
         """
-        parts = [self._time_prefix(start), _field_expr("thread_key", thread_key)]
+        thread_expr = _field_any_expr(["thread_key", "fields.thread_key", "span.thread_key"], thread_key)
+        parts = [self._time_prefix(start), thread_expr]
         if level:
             parts.append(f"level:{level}")
         q = " AND ".join(p for p in parts if p and not p.startswith("_time:"))
         q = f"{self._time_prefix(start)}{q}"
         params = self._time_params(start)
         results = self.query(q, limit=limit, end=end or None, **params)
-        return [self._clean_entry(e) for e in results if "_note" not in e]
+        return [self._normalize_entry(e) for e in results if "_note" not in e]
 
     def thread_trace(
         self,
@@ -352,10 +398,14 @@ class VictoriaLogsClient:
             "wire_reconnect_exhausted",
             "inflight_turn_replayed",
         ]
-        event_expr = " OR ".join(f"event:{event_name}" for event_name in flow_events)
-        q = f"{self._time_prefix(start)}{_field_expr('thread_key', thread_key)} AND ({event_expr})"
+        event_expr = " OR ".join(
+            _field_term_any_expr(["event", "fields.event", "span.event"], event_name)
+            for event_name in flow_events
+        )
+        thread_expr = _field_any_expr(["thread_key", "fields.thread_key", "span.thread_key"], thread_key)
+        q = f"{self._time_prefix(start)}{thread_expr} AND ({event_expr})"
         results = self.query(q, limit=limit, **self._time_params(start))
-        return [self._clean_entry(e) for e in results if "_note" not in e]
+        return [self._normalize_entry(e) for e in results if "_note" not in e]
 
     def errors(
         self,
@@ -376,10 +426,12 @@ class VictoriaLogsClient:
         if service:
             parts.append(f'_stream:{{service="{service}"}}')
         if thread_key:
-            parts.append(_field_expr("thread_key", thread_key))
+            parts.append(
+                _field_any_expr(["thread_key", "fields.thread_key", "span.thread_key"], thread_key)
+            )
         q = f"{self._time_prefix(start)}{' AND '.join(parts)}"
         results = self.query(q, limit=limit, **self._time_params(start))
-        return [self._clean_entry(e) for e in results if "_note" not in e]
+        return [self._normalize_entry(e) for e in results if "_note" not in e]
 
     def slow_requests(
         self,
@@ -394,9 +446,13 @@ class VictoriaLogsClient:
             start: Time range (default '1h').
             limit: Max entries.
         """
-        q = f"{self._time_prefix(start)}event:http_request AND duration_ms:>{threshold_ms}"
+        q = (
+            f"{self._time_prefix(start)}"
+            f"{_field_term_any_expr(['event', 'fields.event', 'span.event'], 'http_request')} "
+            f"AND duration_ms:>{threshold_ms}"
+        )
         results = self.query(q, limit=limit, **self._time_params(start))
-        cleaned = [self._clean_entry(e) for e in results if "_note" not in e]
+        cleaned = [self._normalize_entry(e) for e in results if "_note" not in e]
         cleaned.sort(key=lambda e: self._coerce_float(e.get("duration_ms", 0)), reverse=True)
         return cleaned
 
@@ -415,11 +471,13 @@ class VictoriaLogsClient:
             start: Time range (default '1h').
             limit: Max entries.
         """
-        parts = ["event:tool_call_completed"]
+        parts = [_field_term_any_expr(["event", "fields.event", "span.event"], "tool_call_completed")]
         if tool_name:
-            parts.append(f"tool_name:{tool_name}")
+            parts.append(_field_term_any_expr(["tool_name", "fields.tool_name"], tool_name))
         if thread_key:
-            parts.append(_field_expr("thread_key", thread_key))
+            parts.append(
+                _field_any_expr(["thread_key", "fields.thread_key", "span.thread_key"], thread_key)
+            )
         q = f"{self._time_prefix(start)}{' AND '.join(parts)}"
         results = self.query(q, limit=limit, **self._time_params(start))
         keep_fields = {
@@ -435,7 +493,7 @@ class VictoriaLogsClient:
             "thread_key",
         }
         return [
-            {k: v for k, v in self._clean_entry(e).items() if k in keep_fields}
+            {k: v for k, v in self._normalize_entry(e).items() if k in keep_fields}
             for e in results
             if "_note" not in e
         ]
@@ -446,9 +504,11 @@ class VictoriaLogsClient:
         Args:
             execution_id: Execution identifier to search for.
         """
-        q = f"execution_id:{execution_id}"
+        q = _field_any_expr(
+            ["execution_id", "fields.execution_id", "span.execution_id"], execution_id
+        )
         results = self.query(q, limit=1000)
-        cleaned = [self._clean_entry(e) for e in results if "_note" not in e]
+        cleaned = [self._normalize_entry(e) for e in results if "_note" not in e]
         cleaned.sort(key=lambda e: e.get("_time", ""))
         return cleaned
 
@@ -492,10 +552,12 @@ class VictoriaLogsClient:
         """
         q = (
             f"{self._time_prefix(start)}"
-            f'_stream:{{service="sandbox"}} OR event:warm_container_claimed OR event:sandbox_*'
+            f'_stream:{{service="sandbox"}} OR '
+            f"{_field_term_any_expr(['event', 'fields.event', 'span.event'], 'warm_container_claimed')} "
+            f"OR event:sandbox_* OR fields.event:sandbox_* OR span.event:sandbox_*"
         )
         results = self.query(q, limit=limit, **self._time_params(start))
-        return [self._clean_entry(e) for e in results if "_note" not in e]
+        return [self._normalize_entry(e) for e in results if "_note" not in e]
 
     def tool_analytics(
         self,
@@ -508,7 +570,10 @@ class VictoriaLogsClient:
             start: Time range (default '24h').
             limit: Max tools to return.
         """
-        q = f"{self._time_prefix(start)}event:tool_call_completed"
+        q = (
+            f"{self._time_prefix(start)}"
+            f"{_field_term_any_expr(['event', 'fields.event', 'span.event'], 'tool_call_completed')}"
+        )
         results = self.query(q, limit=10000, **self._time_params(start))
 
         from collections import defaultdict
@@ -526,6 +591,7 @@ class VictoriaLogsClient:
         for entry in results:
             if "_note" in entry:
                 continue
+            entry = self._normalize_entry(entry)
             tool = entry.get("tool_name", "unknown")
             method = entry.get("tool_method", "unknown")
             args = self._tool_args_label(entry)
@@ -577,8 +643,9 @@ class VictoriaLogsClient:
         """
         if thread_key:
             q = (
-                f"{self._time_prefix(start)}event:tool_call_completed "
-                f"AND {_field_expr('thread_key', thread_key)}"
+                f"{self._time_prefix(start)}"
+                f"{_field_term_any_expr(['event', 'fields.event', 'span.event'], 'tool_call_completed')} "
+                f"AND {_field_any_expr(['thread_key', 'fields.thread_key', 'span.thread_key'], thread_key)}"
             )
             results = self.query(q, limit=limit, **self._time_params(start))
             keep_fields = {
@@ -592,13 +659,17 @@ class VictoriaLogsClient:
                 "success",
             }
             return [
-                {k: v for k, v in self._clean_entry(e).items() if k in keep_fields}
+                {k: v for k, v in self._normalize_entry(e).items() if k in keep_fields}
                 for e in results
                 if "_note" not in e
             ]
 
         # Top threads by tool usage
-        q = f"{self._time_prefix(start)}event:tool_call_completed AND thread_key:*"
+        q = (
+            f"{self._time_prefix(start)}"
+            f"{_field_term_any_expr(['event', 'fields.event', 'span.event'], 'tool_call_completed')} "
+            f"AND {_field_exists_any_expr(['thread_key', 'fields.thread_key', 'span.thread_key'])}"
+        )
         results = self.query(q, limit=10000, **self._time_params(start))
         from collections import Counter
 
@@ -606,6 +677,7 @@ class VictoriaLogsClient:
         for entry in results:
             if "_note" in entry:
                 continue
+            entry = self._normalize_entry(entry)
             tk = entry.get("thread_key", "")
             if tk:
                 threads[tk] += 1
@@ -620,13 +692,13 @@ class VictoriaLogsClient:
         limit: int = 100,
     ) -> list[dict]:
         """Return recent execution summary events for improvement-loop analysis."""
-        parts = ["event:execution_summary"]
+        parts = [_field_term_any_expr(["event", "fields.event", "span.event"], "execution_summary")]
         if harness:
-            parts.append(f"harness:{harness}")
+            parts.append(_field_term_any_expr(["harness", "fields.harness"], harness))
         if status:
-            parts.append(f"status:{status}")
+            parts.append(_field_term_any_expr(["status", "fields.status"], status))
         if prompt_ref:
-            parts.append(f"prompt_ref:{prompt_ref}")
+            parts.append(_field_term_any_expr(["prompt_ref", "fields.prompt_ref"], prompt_ref))
         q = f"{self._time_prefix(start)}{' AND '.join(parts)}"
         results = self.query(q, limit=limit, **self._time_params(start))
         keep_fields = {
@@ -657,7 +729,7 @@ class VictoriaLogsClient:
             "tool_errors_by_name",
         }
         return [
-            {k: v for k, v in self._clean_entry(entry).items() if k in keep_fields}
+            {k: v for k, v in self._normalize_entry(entry).items() if k in keep_fields}
             for entry in results
             if "_note" not in entry
         ]
@@ -736,7 +808,10 @@ class VictoriaLogsClient:
         """Aggregate model usage and cost for research-loop tuning."""
         from collections import defaultdict
 
-        q = f"{self._time_prefix(start)}event:usage_observed"
+        q = (
+            f"{self._time_prefix(start)}"
+            f"{_field_term_any_expr(['event', 'fields.event', 'span.event'], 'usage_observed')}"
+        )
         results = self.query(q, limit=10000, **self._time_params(start))
         stats: dict[tuple[str, str], dict[str, float]] = defaultdict(
             lambda: {
@@ -751,8 +826,9 @@ class VictoriaLogsClient:
         for entry in results:
             if "_note" in entry:
                 continue
-            harness = str(entry.get("harness") or "unknown")
-            model = str(entry.get("model") or "unknown")
+            entry = self._normalize_entry(entry)
+            harness = str(entry.get("harness") or entry.get("fields.harness") or "unknown")
+            model = str(entry.get("model") or entry.get("fields.model") or "unknown")
             stat = stats[(harness, model)]
             stat["calls"] += 1
             stat["input_tokens"] += float(entry.get("input_tokens") or 0)

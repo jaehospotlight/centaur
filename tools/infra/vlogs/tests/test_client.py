@@ -9,6 +9,7 @@ class StubVictoriaLogsClient(VictoriaLogsClient):
     def __init__(self, entries: list[dict[str, Any]]) -> None:
         super().__init__(url="http://unused")
         self.entries = entries
+        self.queries: list[str] = []
 
     def query(
         self,
@@ -17,6 +18,7 @@ class StubVictoriaLogsClient(VictoriaLogsClient):
         start: str | None = None,
         end: str | None = None,
     ) -> list[dict]:
+        self.queries.append(query)
         return self.entries
 
 
@@ -61,6 +63,65 @@ def test_tool_calls_exposes_tool_args() -> None:
             "thread_key": "cli:test-thread",
         }
     ]
+
+
+def test_thread_logs_queries_nested_thread_key_fields() -> None:
+    client = StubVictoriaLogsClient(
+        [
+            {
+                "_time": "2026-06-30T12:00:00Z",
+                "_stream": "ignored",
+                "fields.message": "session ready",
+                "fields.thread_key": "slack:C123:123.456",
+            }
+        ]
+    )
+
+    assert client.thread_logs("slack:C123:123.456") == [
+        {
+            "_time": "2026-06-30T12:00:00Z",
+            "fields.message": "session ready",
+            "fields.thread_key": "slack:C123:123.456",
+            "message": "session ready",
+            "thread_key": "slack:C123:123.456",
+        }
+    ]
+    assert (
+        '(thread_key:"slack:C123:123.456" OR fields.thread_key:"slack:C123:123.456" '
+        'OR span.thread_key:"slack:C123:123.456")'
+    ) in client.queries[-1]
+
+
+def test_tool_calls_normalizes_nested_fields() -> None:
+    client = StubVictoriaLogsClient(
+        [
+            {
+                "_time": "2026-06-30T12:00:00Z",
+                "fields.event": "tool_call_completed",
+                "fields.thread_key": "cli:test-thread",
+                "fields.tool_name": "websearch",
+                "fields.tool_method": "cli",
+                "fields.tool_args": ["lookup", "openai"],
+                "fields.tool_args_count": 2,
+                "fields.duration_ms": "42",
+                "fields.success": "true",
+            }
+        ]
+    )
+
+    assert client.tool_calls() == [
+        {
+            "_time": "2026-06-30T12:00:00Z",
+            "duration_ms": "42",
+            "success": "true",
+            "tool_args": ["lookup", "openai"],
+            "tool_args_count": 2,
+            "tool_name": "websearch",
+            "tool_method": "cli",
+            "thread_key": "cli:test-thread",
+        }
+    ]
+    assert "(event:tool_call_completed OR fields.event:tool_call_completed" in client.queries[-1]
 
 
 def test_tool_analytics_counts_cli_arg_patterns() -> None:
