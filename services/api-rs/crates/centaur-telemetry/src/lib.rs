@@ -55,6 +55,8 @@ pub const FIELD_THREAD_KEY: &str = "thread_key";
 pub const HTTP_REQUESTS_TOTAL: &str = "http_server_requests_total";
 pub const HTTP_REQUEST_DURATION_SECONDS: &str = "http_server_request_duration_seconds";
 pub const HTTP_REQUESTS_IN_FLIGHT: &str = "http_server_requests_in_flight";
+pub const SERVICE_IMAGE_INFO: &str = "centaur_service_image_info";
+pub const REPO_CACHE_INFO: &str = "centaur_repo_cache_info";
 pub const SESSION_EXECUTIONS_TOTAL: &str = "centaur_session_executions_total";
 pub const SESSION_EXECUTION_DURATION_SECONDS: &str = "centaur_session_execution_duration_seconds";
 pub const SESSION_FIRST_TOKEN_LATENCY_SECONDS: &str = "centaur_session_first_token_latency_seconds";
@@ -142,6 +144,16 @@ static PROMETHEUS_HANDLE: LazyLock<Mutex<Option<PrometheusHandle>>> =
     LazyLock::new(|| Mutex::new(None));
 static EXPORTED_THREAD_ROOT_SPANS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+static REPO_CACHE_INFO_LABELS: LazyLock<Mutex<HashSet<RepoCacheInfoSample>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RepoCacheInfoSample {
+    pub repository: String,
+    pub requested_ref: String,
+    pub version: String,
+    pub status: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TelemetryConfig {
@@ -294,6 +306,52 @@ pub fn prometheus_handle() -> Result<PrometheusHandle, TelemetryError> {
 
 pub fn render_metrics() -> Result<String, TelemetryError> {
     Ok(prometheus_handle()?.render())
+}
+
+pub fn set_service_image_info(service: &str, image: &str, image_repository: &str, image_tag: &str) {
+    metrics::gauge!(
+        SERVICE_IMAGE_INFO,
+        "service" => info_label_or_unknown(service),
+        "image" => info_label_or_unknown(image),
+        "image_repository" => info_label_or_unknown(image_repository),
+        "image_tag" => info_label_or_unknown(image_tag),
+        "version" => info_label_or_unknown(image_tag),
+    )
+    .set(1.0);
+}
+
+pub fn set_service_image_info_from_env(service: &str) {
+    let image_repository =
+        first_nonempty_env(&["CENTAUR_IMAGE_REPOSITORY"]).unwrap_or_else(|| "unknown".to_owned());
+    let image_tag = first_nonempty_env(&["CENTAUR_IMAGE_TAG", "CENTAUR_IMAGE_VERSION"])
+        .unwrap_or_else(|| "unknown".to_owned());
+    let image = first_nonempty_env(&["CENTAUR_IMAGE"])
+        .unwrap_or_else(|| format!("{image_repository}:{image_tag}"));
+
+    set_service_image_info(service, &image, &image_repository, &image_tag);
+}
+
+pub fn set_repo_cache_info(samples: impl IntoIterator<Item = RepoCacheInfoSample>) {
+    let current: HashSet<RepoCacheInfoSample> = samples
+        .into_iter()
+        .map(|sample| RepoCacheInfoSample {
+            repository: info_label_or_unknown(&sample.repository),
+            requested_ref: info_label_or_unknown(&sample.requested_ref),
+            version: info_label_or_unknown(&sample.version),
+            status: info_label_or_unknown(&sample.status),
+        })
+        .collect();
+
+    let mut previous = REPO_CACHE_INFO_LABELS
+        .lock()
+        .expect("repo-cache info labels lock poisoned");
+    for sample in current.iter() {
+        set_repo_cache_info_sample(sample, 1.0);
+    }
+    for sample in previous.difference(&current) {
+        set_repo_cache_info_sample(sample, 0.0);
+    }
+    *previous = current;
 }
 
 pub fn record_http_request_started() {
@@ -924,6 +982,14 @@ fn describe_metrics() {
         HTTP_REQUESTS_IN_FLIGHT,
         "Number of in-flight HTTP requests in the Rust API."
     );
+    metrics::describe_gauge!(
+        SERVICE_IMAGE_INFO,
+        "Static container image metadata for a Centaur service."
+    );
+    metrics::describe_gauge!(
+        REPO_CACHE_INFO,
+        "Current repo-cache checkout metadata observed by the Rust API."
+    );
     metrics::describe_counter!(
         SESSION_EXECUTIONS_TOTAL,
         "Session execution lifecycle events by harness and status."
@@ -1141,6 +1207,26 @@ fn workflow_metric_labels(labels: &[(String, String)]) -> Vec<metrics::Label> {
         .collect()
 }
 
+fn set_repo_cache_info_sample(sample: &RepoCacheInfoSample, value: f64) {
+    metrics::gauge!(
+        REPO_CACHE_INFO,
+        "repository" => sample.repository.clone(),
+        "requested_ref" => sample.requested_ref.clone(),
+        "version" => sample.version.clone(),
+        "status" => sample.status.clone(),
+    )
+    .set(value);
+}
+
+fn info_label_or_unknown(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        "unknown".to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
 fn build_otlp_tracer_provider(
     config: &TelemetryConfig,
 ) -> Result<SdkTracerProvider, TelemetryError> {
@@ -1351,6 +1437,18 @@ mod tests {
     #[test]
     fn prometheus_metrics_render_domain_metrics() {
         prometheus_handle().unwrap();
+        set_service_image_info(
+            "api-rs",
+            "ghcr.io/paradigmxyz/centaur/centaur-api-rs:main-sha-abc123",
+            "ghcr.io/paradigmxyz/centaur/centaur-api-rs",
+            "main-sha-abc123",
+        );
+        set_repo_cache_info([RepoCacheInfoSample {
+            repository: "paradigmxyz/centaur".to_owned(),
+            requested_ref: "main".to_owned(),
+            version: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            status: "synced".to_owned(),
+        }]);
         record_session_execution_started("codex");
         record_session_execution_finished("codex", "completed", Some(Duration::from_secs(2)));
         record_session_first_token_latency("codex", Duration::from_millis(750));
@@ -1387,6 +1485,12 @@ mod tests {
             r#"centaur_sandbox_startup_duration_seconds_count{backend="local",status="success"}"#
         ));
         assert!(metrics.contains(r#"centaur_sandbox_warm_pool_claims_total{result="hit"}"#));
+        assert!(metrics.contains(
+            r#"centaur_service_image_info{service="api-rs",image="ghcr.io/paradigmxyz/centaur/centaur-api-rs:main-sha-abc123",image_repository="ghcr.io/paradigmxyz/centaur/centaur-api-rs",image_tag="main-sha-abc123",version="main-sha-abc123"} 1"#
+        ));
+        assert!(metrics.contains(
+            r#"centaur_repo_cache_info{repository="paradigmxyz/centaur",requested_ref="main",version="0123456789abcdef0123456789abcdef01234567",status="synced"} 1"#
+        ));
     }
 
     #[test]

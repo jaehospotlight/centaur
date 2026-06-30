@@ -32,6 +32,30 @@
 {{- end -}}
 {{- $toolsUseRepoCache := and .Values.repoCache.enabled (gt (len $toolSources) 0) -}}
 {{- $useOverlayRepoCache := and .Values.repoCache.enabled (gt (len $overlaySources) 0) -}}
+{{- $repoCacheRepositories := list -}}
+{{- range .Values.repoCache.repositories }}
+{{- $repoCacheRepositories = append $repoCacheRepositories . -}}
+{{- end }}
+{{- range $source := $overlaySources }}
+{{- with (get $source "repo") }}
+{{- $repoCacheRepositories = append $repoCacheRepositories . -}}
+{{- end }}
+{{- end }}
+{{- $repoCacheRepositories = uniq $repoCacheRepositories -}}
+{{- $repoCacheRepositoryRefs := list -}}
+{{- $repoCacheRepositoryRefRepos := list -}}
+{{- range $repo, $ref := .Values.repoCache.repositoryRefs }}
+{{- $repoCacheRepositoryRefs = append $repoCacheRepositoryRefs (printf "%s=%s" $repo $ref) -}}
+{{- $repoCacheRepositoryRefRepos = append $repoCacheRepositoryRefRepos $repo -}}
+{{- end }}
+{{- range $source := $overlaySources }}
+{{- $repo := get $source "repo" | default "" -}}
+{{- $ref := get $source "ref" | default "" -}}
+{{- if and $repo $ref (not (has $repo $repoCacheRepositoryRefRepos)) }}
+{{- $repoCacheRepositoryRefs = append $repoCacheRepositoryRefs (printf "%s=%s" $repo $ref) -}}
+{{- $repoCacheRepositoryRefRepos = append $repoCacheRepositoryRefRepos $repo -}}
+{{- end }}
+{{- end }}
 {{- $toolDirs := list "/app/tools" -}}
 {{- $workflowDirs := "/app/workflows" -}}
 {{- if $toolsUseRepoCache -}}
@@ -197,10 +221,24 @@ spec:
               value: {{ .Values.apiRs.syncInfraSecrets | quote }}
             - name: RUST_LOG
               value: info
+            - name: CENTAUR_IMAGE_REPOSITORY
+              value: {{ .Values.apiRs.image.repository | quote }}
+            - name: CENTAUR_IMAGE_TAG
+              value: {{ .Values.apiRs.image.tag | quote }}
+            - name: CENTAUR_IMAGE
+              value: {{ printf "%s:%s" .Values.apiRs.image.repository .Values.apiRs.image.tag | quote }}
             - name: TOOL_DIRS
               value: {{ join ":" $toolDirs | quote }}
             - name: WORKFLOW_DIRS
               value: {{ $workflowDirs | quote }}
+{{- if and .Values.repoCache.enabled (gt (len $repoCacheRepositories) 0) }}
+            - name: CENTAUR_REPO_CACHE_PATH
+              value: {{ .Values.repoCache.hostPath | quote }}
+            - name: CENTAUR_REPO_CACHE_REPOSITORIES
+              value: {{ join " " $repoCacheRepositories | quote }}
+            - name: CENTAUR_REPO_CACHE_REPOSITORY_REFS
+              value: {{ join " " $repoCacheRepositoryRefs | quote }}
+{{- end }}
 {{- if $sandboxWorkflowDirs }}
             - name: KUBERNETES_WORKFLOW_DIRS
               value: {{ $sandboxWorkflowDirs | quote }}

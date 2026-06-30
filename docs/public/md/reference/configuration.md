@@ -16,6 +16,7 @@ Use these as the main extension points:
 | `api.extraEnv` | API feature flags, worker tuning, retention, observability, and deployment-specific overrides. |
 | `apiRs.extraEnv` | Rust API feature flags, telemetry exporter settings, and deployment-specific overrides. |
 | `apiRs.metrics.*` | Prometheus/VictoriaMetrics scrape metadata for the Rust API `/metrics` endpoint. |
+| `console.metrics.*` | Prometheus/VictoriaMetrics scrape metadata for the Rails console `/metrics` endpoint. |
 | `slackbot.extraEnv` | Slackbot HTTP, Slack, feedback, and cross-org behavior. |
 | `sandbox.extraEnv` | Extra variables copied into every sandbox pod through `KUBERNETES_SANDBOX_EXTRA_ENV`. |
 | `overlays.sources` | Ordered repo-cache-backed overlay repos for tools, workflows, and skills; subdirs default to `tools`, `workflows`, and `.agents/skills`. |
@@ -81,9 +82,14 @@ Optional required-by-mode variables:
 | `CENTAUR_ENVIRONMENT`, `DEPLOY_ENV`, `ENVIRONMENT` | `apiRs.extraEnv` or deployment env. | Deployment environment resource attribute for telemetry. |
 | `OTEL_TRACES_EXPORTER` | `apiRs.extraEnv`. | Set to `otlp` to force OTLP trace export, or `none`/`off` to disable it. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `apiRs.extraEnv`. | Enables OTLP trace export to Tempo, Jaeger, or another OTLP collector. |
+| `CENTAUR_IMAGE_REPOSITORY`, `CENTAUR_IMAGE_TAG`, `CENTAUR_IMAGE` | Chart-rendered from `apiRs.image.*`. | Labels for the synthetic `centaur_service_image_info` metric. |
+| `CENTAUR_REPO_CACHE_PATH`, `CENTAUR_REPO_CACHE_REPOSITORIES`, `CENTAUR_REPO_CACHE_REPOSITORY_REFS` | Chart-rendered from repo-cache and overlay values. | Inputs for the synthetic `centaur_repo_cache_info` metric. |
 | `apiRs.metrics.scrapeAnnotations` | Helm value, default `true`. | Adds Prometheus scrape annotations to the API-RS Pod template and Service. |
 | `apiRs.metrics.path` | Helm value, default `/metrics`. | Metrics scrape path for annotation-based discovery. |
 | `apiRs.metrics.annotations` | Helm value. | Additional scrape annotations for Prometheus-compatible collectors. |
+| `console.metrics.scrapeAnnotations` | Helm value, default `true`. | Adds Prometheus scrape annotations to the console Pod template and Service. |
+| `console.metrics.path` | Helm value, default `/metrics`. | Metrics scrape path for annotation-based discovery. |
+| `console.metrics.annotations` | Helm value. | Additional scrape annotations for Prometheus-compatible collectors. |
 
 Execution tuning:
 

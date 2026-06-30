@@ -2,8 +2,8 @@ use std::{
     collections::BTreeMap,
     convert::Infallible,
     convert::TryFrom,
-    env,
-    path::Path as FsPath,
+    env, fs,
+    path::{Path as FsPath, PathBuf},
     sync::{Arc, RwLock},
     time::{Duration, Instant},
 };
@@ -34,8 +34,9 @@ use centaur_session_runtime::{
 };
 use centaur_session_sqlx::PgSessionStore;
 use centaur_telemetry::{
-    PrometheusHandle, http_status_class, prometheus_handle, record_http_request_finished,
-    record_http_request_started, set_span_parent_trace,
+    PrometheusHandle, RepoCacheInfoSample, http_status_class, prometheus_handle,
+    record_http_request_finished, record_http_request_started, set_repo_cache_info,
+    set_service_image_info_from_env, set_span_parent_trace,
 };
 use centaur_workflows::{
     CreateWorkflowRunRequest, WebhookFilter, WorkflowRuntime, WorkflowWebhookAuth,
@@ -327,6 +328,7 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn metrics(State(state): State<AppState>) -> Response {
+    record_synthetic_metrics();
     (
         [("Content-Type", "text/plain; version=0.0.4; charset=utf-8")],
         Body::from(state.metrics.render()),
@@ -350,6 +352,174 @@ async fn http_metrics(req: Request, next: Next) -> Response {
     record_http_request_finished(method.as_str(), route.as_str(), status.as_u16(), duration);
 
     response
+}
+
+fn record_synthetic_metrics() {
+    set_service_image_info_from_env("api-rs");
+    set_repo_cache_info(repo_cache_info_samples());
+}
+
+fn repo_cache_info_samples() -> Vec<RepoCacheInfoSample> {
+    let Some(repo_cache_path) = first_nonempty_env(&[
+        "CENTAUR_REPO_CACHE_PATH",
+        "KUBERNETES_TOOLS_REPO_CACHE_PATH",
+        "REPOS_PATH",
+    ]) else {
+        return Vec::new();
+    };
+    let repositories = repo_cache_repositories();
+    if repositories.is_empty() {
+        return Vec::new();
+    }
+    let requested_refs = parse_repo_cache_repository_refs(
+        env::var("CENTAUR_REPO_CACHE_REPOSITORY_REFS")
+            .unwrap_or_default()
+            .as_str(),
+    );
+    let repo_cache_path = PathBuf::from(repo_cache_path);
+
+    repositories
+        .into_iter()
+        .map(|repository| {
+            let repo_path = repo_cache_path.join(&repository);
+            let version = repo_cache_revision(&repo_path);
+            let status = match (&version, repo_path.is_dir()) {
+                (Some(_), _) => "synced",
+                (None, true) => "unreadable",
+                (None, false) => "missing",
+            };
+
+            RepoCacheInfoSample {
+                requested_ref: requested_refs
+                    .get(&repository)
+                    .cloned()
+                    .unwrap_or_else(|| "default".to_owned()),
+                repository,
+                status: status.to_owned(),
+                version: version.unwrap_or_else(|| "unknown".to_owned()),
+            }
+        })
+        .collect()
+}
+
+fn repo_cache_repositories() -> Vec<String> {
+    let mut repositories = split_env_words("CENTAUR_REPO_CACHE_REPOSITORIES");
+    if repositories.is_empty()
+        && let Some(repo) = first_nonempty_env(&["KUBERNETES_TOOLS_REPO"])
+    {
+        repositories.push(repo);
+        repositories.extend(extra_tool_source_repositories());
+    }
+    repositories.sort();
+    repositories.dedup();
+    repositories
+}
+
+fn extra_tool_source_repositories() -> Vec<String> {
+    let Some(value) = first_nonempty_env(&["KUBERNETES_TOOLS_EXTRA_SOURCES"]) else {
+        return Vec::new();
+    };
+    let Ok(sources) = serde_json::from_str::<Vec<Value>>(&value) else {
+        return Vec::new();
+    };
+
+    sources
+        .into_iter()
+        .filter_map(|source| {
+            source
+                .get("repo")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|repo| !repo.is_empty())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn parse_repo_cache_repository_refs(value: &str) -> BTreeMap<String, String> {
+    value
+        .split_whitespace()
+        .filter_map(|entry| {
+            let (repo, requested_ref) = entry.split_once('=')?;
+            let repo = repo.trim();
+            let requested_ref = requested_ref.trim();
+            if repo.is_empty() || requested_ref.is_empty() {
+                None
+            } else {
+                Some((repo.to_owned(), requested_ref.to_owned()))
+            }
+        })
+        .collect()
+}
+
+fn split_env_words(name: &str) -> Vec<String> {
+    env::var(name)
+        .ok()
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .split_whitespace()
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn first_nonempty_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        env::var(name)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn repo_cache_revision(repo_path: &FsPath) -> Option<String> {
+    let git_dir = repo_path.join(".git");
+    if !git_dir.is_dir() {
+        return None;
+    }
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref: ") {
+        return repo_cache_ref_revision(&git_dir, reference.trim());
+    }
+    if is_git_revision(head) {
+        Some(head.to_owned())
+    } else {
+        None
+    }
+}
+
+fn repo_cache_ref_revision(git_dir: &FsPath, reference: &str) -> Option<String> {
+    if let Ok(value) = fs::read_to_string(git_dir.join(reference)) {
+        let value = value.trim();
+        if is_git_revision(value) {
+            return Some(value.to_owned());
+        }
+    }
+
+    let packed_refs = fs::read_to_string(git_dir.join("packed-refs")).ok()?;
+    packed_refs.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('^') {
+            return None;
+        }
+        let mut fields = line.split_whitespace();
+        let revision = fields.next()?;
+        let packed_ref = fields.next()?;
+        if packed_ref == reference && is_git_revision(revision) {
+            Some(revision.to_owned())
+        } else {
+            None
+        }
+    })
+}
+
+fn is_git_revision(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn matched_route<B>(request: &Request<B>) -> String {
@@ -2924,6 +3094,66 @@ fn webhook_filter_matches(filter: &WebhookFilter, headers: &HeaderMap, body: &Va
             .as_deref()
             .is_some_and(|prefix| actual.trim_start().starts_with(prefix)),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod synthetic_metrics_tests {
+    use super::*;
+
+    #[test]
+    fn repo_cache_revision_reads_loose_branch_ref() {
+        let root = env::temp_dir().join(format!("centaur-repo-cache-test-{}", Uuid::new_v4()));
+        let repo = root.join("paradigmxyz").join("centaur");
+        let git_refs = repo.join(".git").join("refs").join("heads");
+        fs::create_dir_all(&git_refs).unwrap();
+        fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(
+            git_refs.join("main"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            repo_cache_revision(&repo).as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repo_cache_revision_reads_packed_branch_ref() {
+        let root = env::temp_dir().join(format!("centaur-repo-cache-test-{}", Uuid::new_v4()));
+        let repo = root.join("paradigmxyz").join("centaur");
+        let git_dir = repo.join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(
+            git_dir.join("packed-refs"),
+            "# pack-refs\nfedcba9876543210fedcba9876543210fedcba98 refs/heads/main\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            repo_cache_revision(&repo).as_deref(),
+            Some("fedcba9876543210fedcba9876543210fedcba98")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parse_repo_cache_repository_refs_ignores_empty_entries() {
+        assert_eq!(
+            parse_repo_cache_repository_refs(
+                "paradigmxyz/centaur=main missing= tempoxyz/overlay=release"
+            ),
+            BTreeMap::from([
+                ("paradigmxyz/centaur".to_owned(), "main".to_owned()),
+                ("tempoxyz/overlay".to_owned(), "release".to_owned()),
+            ])
+        );
     }
 }
 

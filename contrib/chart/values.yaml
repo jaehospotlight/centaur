@@ -112,6 +112,13 @@ console:
     oauthAppSlug: slack
   service:
     httpPort: 3000
+  metrics:
+    # The Rails console serves Prometheus text metrics at /metrics. This flag
+    # only controls scrape annotations for Prometheus/VictoriaMetrics-style
+    # discovery.
+    scrapeAnnotations: true
+    path: /metrics
+    annotations: {}
   # Optional Ingress for the console. Bring your own controller — Tailscale
   # operator, Cloudflare, ingress-nginx, etc. — via className + annotations +
   # tls. Mirrors the top-level `ingress` block (which is wired to the

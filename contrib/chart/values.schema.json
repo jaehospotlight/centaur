@@ -34,6 +34,17 @@
             "httpPort": { "type": "integer" }
           }
         },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "scrapeAnnotations": { "type": "boolean" },
+            "path": { "type": "string" },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
         "ingress": {
           "type": "object",
           "properties": {
