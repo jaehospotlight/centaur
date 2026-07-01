@@ -98,6 +98,8 @@ export type SlackbotV2Options = {
   apiKey?: string
   apiUrl: string
   assistantStatus?: string
+  /** Delay before changing assistant status for a long-running turn. Defaults to 30s. */
+  assistantStatusDelayMs?: number
   /**
    * When enabled, session.activity_summary events update Slack's assistant
    * status and structured task output is hidden from the Slack stream.

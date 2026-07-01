@@ -100,6 +100,14 @@ type SlackAssistantAdapter = {
   setAssistantTitle?(channelId: string, threadTs: string, title: string): Promise<void>
 }
 
+type AssistantStatusController = {
+  cancelEscalation(): void
+  clear(): Promise<void>
+  isVisible(): boolean
+  markVisible(visible: boolean): void
+  readonly done: Promise<void>
+}
+
 const MAX_SLACK_MESSAGE_ATTACHMENTS = 20
 
 type SlackbotV2RequestContext = {
@@ -119,6 +127,8 @@ const RENDER_RECOVERY_MAX_THREAD_FAILURES = 5
 const RENDER_RETRY_INITIAL_DELAY_MS = 250
 const RENDER_RETRY_MAX_DELAY_MS = 5_000
 const ASSISTANT_STATUS_MAX_CHARS = 50
+const ASSISTANT_STATUS_DELAY_MS = 30_000
+const ASSISTANT_LONG_STATUS = 'Still working...'
 const SLACK_TASK_DETAILS_MAX_CHARS = 500
 const SLACK_FALLBACK_TEXT_MAX_CHARS = 35_000
 const POSTGRES_CONNECT_INITIAL_DELAY_MS = 250
@@ -349,16 +359,11 @@ async function handleSlackMessageHandoff(
     subscribe: input.subscribe === true,
     trigger: input.trigger
   })
-  let initialAssistantStatusVisible = false
   const assistantStatus = input.assistantStatusRequested
-    ? setInitialAssistantStatus(thread, input.options, trace)
-        .then(visible => {
-          initialAssistantStatusVisible = visible
-          return visible
-        })
-    : Promise.resolve(false)
+    ? startAssistantStatusController(thread, input.options, trace)
+    : undefined
   if (input.assistantStatusRequested) {
-    backgroundWaitUntil(assistantStatus.then(() => undefined).catch(() => undefined))
+    backgroundWaitUntil(assistantStatus?.done.catch(() => undefined) ?? Promise.resolve())
   }
   try {
     if (input.subscribe) {
@@ -366,13 +371,12 @@ async function handleSlackMessageHandoff(
     }
     traceLog(input.options, 'slackbotv2_handoff_sync_starting', trace, {
       initial_assistant_status_deferred:
-        input.assistantStatusRequested && !initialAssistantStatusVisible,
-      initial_assistant_status_visible: initialAssistantStatusVisible,
+        input.assistantStatusRequested && !assistantStatus?.isVisible(),
+      initial_assistant_status_visible: assistantStatus?.isVisible() === true,
       trigger: input.trigger
     })
     await syncThreadMessageToSession(thread, message, {
-      initialAssistantStatusRequested: input.assistantStatusRequested,
-      initialAssistantStatusVisible,
+      initialAssistantStatus: assistantStatus,
       mode: input.mode,
       options: input.options,
       state: input.state
@@ -386,12 +390,7 @@ async function handleSlackMessageHandoff(
       trigger: input.trigger
     })
     backgroundWaitUntil(
-      assistantStatus
-        .then(visible =>
-          visible ? setAssistantStatus(thread, '', input.options, trace) : undefined
-        )
-        .then(() => undefined)
-        .catch(() => undefined)
+      assistantStatus?.clear().catch(() => undefined) ?? Promise.resolve()
     )
     throw error
   }
@@ -585,8 +584,7 @@ async function syncThreadMessageToSession(
   thread: Thread<SlackbotV2ThreadState>,
   message: ChatMessage,
   input: {
-    initialAssistantStatusRequested?: boolean
-    initialAssistantStatusVisible?: boolean
+    initialAssistantStatus?: AssistantStatusController
     mode: SlackbotV2MessageMode
     options: SlackbotV2Options
     state: StateAdapter
@@ -614,9 +612,7 @@ async function syncThreadMessageToSession(
   }
   if (isDuplicateIncrementalMessage) {
     traceLog(input.options, 'slackbotv2_forward_duplicate_skipped', trace)
-    if (input.initialAssistantStatusVisible) {
-      await setAssistantStatus(thread, '', input.options, trace)
-    }
+    await input.initialAssistantStatus?.clear()
     recordForward(input.mode, 'duplicate_skipped', traceStartedAtMs)
     return
   }
@@ -625,18 +621,10 @@ async function syncThreadMessageToSession(
     history_forwarded: state.historyForwarded === true
   })
   const assistantStatusVisible = shouldStartExecution
-    ? input.initialAssistantStatusVisible === true ||
-      input.initialAssistantStatusRequested === true
+    ? input.initialAssistantStatus?.isVisible() === true
     : false
-  if (shouldStartExecution && input.initialAssistantStatusVisible === undefined) {
-    backgroundWaitUntil(
-      setInitialAssistantStatus(thread, input.options, trace)
-        .then(() => undefined)
-        .catch(() => undefined)
-    )
-  }
-  if (!shouldStartExecution && input.initialAssistantStatusVisible) {
-    await setAssistantStatus(thread, '', input.options, trace)
+  if (!shouldStartExecution) {
+    await input.initialAssistantStatus?.clear()
   }
 
   const serializeStartedAtMs = nowMs()
@@ -882,6 +870,7 @@ async function syncThreadMessageToSession(
       forwardInput,
       () => lastEventId,
       renderLease,
+      input.initialAssistantStatus,
       assistantStatusVisible,
       trace,
       consoleSessionBlock
@@ -913,7 +902,7 @@ async function syncThreadMessageToSession(
         traceLog(input.options, 'slackbotv2_webhook_retry_marked', trace, {
           error: errorMessage(error)
         })
-        if (assistantStatusVisible) await setAssistantStatus(thread, '', input.options, trace)
+        await input.initialAssistantStatus?.clear()
         recordForward(input.mode, 'retry_requested', traceStartedAtMs)
         throw error
       }
@@ -925,6 +914,7 @@ async function syncThreadMessageToSession(
         serializedMessage,
         input.options,
         trace,
+        input.initialAssistantStatus,
         assistantStatusVisible
       )
     } catch (renderError) {
@@ -949,6 +939,7 @@ function scheduleExecutionRender(
   input: ForwardSessionInput,
   getLastEventId: () => number,
   renderLease: { release: (() => Promise<void>) | null },
+  assistantStatus: AssistantStatusController | undefined,
   assistantStatusVisible: boolean,
   trace?: SlackbotV2Trace,
   consoleSessionBlock?: SlackContextBlock
@@ -964,6 +955,7 @@ function scheduleExecutionRender(
           options,
           input,
           getLastEventId,
+          assistantStatus,
           assistantStatusVisible,
           trace,
           consoleSessionBlock
@@ -1008,6 +1000,7 @@ async function renderExecutionAttempt(
   options: SlackbotV2Options,
   input: ForwardSessionInput,
   getLastEventId: () => number,
+  assistantStatus: AssistantStatusController | undefined,
   assistantStatusVisible: boolean,
   trace?: SlackbotV2Trace,
   consoleSessionBlock?: SlackContextBlock
@@ -1024,6 +1017,7 @@ async function renderExecutionAttempt(
       message,
       options,
       trace,
+      assistantStatus,
       assistantStatusVisible,
       consoleSessionBlock
     )
@@ -1836,6 +1830,7 @@ async function renderExecutionStream(
   message: SlackbotV2ApiMessage,
   options: SlackbotV2Options,
   trace?: SlackbotV2Trace,
+  assistantStatus?: AssistantStatusController,
   assistantStatusVisible = false,
   consoleSessionBlock?: SlackContextBlock
 ): Promise<{ diverged: boolean; messageId?: string }> {
@@ -1847,13 +1842,14 @@ async function renderExecutionStream(
       message,
       options,
       trace,
+      assistantStatus,
       assistantStatusVisible
     )
     return { diverged: false }
   }
   const titleStartedAtMs = nowMs()
   await setAssistantTitle(thread, titleFromMessage(promptText, options.userName), options, trace)
-  if (!assistantStatusVisible) {
+  if (!assistantStatus && !assistantStatusVisible) {
     await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...', options, trace)
   }
   traceLog(options, 'slackbotv2_render_slack_metadata_set', trace, {
@@ -1869,7 +1865,7 @@ async function renderExecutionStream(
           slackVisibleChatSdkStream(
             codexAppServerToChatSdkStream(
               stream,
-              rendererOptions(thread, options, capture, trace)
+              rendererOptions(thread, options, capture, trace, assistantStatus)
             ),
             taskDisplayMode
           )
@@ -1893,7 +1889,7 @@ async function renderExecutionStream(
     })
     return { diverged: capture.diverged, messageId: sent?.id }
   } finally {
-    await setAssistantStatus(thread, '', options, trace)
+    await (assistantStatus?.clear() ?? setAssistantStatus(thread, '', options, trace))
   }
 }
 
@@ -1953,6 +1949,7 @@ async function renderPlainTextExecutionStream(
   message: SlackbotV2ApiMessage,
   options: SlackbotV2Options,
   trace?: SlackbotV2Trace,
+  assistantStatus?: AssistantStatusController,
   assistantStatusVisible = false
 ): Promise<void> {
   const fallback = new SlackRenderFallback()
@@ -1963,7 +1960,7 @@ async function renderPlainTextExecutionStream(
     options,
     trace
   )
-  if (!assistantStatusVisible) {
+  if (!assistantStatus && !assistantStatusVisible) {
     await setAssistantStatus(thread, options.assistantStatus ?? 'Thinking...', options, trace)
   }
   traceLog(options, 'slackbotv2_render_plain_text_metadata_set', trace, {
@@ -1975,7 +1972,7 @@ async function renderPlainTextExecutionStream(
       slackSafeChatSdkStream(
         codexAppServerToChatSdkStream(
           fallback.collectSource(stream),
-          rendererOptions(thread, options, undefined, trace)
+          rendererOptions(thread, options, undefined, trace, assistantStatus)
         )
       )
     )
@@ -1992,7 +1989,7 @@ async function renderPlainTextExecutionStream(
     })
     await thread.post(text)
   } finally {
-    await setAssistantStatus(thread, '', options, trace)
+    await (assistantStatus?.clear() ?? setAssistantStatus(thread, '', options, trace))
   }
 }
 
@@ -2795,7 +2792,8 @@ function rendererOptions(
   thread: Thread,
   options: SlackbotV2Options,
   capture?: { diverged: boolean },
-  trace?: SlackbotV2Trace
+  trace?: SlackbotV2Trace,
+  assistantStatus?: AssistantStatusController
 ): CodexAppServerToChatStreamOptions {
   const mapper = options.mapper
   return {
@@ -2807,7 +2805,9 @@ function rendererOptions(
         await setAssistantTitle(thread, event.title, options)
       }
       if (event.type === 'renderer.status' && options.activitySummaryStatusEnabled) {
-        await setAssistantStatus(thread, event.status, options, trace)
+        assistantStatus?.cancelEscalation()
+        const visible = await setAssistantStatus(thread, event.status, options, trace)
+        assistantStatus?.markVisible(visible)
       }
     }
   }
@@ -2841,23 +2841,125 @@ async function sleep(ms: number): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function setInitialAssistantStatus(
+function startAssistantStatusController(
   thread: Thread,
   options: SlackbotV2Options,
   trace?: SlackbotV2Trace
-): Promise<boolean> {
+): AssistantStatusController {
+  const delayMs = options.assistantStatusDelayMs ?? ASSISTANT_STATUS_DELAY_MS
   const startedAtMs = nowMs()
-  const visible = await setAssistantStatus(
-    thread,
-    options.assistantStatus ?? 'Thinking...',
-    options,
-    trace
-  )
-  traceLog(options, 'slackbotv2_forward_initial_status_set', trace, {
-    phase_ms: elapsedMs(startedAtMs),
-    visible
+  const initialStatus = options.assistantStatus ?? 'Thinking...'
+  const longStatus = ASSISTANT_LONG_STATUS
+  let cleared = false
+  let escalationCancelled = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let visible = false
+  let resolveDone: () => void = () => undefined
+  const done = new Promise<void>(resolve => {
+    resolveDone = resolve
+    const scheduleEscalation = () => {
+      if (cleared || escalationCancelled || !visible) {
+        resolve()
+        return
+      }
+      if (
+        delayMs <= 0 ||
+        normalizeAssistantStatus(longStatus) === normalizeAssistantStatus(initialStatus)
+      ) {
+        void escalate().catch(error => {
+          traceWarn(options, 'slackbotv2_forward_long_status_failed', trace, {
+            error: errorMessage(error),
+            phase_ms: elapsedMs(startedAtMs)
+          })
+          resolve()
+        })
+        return
+      }
+      timer = setTimeout(() => {
+        void escalate().catch(error => {
+          traceWarn(options, 'slackbotv2_forward_long_status_failed', trace, {
+            error: errorMessage(error),
+            phase_ms: elapsedMs(startedAtMs)
+          })
+          resolve()
+        })
+      }, delayMs)
+    }
+    const escalate = async () => {
+      timer = undefined
+      if (cleared || escalationCancelled || !visible) {
+        resolve()
+        return
+      }
+      const statusVisible = await setAssistantStatus(thread, longStatus, options, trace)
+      if (cleared || escalationCancelled) {
+        if (statusVisible) await setAssistantStatus(thread, '', options, trace)
+        resolve()
+        return
+      }
+      visible = statusVisible
+      traceLog(options, 'slackbotv2_forward_long_status_set', trace, {
+        delay_ms: delayMs,
+        phase_ms: elapsedMs(startedAtMs),
+        visible
+      })
+      resolve()
+    }
+    void (async () => {
+      const statusVisible = await setAssistantStatus(thread, initialStatus, options, trace)
+      if (cleared) {
+        if (statusVisible) await setAssistantStatus(thread, '', options, trace)
+        resolve()
+        return
+      }
+      visible = statusVisible
+      traceLog(options, 'slackbotv2_forward_initial_status_set', trace, {
+        phase_ms: elapsedMs(startedAtMs),
+        visible
+      })
+      if (statusVisible) scheduleEscalation()
+      else resolve()
+    })().catch(error => {
+      traceWarn(options, 'slackbotv2_forward_initial_status_failed', trace, {
+        error: errorMessage(error),
+        phase_ms: elapsedMs(startedAtMs)
+      })
+      resolve()
+    })
   })
-  return visible
+  return {
+    cancelEscalation() {
+      if (!timer) return
+      clearTimeout(timer)
+      timer = undefined
+      escalationCancelled = true
+      resolveDone()
+      traceLog(options, 'slackbotv2_forward_long_status_cancelled', trace, {
+        delay_ms: delayMs,
+        phase_ms: elapsedMs(startedAtMs),
+        visible
+      })
+    },
+    async clear() {
+      if (timer) {
+        clearTimeout(timer)
+        timer = undefined
+        resolveDone()
+      }
+      cleared = true
+      if (visible) {
+        visible = false
+        await setAssistantStatus(thread, '', options, trace)
+      }
+    },
+    done,
+    isVisible() {
+      return visible
+    },
+    markVisible(nextVisible: boolean) {
+      visible = nextVisible
+    }
+  }
 }
 
 async function setAssistantStatus(

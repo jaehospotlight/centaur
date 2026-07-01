@@ -28,6 +28,7 @@ const options: SlackbotV2Options = {
   apiUrl,
   apiKey: optionalEnv('SLACKBOT_API_KEY'),
   assistantStatus: optionalEnv('SLACKBOTV2_ASSISTANT_STATUS'),
+  assistantStatusDelayMs: optionalNumberEnv('SLACKBOTV2_ASSISTANT_STATUS_DELAY_MS'),
   activitySummaryStatusEnabled: booleanEnv('SLACKBOTV2_ACTIVITY_SUMMARY_STATUS_ENABLED', false),
   botToken,
   botUserId: optionalEnv('SLACK_BOT_USER_ID'),

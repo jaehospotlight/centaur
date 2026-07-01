@@ -3106,7 +3106,7 @@ describe('slackbotv2', () => {
 
   it('shows assistant status while waiting for slow session execute', async () => {
     const logs: CapturedLog[] = []
-    bot = createTestBot({ logger: captureLogger(logs) })
+    bot = createTestBot({ assistantStatusDelayMs: 25, logger: captureLogger(logs) })
     codexApi.autoRespond = false
     const releaseExecute = codexApi.holdNextExecute()
 
@@ -3138,6 +3138,11 @@ describe('slackbotv2', () => {
     })
 
     await waitFor(() => codexApi.executes.length === 1)
+    expect(
+      slackApi.calls
+        .filter(call => call.method === 'assistant.threads.setStatus')
+        .map(call => stringField(call.body.status))
+    ).toEqual([])
     await sleep(50)
     expect(responseSettled).toBe(false)
     expect(
@@ -3221,7 +3226,11 @@ describe('slackbotv2', () => {
 
   it('does not wait for hung assistant status before creating Slack sessions', async () => {
     const logs: CapturedLog[] = []
-    bot = createTestBot({ logger: captureLogger(logs), slackApiTimeoutMs: 25 })
+    bot = createTestBot({
+      assistantStatusDelayMs: 1,
+      logger: captureLogger(logs),
+      slackApiTimeoutMs: 25
+    })
     const releaseStatus = slackApi.holdAssistantStatus()
     const waits: Promise<unknown>[] = []
 
@@ -3401,12 +3410,11 @@ describe('slackbotv2', () => {
     await Promise.all(waits)
     const statusCalls = slackApi.calls.filter(call => call.method === 'assistant.threads.setStatus')
     expect(statusCalls.map(call => stringField(call.body.status))).toEqual([
-      'Thinking...',
       clippedSummary,
       ''
     ])
     expect(Array.from(clippedSummary)).toHaveLength(50)
-    expect(statusCalls[1]?.body).toEqual(
+    expect(statusCalls[0]?.body).toEqual(
       expect.objectContaining({
         channel_id: CHANNEL_ID,
         thread_ts: parent.ts,
