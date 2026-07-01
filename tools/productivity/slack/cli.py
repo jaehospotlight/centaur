@@ -10,7 +10,13 @@ from rich.table import Table
 
 load_dotenv()
 
-app = typer.Typer(name="slack", help="Slack CLI for AI agents")
+app = typer.Typer(
+    name="slack",
+    help=(
+        "Direct/live Slack operations. Prefer "
+        "`company_context search --source slack` for historical Slack search."
+    ),
+)
 
 
 @app.command("health")
@@ -114,15 +120,21 @@ def search(
     from_user: str = typer.Option(None, "--from", help="Filter by username"),
     depth: int = typer.Option(200, "--depth", "-d", help="Messages per channel to scan"),
 ):
-    """Search messages in bot-accessible channels.
+    """Live/direct Slack message search fallback.
 
-    Searches across all channels the bot is a member of. Results are ranked by
-    relevance (exact phrase matches score higher). Use --channels to limit scope.
+    Prefer `company_context search "query" --source slack --json` for broad,
+    historical, or semantic Slack recall. Use this command when you need live
+    Slack API search, an exact Slack search modifier, or a fallback after the
+    indexed Slack ETL path is unavailable or insufficient.
+
+    Searches across Slack's native search API when available, or scans channels
+    the bot is a member of as a fallback. Use --channels to limit scope.
 
     Note: Only searches channels where the bot is a member. To search more channels,
     invite the bot to those channels first.
 
     Examples:
+        company_context search "deploy" --source slack --json
         slack search "deploy"
         slack search "kubernetes error" --channels eng-infra,eng-ai
         slack search "database migration" --from alice --depth 500

@@ -1,6 +1,6 @@
 [project]
 name = "slack"
-description = "Search Slack messages, channels, threads, users"
+description = "Direct/live Slack operations for exact channels, threads, files, users, and fallback message search. Prefer company_context --source slack for historical Slack search."
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [

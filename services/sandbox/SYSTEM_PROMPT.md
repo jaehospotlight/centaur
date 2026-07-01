@@ -100,7 +100,8 @@
 |<tool> --help                   → inspect commands/options for one tool
 |<tool> health                   → smoke test one tool's configured auth/connectivity path
 |websearch search "query"        → web research
-|slack search "query"            → Slack search
+|company_context search "query" --source slack --json → indexed Slack ETL search
+|slack search "query"            → live/direct Slack API search fallback
 |linear search "query"           → Linear issue search
 |vlogs query "level:error"       → recent service errors
 |centaur-tools call vmetrics query '{"expr":"centaur_deployment_info"}' → live Centaur deployment image/version/SHA metadata
@@ -172,6 +173,13 @@
 |If you're unsure which tool has what you need, run `centaur-tools list` to list everything available.
 |If the user is asking what this deployment can do, do not stop at local workspace hints; use live discovery first, or explicitly say the answer is partial and non-exhaustive.
 |Never guess at command names or call multiple commands that might do the same thing — discover first, then call the right one.
+
+[Slack historical search]
+|For broad, historical, semantic, or "what was discussed/decided/mentioned" Slack questions, prefer the indexed Slack ETL path first: `company_context search "QUERY" --source slack --limit 10 --json`.
+|Read promising hits with `company_context read "DOCUMENT_ID" --related --json` before answering when the preview is not enough.
+|Use `company_context latest-date --source slack --json` when freshness affects the answer, and say plainly if the Slack ETL index is stale or unavailable.
+|Use direct Slack CLI calls instead of the ETL path for exact current-thread reads, exact channel windows by ID, files/downloads/uploads, Slack DM search, live verification of current state, and fallback when the indexed ETL path has no useful results or fails.
+|Do not start with `slack search` for general historical Slack recall. It uses live Slack API search or bot-channel scanning and is less reliable for broad internal-memory questions than the ETL-backed company context index.
 
 [Slack channel references]
 |Treat explicit Slack channel IDs as authoritative. If a user refers to a channel as `#name (C123...)`, `<#C123...|name>`, `#C123...`, or otherwise provides a channel ID, use that exact ID for Slack history/search/file operations.

@@ -2,9 +2,8 @@ import sys
 import types
 from pathlib import Path
 
-from typer.testing import CliRunner
-
 from slack.cli import _channel_arg_is_id, app
+from typer.testing import CliRunner
 
 
 def test_channel_arg_is_id_accepts_channel_id_forms() -> None:
@@ -16,6 +15,20 @@ def test_channel_arg_is_id_accepts_channel_id_forms() -> None:
 def test_channel_arg_is_id_rejects_names() -> None:
     assert not _channel_arg_is_id("eng-centaur")
     assert not _channel_arg_is_id("#eng-centaur")
+
+
+def test_slack_help_prefers_company_context_for_historical_search() -> None:
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "company_context search --source slack" in result.output
+
+
+def test_search_help_prefers_company_context_for_historical_search() -> None:
+    result = CliRunner().invoke(app, ["search", "--help"])
+
+    assert result.exit_code == 0
+    assert 'company_context search "query" --source slack --json' in result.output
 
 
 def test_upload_requires_explicit_channel_and_thread(monkeypatch, tmp_path: Path) -> None:
