@@ -3142,14 +3142,14 @@ describe('slackbotv2', () => {
       slackApi.calls
         .filter(call => call.method === 'assistant.threads.setStatus')
         .map(call => stringField(call.body.status))
-    ).toEqual([])
+    ).toEqual(['Thinking...'])
     await sleep(50)
     expect(responseSettled).toBe(false)
     expect(
       slackApi.calls
         .filter(call => call.method === 'assistant.threads.setStatus')
         .map(call => stringField(call.body.status))
-    ).toEqual(['Thinking...'])
+    ).toEqual(['Thinking...', 'Still working...'])
     expect(slackApi.calls.some(call => call.method === 'chat.startStream')).toBe(false)
     expect(codexApi.eventRequests).toHaveLength(0)
     await waitFor(() => hasLog(logs, 'slackbotv2_webhook_handoff_wait_started'))
@@ -3221,7 +3221,7 @@ describe('slackbotv2', () => {
       slackApi.calls
         .filter(call => call.method === 'assistant.threads.setStatus')
         .map(call => stringField(call.body.status))
-    ).toEqual(expect.arrayContaining(['Thinking...', '']))
+    ).toEqual(expect.arrayContaining(['Thinking...', 'Still working...', '']))
   })
 
   it('does not wait for hung assistant status before creating Slack sessions', async () => {
@@ -3410,11 +3410,12 @@ describe('slackbotv2', () => {
     await Promise.all(waits)
     const statusCalls = slackApi.calls.filter(call => call.method === 'assistant.threads.setStatus')
     expect(statusCalls.map(call => stringField(call.body.status))).toEqual([
+      'Thinking...',
       clippedSummary,
       ''
     ])
     expect(Array.from(clippedSummary)).toHaveLength(50)
-    expect(statusCalls[0]?.body).toEqual(
+    expect(statusCalls[1]?.body).toEqual(
       expect.objectContaining({
         channel_id: CHANNEL_ID,
         thread_ts: parent.ts,
