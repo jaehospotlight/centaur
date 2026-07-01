@@ -33,6 +33,9 @@ describe('slackbotv2 metrics', () => {
     expect(body).toContain(
       'slackbotv2_slack_webhook_requests_total{route="/api/webhooks/slack",event_type="app_mention",outcome="success"} 1'
     )
+    expect(body).toContain('slackbotv2_slack_webhook_handoffs_pending 0')
+    expect(body).toContain('slackbotv2_slack_webhook_handoffs_stale 0')
+    expect(body).toContain('slackbotv2_slack_webhook_oldest_pending_handoff_age_seconds 0')
     expect(body).toContain(
       'centaur_session_delivery_total{delivery_status="streamed"} 1'
     )

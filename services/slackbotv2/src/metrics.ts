@@ -326,6 +326,18 @@ export const slackbotMetrics = {
     labelNames: ['route', 'event_type', 'outcome'],
     name: 'slackbotv2_slack_webhook_duration_seconds'
   }),
+  webhookHandoffsPending: gauge({
+    help: 'Awaited Slack webhook handoffs currently in progress.',
+    name: 'slackbotv2_slack_webhook_handoffs_pending'
+  }),
+  webhookHandoffsStale: gauge({
+    help: 'Awaited Slack webhook handoffs older than the health timeout.',
+    name: 'slackbotv2_slack_webhook_handoffs_stale'
+  }),
+  webhookOldestPendingHandoffAge: gauge({
+    help: 'Age of the oldest awaited Slack webhook handoff currently in progress, in seconds.',
+    name: 'slackbotv2_slack_webhook_oldest_pending_handoff_age_seconds'
+  }),
   webhookRequests: counter({
     help: 'Slack webhook requests handled by Slackbot.',
     labelNames: ['route', 'event_type', 'outcome'],

@@ -125,6 +125,11 @@ export type SlackbotV2Options = {
   sessionApiTimeoutMs?: number
   signingSecret: string
   slackApiUrl?: string
+  /**
+   * Maximum age for an awaited Slack webhook handoff before /health reports
+   * unhealthy. Defaults to 90s.
+   */
+  webhookHandoffHealthTimeoutMs?: number
   /** Deadline for optional Slack Web API metadata lookups. */
   slackApiTimeoutMs?: number
   state?: StateAdapter

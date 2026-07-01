@@ -102,6 +102,75 @@ type SlackbotV2RequestContext = {
   waitUntil(promise: Promise<unknown>): void
 }
 
+type SlackWebhookHandoffHealthSnapshot = {
+  healthy: boolean
+  oldestPendingMs: number
+  pendingCount: number
+  staleCount: number
+  timeoutMs: number
+}
+
+type PendingSlackWebhookHandoff = {
+  startedAtMs: number
+}
+
+class SlackWebhookHandoffHealth {
+  private nextId = 1
+  private readonly pending = new Map<number, PendingSlackWebhookHandoff>()
+
+  constructor(private readonly timeoutMs: number) {}
+
+  start(startedAtMs: number): () => void {
+    const id = this.nextId++
+    this.pending.set(id, { startedAtMs })
+    this.recordMetrics(this.snapshot())
+    return () => {
+      this.pending.delete(id)
+      this.recordMetrics(this.snapshot())
+    }
+  }
+
+  snapshot(): SlackWebhookHandoffHealthSnapshot {
+    const now = nowMs()
+    let oldestPendingMs = 0
+    let staleCount = 0
+    for (const pending of this.pending.values()) {
+      const ageMs = elapsedMs(pending.startedAtMs)
+      oldestPendingMs = Math.max(oldestPendingMs, ageMs)
+      if (now - pending.startedAtMs > this.timeoutMs) staleCount += 1
+    }
+    return {
+      healthy: staleCount === 0,
+      oldestPendingMs,
+      pendingCount: this.pending.size,
+      staleCount,
+      timeoutMs: this.timeoutMs
+    }
+  }
+
+  recordMetrics(snapshot: SlackWebhookHandoffHealthSnapshot): void {
+    slackbotMetrics.webhookHandoffsPending.set({}, snapshot.pendingCount)
+    slackbotMetrics.webhookHandoffsStale.set({}, snapshot.staleCount)
+    slackbotMetrics.webhookOldestPendingHandoffAge.set({}, snapshot.oldestPendingMs / 1000)
+  }
+}
+
+function webhookHandoffHealthTimeoutMs(options: SlackbotV2Options): number {
+  return options.webhookHandoffHealthTimeoutMs ?? WEBHOOK_HANDOFF_HEALTH_TIMEOUT_MS
+}
+
+function slackbotHealthResponse(snapshot: SlackWebhookHandoffHealthSnapshot): JsonObject {
+  return {
+    ok: snapshot.healthy,
+    service: 'slackbotv2',
+    oldest_pending_slack_webhook_handoff_ms: snapshot.oldestPendingMs,
+    pending_slack_webhook_handoffs: snapshot.pendingCount,
+    stale_slack_webhook_handoffs: snapshot.staleCount,
+    webhook_handoff_health_timeout_ms: snapshot.timeoutMs,
+    ...(snapshot.healthy ? {} : { reason: 'stale_slack_webhook_handoff' })
+  }
+}
+
 const requestContext = new AsyncLocalStorage<SlackbotV2RequestContext>()
 const RENDER_OBLIGATION_INDEX_KEY = 'slackbotv2:render:index'
 const RENDER_OBLIGATION_INDEX_MAX_LENGTH = 2000
@@ -114,6 +183,7 @@ const RENDER_RECOVERY_MAX_THREAD_FAILURES = 5
 const RENDER_RETRY_INITIAL_DELAY_MS = 250
 const RENDER_RETRY_MAX_DELAY_MS = 5_000
 const ASSISTANT_STATUS_MAX_CHARS = 50
+const WEBHOOK_HANDOFF_HEALTH_TIMEOUT_MS = 90_000
 const SLACK_TASK_DETAILS_MAX_CHARS = 500
 const SLACK_FALLBACK_TEXT_MAX_CHARS = 35_000
 const POSTGRES_CONNECT_INITIAL_DELAY_MS = 250
@@ -189,6 +259,9 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     logger
   })
   const state = options.state ?? createDefaultState(options, logger)
+  const webhookHandoffHealth = new SlackWebhookHandoffHealth(
+    webhookHandoffHealthTimeoutMs(options)
+  )
   const chat = new Chat<{ slack: typeof slack }, SlackbotV2ThreadState>({
     userName,
     adapters: { slack },
@@ -224,17 +297,23 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   })
 
   const app = new Hono()
-  app.get('/health', c => c.json({ ok: true, service: 'slackbotv2' }))
-  app.get('/metrics', c =>
-    c.text(slackbotMetrics.expose(), 200, {
+  app.get('/health', c => {
+    const snapshot = webhookHandoffHealth.snapshot()
+    webhookHandoffHealth.recordMetrics(snapshot)
+    return c.json(slackbotHealthResponse(snapshot), snapshot.healthy ? 200 : 503)
+  })
+  app.get('/metrics', c => {
+    webhookHandoffHealth.recordMetrics(webhookHandoffHealth.snapshot())
+    return c.text(slackbotMetrics.expose(), 200, {
       'Content-Type': 'text/plain; version=0.0.4; charset=utf-8'
     })
-  )
+  })
   const handleSlackWebhook = async (c: Context) => {
     const webhookStartedAtMs = nowMs()
     const route = c.req.path
     const rawBody = await c.req.raw.clone().text()
     const eventType = slackWebhookEventType(rawBody)
+    let finishWebhookHealth: (() => void) | undefined
     let outcome = 'success'
     try {
       if (!isAllowedSlackWebhookBody(rawBody, options, logger)) {
@@ -243,6 +322,9 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       }
       const awaitHandoff = shouldAwaitSlackHandoff(rawBody)
       const webhookFields = slackWebhookLogFields(rawBody)
+      if (awaitHandoff) {
+        finishWebhookHealth = webhookHandoffHealth.start(webhookStartedAtMs)
+      }
       const handoffTasks: Promise<unknown>[] = []
       const context: SlackbotV2RequestContext = {
         retryableErrors: [],
@@ -309,6 +391,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       outcome = 'error'
       throw error
     } finally {
+      finishWebhookHealth?.()
       slackbotMetrics.webhookRequests.inc({ event_type: eventType, outcome, route })
       slackbotMetrics.webhookDuration.observe(
         { event_type: eventType, outcome, route },

@@ -3084,6 +3084,80 @@ describe('slackbotv2', () => {
     ).toEqual(expect.arrayContaining(['Thinking...', '']))
   })
 
+  it('marks health unhealthy while an awaited Slack webhook handoff is stale', async () => {
+    const logs: CapturedLog[] = []
+    bot = createTestBot({
+      logger: captureLogger(logs),
+      webhookHandoffHealthTimeoutMs: 25
+    })
+    codexApi.autoRespond = false
+    const releaseExecute = codexApi.holdNextExecute()
+    const waits: Promise<unknown>[] = []
+
+    try {
+      const parent = await postUserMessage('Context before the stale handoff.')
+      const mention = await postUserMessage(`<@${BOT_USER_ID}> start slowly`, parent.ts)
+      const responsePromise = bot.app.request(
+        '/api/webhooks/slack',
+        signedSlackEvent({
+          event_id: 'Ev-slackbotv2-stale-handoff-health',
+          event: {
+            type: 'app_mention',
+            user: USER_ID,
+            channel: CHANNEL_ID,
+            team: TEAM_ID,
+            ts: mention.ts,
+            thread_ts: parent.ts,
+            text: `<@${BOT_USER_ID}> start slowly`
+          }
+        }),
+        {},
+        waitUntilContext(waits)
+      )
+
+      await waitFor(() => hasLog(logs, 'slackbotv2_webhook_handoff_wait_started'))
+      await waitFor(async () => (await bot.app.request('/health')).status === 503)
+
+      const unhealthy = await bot.app.request('/health')
+      expect(unhealthy.status).toBe(503)
+      expect(await unhealthy.json()).toEqual(
+        expect.objectContaining({
+          ok: false,
+          pending_slack_webhook_handoffs: 1,
+          reason: 'stale_slack_webhook_handoff',
+          service: 'slackbotv2',
+          stale_slack_webhook_handoffs: 1,
+          webhook_handoff_health_timeout_ms: 25
+        })
+      )
+
+      const metrics = await (await bot.app.request('/metrics')).text()
+      expect(metrics).toContain('slackbotv2_slack_webhook_handoffs_pending 1')
+      expect(metrics).toContain('slackbotv2_slack_webhook_handoffs_stale 1')
+
+      releaseExecute()
+      const response = await responsePromise
+      expect(response.status).toBe(200)
+      await waitFor(() => codexApi.eventRequests.length === 1)
+      await waitFor(() => codexApi.streamCount === 1)
+      codexApi.closeStreams()
+      await waitFor(async () => (await bot.app.request('/health')).status === 200)
+
+      const healthy = await bot.app.request('/health')
+      expect(await healthy.json()).toEqual(
+        expect.objectContaining({
+          ok: true,
+          pending_slack_webhook_handoffs: 0,
+          service: 'slackbotv2',
+          stale_slack_webhook_handoffs: 0
+        })
+      )
+    } finally {
+      releaseExecute()
+    }
+    await Promise.all(waits)
+  })
+
   it('does not wait for hung assistant status before creating Slack sessions', async () => {
     const logs: CapturedLog[] = []
     bot = createTestBot({ logger: captureLogger(logs), slackApiTimeoutMs: 25 })

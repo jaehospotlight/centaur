@@ -46,6 +46,9 @@ const options: SlackbotV2Options = {
   slackApiUrl: optionalEnv('SLACK_API_URL'),
   slackApiTimeoutMs: optionalNumberEnv('SLACKBOTV2_SLACK_API_TIMEOUT_MS'),
   stateKeyPrefix: optionalEnv('SLACKBOTV2_STATE_KEY_PREFIX'),
+  webhookHandoffHealthTimeoutMs: optionalNumberEnv(
+    'SLACKBOTV2_WEBHOOK_HANDOFF_HEALTH_TIMEOUT_MS'
+  ),
   userName: stringEnv('SLACKBOTV2_USER_NAME', 'centaur'),
   logger: consoleLogger
 }
