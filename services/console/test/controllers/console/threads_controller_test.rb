@@ -97,7 +97,7 @@ class Console::ThreadsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to console_threads_path(thread: thread_key)
   end
 
-  test "direct selected thread appears in sidebar when outside owner filtered list" do
+  test "direct selected Slack thread stays hidden when outside owner filtered list" do
     skip_unless_session_table
 
     thread_key = "slack:C0DIRECT:#{SecureRandom.hex(6)}"
@@ -112,7 +112,9 @@ class Console::ThreadsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
     assert_select ".console-thread-list a.console-thread-link-active[href=?]",
                   console_threads_path(thread: thread_key),
-                  count: 1
+                  count: 0
+    assert_select ".console-thread-detail-header", text: /New thread/
+    assert_select "body", text: /someone-else/, count: 0
   end
 
   test "slack assistant-role messages from the current Slack user render as user authored" do
@@ -391,27 +393,15 @@ class Console::ThreadsControllerTest < ActionDispatch::IntegrationTest
     refute_includes sql, "slack_user_id"
   end
 
-  test "direct selected thread can load outside visible Slack list scope" do
+  test "selected thread cannot load outside visible Slack list scope" do
     controller = Console::ThreadsController.new
-    direct_thread = SelectedSession.new(thread_key: "slack:C123:1782339173.755169")
     scoped_relation = Object.new
     scoped_relation.define_singleton_method(:where) { |**_kwargs| [] }
-    controller.instance_variable_set(:@selected_thread_key, direct_thread.thread_key)
+    controller.instance_variable_set(:@selected_thread_key, "slack:C123:1782339173.755169")
     controller.instance_variable_set(:@starting_new_thread, false)
     controller.instance_variable_set(:@sessions, [])
-    controller.define_singleton_method(:direct_selected_session) do |thread_key|
-      direct_thread if thread_key == direct_thread.thread_key
-    end
 
-    selected = controller.send(:selected_session, scoped_relation, [])
-
-    assert_equal direct_thread, selected
-  end
-
-  test "direct selected thread fallback does not bypass console thread scope" do
-    controller = Console::ThreadsController.new
-
-    assert_nil controller.send(:direct_selected_session, "console:someone-else")
+    assert_nil controller.send(:selected_session, scoped_relation, [])
   end
 
   test "starting a thread creates appends and executes through the session api" do
