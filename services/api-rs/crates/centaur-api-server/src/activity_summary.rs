@@ -21,12 +21,19 @@ including spaces, as if you are the agent. Describe the current user-facing goal
 question you are resolving, not the exact command, file path, ID, flag, or \
 implementation step. Prefer specific noun phrases from the session goal over \
 generic phrases like details, info, items, update, or summary. Use the session goal \
-and facts labeled commentary, plan, or tool before any lower-level facts. If the facts only show \
+and facts labeled phase, blocker, commentary, plan, or tool before any lower-level facts. Use \
+the current activity phase and detail as the main source; do not stuff the whole \
+session goal into every status. For blocker statuses, a direct sentence like \
+\"Metrics are returning 502s\" is allowed. Prefer these shapes when the phase fits: \
+\"I'm checking Robinhood TPS\", \"I'm looking for Tempo metrics\", \
+\"Metrics are returning 502s\", \"I'm falling back to public RPC\", \
+\"I'm sampling recent blocks\". If the facts only show \
 setup, help output, dependency installs, builds, command output, logs, tests, or \
 other mechanics, output exactly SKIP. If you cannot say a meaningful new status \
 that differs from the previous one, output exactly SKIP. Do not mention tests, \
 output, builds, logs, rollouts, commands, paths, IDs, or flags unless the user asked \
-for them. Do not refer to \"the agent\". No markdown, no quotes, no event IDs, and no speculation.";
+for them. Do not append extra context to a clear phase like sampling recent blocks. \
+Do not refer to \"the agent\". No markdown, no quotes, no event IDs, and no speculation.";
 
 #[derive(Clone)]
 pub(crate) struct ActivitySummaryConfig {
@@ -160,6 +167,9 @@ impl ActivitySummaryWorker {
             }
         };
         let Some(summary) = sanitize_summary(&summary) else {
+            if let Some(state) = self.states.get_mut(execution_id) {
+                state.mark_attempted();
+            }
             debug!("discarded empty session activity summary");
             return Ok(());
         };
@@ -169,6 +179,9 @@ impl ActivitySummaryWorker {
             .and_then(|state| state.last_summary.as_deref())
             .is_some_and(|last| summaries_are_similar(last, &summary))
         {
+            if let Some(state) = self.states.get_mut(execution_id) {
+                state.mark_attempted();
+            }
             debug!(summary, "discarded redundant session activity summary");
             return Ok(());
         }
@@ -188,8 +201,7 @@ impl ActivitySummaryWorker {
             .await?;
 
         if let Some(state) = self.states.get_mut(execution_id) {
-            state.last_published_signature = Some(state.signature());
-            state.last_summary = Some(summary);
+            state.mark_published(summary);
         }
         Ok(())
     }
@@ -218,9 +230,10 @@ struct ExecutionActivity {
     facts: VecDeque<ActivityFact>,
     goal: Option<String>,
     last_attempt_at: Option<Instant>,
-    last_published_signature: Option<String>,
+    last_attempted_signature: Option<String>,
     last_summary: Option<String>,
     max_facts: usize,
+    published_phases: Vec<&'static str>,
 }
 
 impl ExecutionActivity {
@@ -229,14 +242,20 @@ impl ExecutionActivity {
             facts: VecDeque::with_capacity(max_facts),
             goal,
             last_attempt_at: None,
-            last_published_signature: None,
+            last_attempted_signature: None,
             last_summary: None,
             max_facts,
+            published_phases: Vec::new(),
         }
     }
 
     fn push(&mut self, fact: ActivityFact) {
         if !fact.is_publishable() {
+            return;
+        }
+        if let Some(phase) = fact.phase
+            && self.published_phases.contains(&phase)
+        {
             return;
         }
         if self
@@ -259,15 +278,18 @@ impl ExecutionActivity {
         if !self.facts.iter().any(ActivityFact::is_publishable) {
             return None;
         }
+        let latest_phase = self.latest_publishable_fact().and_then(|fact| fact.phase);
+        let new_phase = latest_phase.is_some_and(|phase| !self.published_phases.contains(&phase));
         if self
             .last_attempt_at
             .is_some_and(|last| now.saturating_duration_since(last) < min_interval)
+            && !new_phase
         {
             return None;
         }
         let signature = self.signature();
         if self
-            .last_published_signature
+            .last_attempted_signature
             .as_ref()
             .is_some_and(|last| last == &signature)
         {
@@ -275,6 +297,20 @@ impl ExecutionActivity {
         }
         self.last_attempt_at = Some(now);
         Some(self.prompt())
+    }
+
+    fn mark_attempted(&mut self) {
+        self.last_attempted_signature = Some(self.signature());
+    }
+
+    fn mark_published(&mut self, summary: String) {
+        self.mark_attempted();
+        if let Some(phase) = self.latest_publishable_fact().and_then(|fact| fact.phase)
+            && !self.published_phases.contains(&phase)
+        {
+            self.published_phases.push(phase);
+        }
+        self.last_summary = Some(summary);
     }
 
     fn prompt(&self) -> String {
@@ -285,9 +321,15 @@ impl ExecutionActivity {
         if let Some(goal) = self.goal.as_deref() {
             lines.push(format!("Session goal: {goal}"));
         }
+        if let Some(fact) = self.latest_publishable_fact() {
+            if let Some(phase) = fact.phase {
+                lines.push(format!("Current activity phase: {phase}"));
+            }
+            lines.push(format!("Current activity detail: {}", fact.text));
+        }
         lines.push("Recent activity facts, oldest to newest:".to_owned());
         for fact in self.facts.iter().filter(|fact| fact.is_publishable()) {
-            lines.push(format!("- {}: {}", fact.kind, fact.text));
+            lines.push(format!("- {}: {}", fact.prompt_kind(), fact.text));
         }
         lines.join("\n")
     }
@@ -299,10 +341,14 @@ impl ExecutionActivity {
                 self.facts
                     .iter()
                     .filter(|fact| fact.is_publishable())
-                    .map(|fact| format!("{}={}", fact.kind, fact.text)),
+                    .map(|fact| format!("{}={}", fact.prompt_kind(), fact.text)),
             )
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn latest_publishable_fact(&self) -> Option<&ActivityFact> {
+        self.facts.iter().rev().find(|fact| fact.is_publishable())
     }
 }
 
@@ -315,6 +361,7 @@ enum ActivitySignal {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ActivityFact {
     kind: &'static str,
+    phase: Option<&'static str>,
     signal: ActivitySignal,
     text: String,
 }
@@ -323,6 +370,16 @@ impl ActivityFact {
     fn high(kind: &'static str, text: impl Into<String>) -> Self {
         Self {
             kind,
+            phase: None,
+            signal: ActivitySignal::High,
+            text: text.into(),
+        }
+    }
+
+    fn high_phase(kind: &'static str, phase: &'static str, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            phase: Some(phase),
             signal: ActivitySignal::High,
             text: text.into(),
         }
@@ -331,6 +388,7 @@ impl ActivityFact {
     fn low(kind: &'static str, text: impl Into<String>) -> Self {
         Self {
             kind,
+            phase: None,
             signal: ActivitySignal::Low,
             text: text.into(),
         }
@@ -338,6 +396,13 @@ impl ActivityFact {
 
     fn is_publishable(&self) -> bool {
         self.signal == ActivitySignal::High
+    }
+
+    fn prompt_kind(&self) -> String {
+        match self.phase {
+            Some(phase) => format!("{}[{phase}]", self.kind),
+            None => self.kind.to_owned(),
+        }
     }
 }
 
@@ -434,10 +499,7 @@ fn item_fact(value: &Value, normalized_event_type: &str) -> Option<ActivityFact>
     let item_type = string_at(item, &["type"]).unwrap_or_default();
     let completed = normalized_event_type == "item.completed";
     match item_type.as_str() {
-        "commandExecution" | "command_execution" => {
-            let command = string_at(item, &["command"]).unwrap_or_else(|| "command".to_owned());
-            command_fact(&command, completed)
-        }
+        "commandExecution" | "command_execution" => command_fact(item, completed),
         "fileChange" | "file_change" => Some(ActivityFact::high(
             "files",
             file_change_text(item, completed),
@@ -456,8 +518,33 @@ fn item_fact(value: &Value, normalized_event_type: &str) -> Option<ActivityFact>
     }
 }
 
-fn command_fact(command: &str, completed: bool) -> Option<ActivityFact> {
-    let command = unwrap_shell_command(command);
+fn command_fact(item: &Value, completed: bool) -> Option<ActivityFact> {
+    let command = string_at(item, &["command"]).unwrap_or_else(|| "command".to_owned());
+    let command = unwrap_shell_command(&command);
+    let output = command_output_text(item).unwrap_or_default();
+    if completed {
+        if is_tempo_obs_command(&command) && contains_bad_gateway(&output) {
+            return Some(ActivityFact::high_phase(
+                "blocker",
+                "metrics_502",
+                "Tempo metrics are returning 502",
+            ));
+        }
+        if is_tempo_public_rpc_probe(&command, &output) {
+            return Some(ActivityFact::high_phase(
+                "phase",
+                "rpc_fallback",
+                "Tempo public RPC is reachable",
+            ));
+        }
+        if is_recent_block_tps_sample(&output) {
+            return Some(ActivityFact::high_phase(
+                "phase",
+                "sampling_blocks",
+                "sampling recent blocks",
+            ));
+        }
+    }
     if is_low_signal_command(&command) {
         return Some(ActivityFact::low(
             "command",
@@ -481,7 +568,56 @@ fn agent_message_fact(item: &Value, completed: bool) -> Option<ActivityFact> {
     if is_low_signal_commentary(&text) {
         return None;
     }
+    if let Some(fact) = phase_fact_from_commentary(&text) {
+        return Some(fact);
+    }
     Some(ActivityFact::high("commentary", one_line(&text, 220)))
+}
+
+fn phase_fact_from_commentary(text: &str) -> Option<ActivityFact> {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("public rpc") || lower.contains("rpc now") {
+        return Some(ActivityFact::high_phase(
+            "phase",
+            "rpc_fallback",
+            "falling back to public RPC",
+        ));
+    }
+    if lower.contains("sampling recent block") {
+        return Some(ActivityFact::high_phase(
+            "phase",
+            "sampling_blocks",
+            "sampling recent blocks",
+        ));
+    }
+    if lower.contains("502") || lower.contains("bad gateway") {
+        return Some(ActivityFact::high_phase(
+            "blocker",
+            "metrics_502",
+            "Tempo metrics are returning 502",
+        ));
+    }
+    if lower.contains("tempo-obs")
+        || lower.contains("partner metrics")
+        || lower.contains("metric names")
+    {
+        return Some(ActivityFact::high_phase(
+            "phase",
+            "tempo_metrics",
+            "looking for Tempo metrics",
+        ));
+    }
+    if lower.contains("current tps")
+        || lower.contains("live tooling")
+        || lower.contains("live metrics")
+    {
+        return Some(ActivityFact::high_phase(
+            "phase",
+            "check_tps",
+            "checking current TPS",
+        ));
+    }
+    None
 }
 
 fn protocol_item(value: &Value) -> Option<&Value> {
@@ -572,6 +708,41 @@ fn tool_name(item: &Value) -> String {
         .or_else(|| string_at(item, &["serverLabel"]))
         .or_else(|| string_at(item, &["server_label"]))
         .unwrap_or_else(|| "tool".to_owned())
+}
+
+fn command_output_text(item: &Value) -> Option<String> {
+    string_at(item, &["aggregatedOutput"])
+        .or_else(|| string_at(item, &["aggregated_output"]))
+        .or_else(|| string_at(item, &["output"]))
+}
+
+fn is_tempo_obs_command(command: &str) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .is_some_and(|name| name.rsplit('/').next() == Some("tempo-obs"))
+}
+
+fn contains_bad_gateway(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("502") || lower.contains("bad gateway")
+}
+
+fn is_tempo_public_rpc_probe(command: &str, output: &str) -> bool {
+    command.contains("cast block-number")
+        && command.contains("rpc.tempo")
+        && output.trim().chars().all(|ch| ch.is_ascii_digit())
+        && !output.trim().is_empty()
+}
+
+fn is_recent_block_tps_sample(output: &str) -> bool {
+    output.contains("latest_block=")
+        && output.split_whitespace().any(|part| {
+            let Some(value) = part.strip_prefix("tps=") else {
+                return false;
+            };
+            value.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        })
 }
 
 fn command_tool_name(command: &str) -> Option<String> {
@@ -1047,12 +1218,106 @@ mod tests {
     }
 
     #[test]
+    fn classifies_replay_activity_phases() {
+        let checking = activity_fact_from_output_event(&event(json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "msg-1",
+                    "phase": "commentary",
+                    "text": "I'll check the live tooling/metrics rather than infer current TPS.",
+                    "type": "agentMessage"
+                }
+            }
+        })))
+        .unwrap();
+        assert_eq!(
+            checking,
+            ActivityFact::high_phase("phase", "check_tps", "checking current TPS")
+        );
+
+        let metrics = activity_fact_from_output_event(&event(json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "msg-2",
+                    "phase": "commentary",
+                    "text": "tempo-obs is the right surface for partner metrics.",
+                    "type": "agentMessage"
+                }
+            }
+        })))
+        .unwrap();
+        assert_eq!(
+            metrics,
+            ActivityFact::high_phase("phase", "tempo_metrics", "looking for Tempo metrics")
+        );
+
+        let blocker = activity_fact_from_output_event(&event(json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "cmd-1",
+                    "type": "commandExecution",
+                    "status": "failed",
+                    "command": "/bin/bash -lc \"tempo-obs metrics prd 'up' --json\"",
+                    "aggregatedOutput": "HTTP status client error (502 Bad Gateway)"
+                }
+            }
+        })))
+        .unwrap();
+        assert_eq!(
+            blocker,
+            ActivityFact::high_phase("blocker", "metrics_502", "Tempo metrics are returning 502")
+        );
+
+        let rpc = activity_fact_from_output_event(&event(json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "cmd-2",
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "command": "/bin/bash -lc 'cast block-number --rpc-url https://rpc.tempo.xyz'",
+                    "aggregatedOutput": "28032353"
+                }
+            }
+        })))
+        .unwrap();
+        assert_eq!(
+            rpc,
+            ActivityFact::high_phase("phase", "rpc_fallback", "Tempo public RPC is reachable")
+        );
+
+        let sampling = activity_fact_from_output_event(&event(json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "cmd-3",
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "command": "/bin/bash -lc 'latest=$(cast block-number --rpc-url https://rpc.tempo.xyz)'",
+                    "aggregatedOutput": "mainnet latest_block=28032359 duration=60s txs=49 tps=0.817"
+                }
+            }
+        })))
+        .unwrap();
+        assert_eq!(
+            sampling,
+            ActivityFact::high_phase("phase", "sampling_blocks", "sampling recent blocks")
+        );
+    }
+
+    #[test]
     fn system_prompt_requires_conversational_goal_status() {
         assert!(SYSTEM_PROMPT.contains("first-person"));
         assert!(SYSTEM_PROMPT.contains("under 45 characters"));
         assert!(SYSTEM_PROMPT.contains("user-facing goal"));
         assert!(SYSTEM_PROMPT.contains("not the exact"));
         assert!(SYSTEM_PROMPT.contains("specific noun phrases"));
+        assert!(SYSTEM_PROMPT.contains("current activity phase"));
+        assert!(SYSTEM_PROMPT.contains("Metrics are returning 502s"));
+        assert!(SYSTEM_PROMPT.contains("I'm sampling recent blocks"));
         assert!(SYSTEM_PROMPT.contains("output exactly SKIP"));
         assert!(SYSTEM_PROMPT.contains("Do not mention tests"));
         assert!(SYSTEM_PROMPT.contains("Do not refer to \"the agent\""));
@@ -1108,11 +1373,39 @@ mod tests {
         let now = Instant::now();
         state.push(ActivityFact::high("tool", "using websearch"));
         assert!(state.prepare_publish(now, Duration::from_secs(8)).is_some());
-        state.last_published_signature = Some(state.signature());
+        state.mark_attempted();
         assert!(
             state
                 .prepare_publish(now + Duration::from_secs(9), Duration::from_secs(8))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn new_activity_phase_bypasses_interval_floor() {
+        let mut state = ExecutionActivity::new(4, Some("Investigate Robinhood TPS".to_owned()));
+        let now = Instant::now();
+        state.push(ActivityFact::high_phase(
+            "phase",
+            "check_tps",
+            "checking current TPS",
+        ));
+        assert!(
+            state
+                .prepare_publish(now, Duration::from_secs(20))
+                .is_some()
+        );
+        state.mark_published("I'm checking Robinhood TPS".to_owned());
+
+        state.push(ActivityFact::high_phase(
+            "phase",
+            "tempo_metrics",
+            "looking for Tempo metrics",
+        ));
+        assert!(
+            state
+                .prepare_publish(now + Duration::from_secs(5), Duration::from_secs(20))
+                .is_some()
         );
     }
 
@@ -1134,6 +1427,30 @@ mod tests {
 
         assert!(prompt.contains("Session goal: Investigate USDG vault yield"));
         assert!(prompt.contains("- tool: using websearch"));
+    }
+
+    #[test]
+    fn does_not_republish_completed_activity_phase() {
+        let mut state = ExecutionActivity::new(4, Some("Investigate Robinhood TPS".to_owned()));
+        let now = Instant::now();
+        state.push(ActivityFact::high_phase(
+            "phase",
+            "check_tps",
+            "checking current TPS",
+        ));
+        assert!(state.prepare_publish(now, Duration::from_secs(1)).is_some());
+        state.mark_published("I'm checking Robinhood TPS".to_owned());
+
+        state.push(ActivityFact::high_phase(
+            "phase",
+            "check_tps",
+            "checking current TPS again",
+        ));
+        assert!(
+            state
+                .prepare_publish(now + Duration::from_secs(2), Duration::from_secs(1))
+                .is_none()
+        );
     }
 
     #[test]
