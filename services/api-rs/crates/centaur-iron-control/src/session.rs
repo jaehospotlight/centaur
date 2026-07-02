@@ -116,6 +116,20 @@ impl SessionRegistrar {
     pub async fn get_principal(&self, principal: &str) -> Result<Principal> {
         self.client.get_principal(&self.namespace, principal).await
     }
+
+    /// Role `foreign_id`s currently assigned to a principal (by OID or foreign
+    /// id). Used to scope MCP tool visibility to the tools whose per-tool role
+    /// (`tool-<slug>`) the principal holds.
+    pub async fn principal_role_foreign_ids(
+        &self,
+        principal: &str,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let roles = self.client.list_principal_roles(principal).await?;
+        Ok(roles
+            .into_iter()
+            .filter_map(|role| role.foreign_id)
+            .collect())
+    }
 }
 
 fn is_status(err: &IronControlError, code: u16) -> bool {
