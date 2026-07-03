@@ -18,6 +18,17 @@ app = typer.Typer(
 )
 
 
+def _teardown():
+    """Stop vncdotool's non-daemon reactor thread so the CLI process exits.
+
+    Safe no-op when no VNC connection was made; must only run in this one-shot
+    CLI process (a stopped reactor cannot be restarted).
+    """
+    from .client import _shutdown_vnc
+
+    _shutdown_vnc()
+
+
 @app.command("health")
 def health():
     """Assert computeruse readiness with a safe read-only check."""
@@ -247,5 +258,14 @@ def wait(
     _emit(client.wait(seconds))
 
 
+def main():
+    """Console-script entrypoint: run the app, then stop the VNC reactor even on
+    errors so this one-shot process always exits."""
+    try:
+        app()
+    finally:
+        _teardown()
+
+
 if __name__ == "__main__":
-    app()
+    main()

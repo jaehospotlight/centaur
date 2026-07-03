@@ -72,6 +72,14 @@ KEY_ALIASES = {
 }
 # Characters that must be sent as named keys when typing text.
 TYPE_KEYS = {"\n": "enter", "\r": "enter", "\t": "tab"}
+# QEMU's VNC server does not synthesize shift for symbol keysyms (uppercase
+# letters work, but '&' arrives as '7'), so shifted US-layout punctuation must
+# be sent as an explicit shift + base-key chord. Verified against QEMU 8.2.
+SHIFTED_KEYS = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7",
+    "*": "8", "(": "9", ")": "0", "_": "-", "+": "=", "{": "[", "}": "]",
+    "|": "\\", ":": ";", '"': "'", "<": ",", ">": ".", "?": "/", "~": "`",
+}
 
 
 def _build_qemu_cmd(
@@ -403,9 +411,12 @@ class ComputerUseClient:
     def _launch_qemu(self, cmd: list[str], state_dir: Path) -> int:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(
-                f"QEMU failed to start: {result.stderr.strip() or result.stdout.strip()}"
-            )
+            # Fatal errors often land in the -D log rather than stderr.
+            detail = result.stderr.strip() or result.stdout.strip()
+            if not detail:
+                with contextlib.suppress(OSError):
+                    detail = (state_dir / "qemu.log").read_text().strip()[-2000:]
+            raise RuntimeError(f"QEMU failed to start: {detail or '(no output)'}")
         pidfile = state_dir / "qemu.pid"
         for _ in range(50):
             pid = self._pid_from_file(pidfile)
@@ -864,7 +875,15 @@ class ComputerUseClient:
         client = self._vnc_connect(name)
         try:
             for char in text:
-                client.keyPress(TYPE_KEYS.get(char, char))
+                base = SHIFTED_KEYS.get(char)
+                if base is not None:
+                    client.keyDown("shift")
+                    client.pause(0.01)
+                    client.keyPress(base)
+                    client.pause(0.01)
+                    client.keyUp("shift")
+                else:
+                    client.keyPress(TYPE_KEYS.get(char, char))
                 if interval > 0:
                     client.pause(interval)
         finally:
@@ -913,6 +932,15 @@ class ComputerUseClient:
         capped = max(0.0, min(float(seconds), 60.0))
         time.sleep(capped)
         return {"action": "wait", "seconds": capped}
+
+
+def _shutdown_vnc() -> None:
+    """Stop vncdotool's twisted reactor thread (it is non-daemon, so a one-shot
+    process that ran a VNC action would otherwise never exit). Only for
+    short-lived CLI processes — a reactor cannot be restarted, so the
+    long-lived tool-manager process must never call this."""
+    with contextlib.suppress(Exception):
+        vnc_api.shutdown()
 
 
 def _client() -> ComputerUseClient:

@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
-computeruse = "centaur_tool_computeruse.cli:app"
+computeruse = "centaur_tool_computeruse.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
