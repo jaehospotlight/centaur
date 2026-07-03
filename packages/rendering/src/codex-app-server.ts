@@ -168,6 +168,9 @@ export class CodexAppServerRendererEventMapper
     const title = threadTitleUpdate(event)
     if (title) out.push({ type: 'renderer.title.update', title })
 
+    const blocks = rendererBlocks(event)
+    if (blocks) out.push(blocks)
+
     trackAgentMessageLifecycle(event, this.state)
     ensureCommentarySegmentBreak(event, this.state)
 
@@ -888,6 +891,19 @@ function terminalResultText(event: any): string {
     if (resultText) return resultText
   }
   return ''
+}
+
+function rendererBlocks(event: Record<string, unknown>): RendererEvent | null {
+  if (event.type !== 'renderer.blocks') return null
+  const blocks = Array.isArray(event.blocks)
+    ? event.blocks.filter((block): block is Record<string, unknown> & { type: string } => {
+        return Boolean(block) && typeof block === 'object' && !Array.isArray(block)
+          && typeof (block as Record<string, unknown>).type === 'string'
+      })
+    : []
+  if (blocks.length === 0) return null
+  const fallbackText = typeof event.fallbackText === 'string' ? event.fallbackText : undefined
+  return { type: 'renderer.blocks', blocks, fallbackText }
 }
 
 function toolUses(event: any): any[] {

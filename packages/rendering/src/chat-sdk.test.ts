@@ -40,9 +40,35 @@ describe('ChatSDKRenderer', () => {
     expect(rendererEventTypes).toContain('renderer.status')
     expect(rendererEventTypes).toContain('renderer.message.delta')
     expect(rendererEventTypes).toContain('renderer.message.snapshot')
+    expect(rendererEventTypes).toContain('renderer.blocks')
     expect(rendererEventTypes).toContain('renderer.task.update')
     expect(rendererEventTypes).toContain('renderer.plan.update')
     expect(rendererEventTypes).toContain('renderer.done')
+  })
+
+  it('maps generic Slack Block Kit blocks to Chat SDK block chunks', () => {
+    const renderer = new ChatSDKRenderer()
+    const block = {
+      type: 'data_table',
+      caption: 'Weekly active users',
+      rows: [
+        [{ type: 'raw_text', text: 'Day' }, { type: 'raw_text', text: 'Users' }],
+        [{ type: 'raw_text', text: 'Mon' }, { type: 'raw_number', value: 1200, text: '1,200' }]
+      ]
+    }
+
+    expect(
+      renderer.render('session-1', {
+        type: 'renderer.blocks',
+        blocks: [block],
+        fallbackText: 'Weekly active users table'
+      })
+    ).toEqual([
+      {
+        type: 'chat.stream.append',
+        chunks: [{ type: 'block_kit', blocks: [block], fallbackText: 'Weekly active users table' }]
+      }
+    ])
   })
 
   it('maps generic plan updates to Chat SDK plan chunks', () => {

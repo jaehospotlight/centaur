@@ -2,6 +2,7 @@ import type { ChatSDKStreamChunk } from '@centaur/rendering'
 
 type TaskChunk = Extract<ChatSDKStreamChunk, { type: 'task_update' }>
 type PlanChunk = Extract<ChatSDKStreamChunk, { type: 'plan_update' }>
+type BlockKitChunk = Extract<ChatSDKStreamChunk, { type: 'block_kit' }>
 
 /**
  * Conflates a Chat SDK chunk stream for a slow consumer.
@@ -34,6 +35,7 @@ export async function* conflateChatSdkStream(
   // in first-seen order even when they update while pending.
   const pendingTasks = new Map<string, TaskChunk>()
   let pendingPlan: PlanChunk | undefined
+  const pendingBlocks: BlockKitChunk[] = []
   let pendingMarkdown = ''
   let sourceDone = false
   let sourceFailed = false
@@ -51,9 +53,11 @@ export async function* conflateChatSdkStream(
           pendingMarkdown += chunk.text
         } else if (chunk.type === 'plan_update') {
           pendingPlan = chunk
-        } else {
+        } else if (chunk.type === 'task_update') {
           const pending = pendingTasks.get(chunk.id)
           pendingTasks.set(chunk.id, pending ? { ...pending, ...chunk } : chunk)
+        } else {
+          pendingBlocks.push(chunk)
         }
         wake?.()
       }
@@ -85,6 +89,11 @@ export async function* conflateChatSdkStream(
         const text = pendingMarkdown
         pendingMarkdown = ''
         yield { type: 'markdown_text', text }
+        continue
+      }
+      const nextBlock = pendingBlocks.shift()
+      if (nextBlock) {
+        yield nextBlock
         continue
       }
       // Run-to-completion guarantees the pump cannot fold between the checks

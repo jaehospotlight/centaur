@@ -6,6 +6,8 @@ export type RendererTaskBlock =
 
 export type RendererTaskBody = RendererTaskBlock[]
 
+export type RendererSlackBlock = Record<string, unknown> & { type: string }
+
 export type RendererTask = {
   id: string
   title: string
@@ -40,6 +42,11 @@ export type RendererEvent =
   | {
       type: 'renderer.message.snapshot'
       markdown: string
+    }
+  | {
+      type: 'renderer.blocks'
+      blocks: RendererSlackBlock[]
+      fallbackText?: string
     }
   | {
       type: 'renderer.task.update'

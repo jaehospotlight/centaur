@@ -1882,7 +1882,7 @@ async function renderExecutionStream(
     // this matches thread.post(StreamingPlan): updateIntervalMs is a no-op
     // (Slack streams server-side) and the recipient context is the message
     // author.
-    const sent = await thread.adapter.stream!(thread.id, visibleStream, {
+    const sent = await thread.adapter.stream!(thread.id, slackAdapterStream(visibleStream), {
       recipientTeamId: message.teamId,
       recipientUserId: message.author.userId,
       ...(taskDisplayMode === 'none' ? {} : { taskDisplayMode }),
@@ -1934,7 +1934,7 @@ async function renderRecoveredExecutionStream(
     if (!visibleStream) return { diverged: false }
     const sent = await thread.adapter.stream!(
       thread.id,
-      visibleStream,
+      slackAdapterStream(visibleStream),
       {
         recipientTeamId: message.teamId,
         recipientUserId: message.author.userId,
@@ -1945,6 +1945,10 @@ async function renderRecoveredExecutionStream(
   } finally {
     await setAssistantStatus(thread, '', options, trace)
   }
+}
+
+function slackAdapterStream(stream: AsyncIterable<ChatSDKStreamChunk>): AsyncIterable<any> {
+  return stream
 }
 
 async function renderPlainTextExecutionStream(
@@ -2014,6 +2018,9 @@ class SlackRenderFallback {
   ): AsyncIterable<ChatSDKStreamChunk> {
     for await (const chunk of stream) {
       if (chunk.type === 'markdown_text') this.markdownText += chunk.text
+      if (chunk.type === 'block_kit' && chunk.fallbackText) {
+        this.markdownText += `${this.markdownText ? '\n' : ''}${chunk.fallbackText}`
+      }
       yield chunk
     }
   }

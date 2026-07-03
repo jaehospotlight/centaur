@@ -1,6 +1,7 @@
 export type {
   RendererEvent,
   RendererSessionOpenInput,
+  RendererSlackBlock,
   RendererTask,
   RendererTaskBlock,
   RendererTaskBody,
@@ -13,6 +14,7 @@ export const rendererEventTypes = [
   'renderer.status',
   'renderer.message.delta',
   'renderer.message.snapshot',
+  'renderer.blocks',
   'renderer.task.update',
   'renderer.plan.update',
   'renderer.title.update',

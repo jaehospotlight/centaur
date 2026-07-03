@@ -1,8 +1,15 @@
-import type { RendererEvent, RendererTaskBlock, RendererTaskStatus, RendererTaskUpdate } from './types'
+import type {
+  RendererEvent,
+  RendererSlackBlock,
+  RendererTaskBlock,
+  RendererTaskStatus,
+  RendererTaskUpdate
+} from './types'
 import type { RendererInterface } from './interface'
 
 export type ChatSDKStreamChunk =
   | { type: 'markdown_text'; text: string }
+  | { type: 'block_kit'; blocks: RendererSlackBlock[]; fallbackText?: string }
   | {
       type: 'task_update'
       id: string
@@ -75,6 +82,14 @@ export class ChatSDKRenderer implements RendererInterface<ChatSDKOutput> {
     }
     if (event.type === 'renderer.message.snapshot') {
       return [{ type: 'chat.message.upsert', message: { text: event.markdown } }]
+    }
+    if (event.type === 'renderer.blocks') {
+      return [
+        {
+          type: 'chat.stream.append',
+          chunks: [{ type: 'block_kit', blocks: event.blocks, fallbackText: event.fallbackText }]
+        }
+      ]
     }
     if (event.type === 'renderer.task.update') {
       return [{ type: 'chat.stream.append', chunks: [taskChunk(event.task)] }]

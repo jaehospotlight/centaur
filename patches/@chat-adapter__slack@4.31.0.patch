@@ -244,7 +244,7 @@ index a7048fd884020cfd96a51c48b7071fa7293f3dc4..e5ff9dc2682a754202102f80d3178818
          isMe
        },
        metadata: {
-@@ -3452,26 +3664,251 @@ var SlackAdapter = class _SlackAdapter {
+@@ -3452,26 +3664,252 @@ var SlackAdapter = class _SlackAdapter {
      }
      this.logger.debug("Slack: starting stream", { channel, threadTs });
      const token = await this.getToken();
@@ -282,6 +282,7 @@ index a7048fd884020cfd96a51c48b7071fa7293f3dc4..e5ff9dc2682a754202102f80d3178818
 +    let provisionalResult;
 +    let sourceConsumed = false;
      let lastAppended = "";
++    let finalBlocks = [...(options?.stopBlocks ?? [])];
 +    let plan;
 +    const taskParts = /* @__PURE__ */ new Map();
 +    const taskSegments = /* @__PURE__ */ new Map();
@@ -505,11 +506,17 @@ index a7048fd884020cfd96a51c48b7071fa7293f3dc4..e5ff9dc2682a754202102f80d3178818
      const sendStructuredChunk = async (chunk) => {
        if (!structuredChunksSupported) {
          return;
-@@ -3481,8 +3918,45 @@ var SlackAdapter = class _SlackAdapter {
+@@ -3481,8 +3919,51 @@ var SlackAdapter = class _SlackAdapter {
        await flushMarkdownDelta(delta);
        lastAppended = committable;
        try {
 -        await streamer.append({ chunks: [chunk], token });
++        if (chunk.type === "block_kit") {
++          if (Array.isArray(chunk.blocks)) {
++            finalBlocks.push(...chunk.blocks);
++          }
++          return;
++        }
 +        if (chunk.type === "plan_update") {
 +          plan = {
 +            ...chunk,
@@ -552,7 +559,7 @@ index a7048fd884020cfd96a51c48b7071fa7293f3dc4..e5ff9dc2682a754202102f80d3178818
          structuredChunksSupported = false;
          this.logger.warn(
            "Structured streaming chunk failed, falling back to text-only streaming. Ensure your Slack app manifest includes assistant_view, assistant:write scope, and @slack/web-api >= 7.14.0",
-@@ -3497,31 +3971,91 @@ var SlackAdapter = class _SlackAdapter {
+@@ -3497,31 +3978,91 @@ var SlackAdapter = class _SlackAdapter {
        await flushMarkdownDelta(delta);
        lastAppended = committable;
      };
@@ -589,7 +596,7 @@ index a7048fd884020cfd96a51c48b7071fa7293f3dc4..e5ff9dc2682a754202102f80d3178818
 +      }
 +      lastResult = await stopSegment(
 +        current,
-+        options?.stopBlocks,
++        finalBlocks.length > 0 ? finalBlocks : void 0,
 +        !provisionalResult
 +      ) ?? provisionalResult;
 +      for (const segment of Array.from(structured)) {

@@ -75,6 +75,23 @@ function markdown(text: string): ChatSDKStreamChunk {
   return { type: 'markdown_text', text }
 }
 
+function blockKit(caption: string): ChatSDKStreamChunk {
+  return {
+    type: 'block_kit',
+    fallbackText: caption,
+    blocks: [
+      {
+        type: 'data_table',
+        caption,
+        rows: [
+          [{ type: 'raw_text', text: 'Metric' }, { type: 'raw_text', text: 'Value' }],
+          [{ type: 'raw_text', text: 'Users' }, { type: 'raw_number', value: 12, text: '12' }]
+        ]
+      }
+    ]
+  }
+}
+
 describe('conflateChatSdkStream', () => {
   it('collapses task updates and concatenates markdown while the consumer is busy', async () => {
     const source = manualSource()
@@ -135,6 +152,26 @@ describe('conflateChatSdkStream', () => {
       source.push(chunk)
       expect((await stream.next()).value).toEqual(chunk)
     }
+    source.end()
+    expect((await stream.next()).done).toBe(true)
+  })
+
+  it('preserves Block Kit chunks while conflating task and markdown updates', async () => {
+    const source = manualSource()
+    const stream = conflateChatSdkStream(source.iterable)[Symbol.asyncIterator]()
+    const table = blockKit('Active users')
+
+    source.push(markdown('start'))
+    expect((await stream.next()).value).toEqual(markdown('start'))
+
+    source.push(task('a', 'in_progress'))
+    source.push(table)
+    source.push(markdown('done'))
+    await settle()
+
+    expect((await stream.next()).value).toEqual(task('a', 'in_progress'))
+    expect((await stream.next()).value).toEqual(markdown('done'))
+    expect((await stream.next()).value).toEqual(table)
     source.end()
     expect((await stream.next()).done).toBe(true)
   })

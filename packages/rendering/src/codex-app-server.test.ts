@@ -267,6 +267,45 @@ describe('CodexAppServerRendererEventMapper', () => {
     ])
   })
 
+  it('passes renderer Block Kit events through to Chat SDK block chunks', async () => {
+    async function* source() {
+      yield {
+        type: 'renderer.blocks',
+        fallbackText: 'Weekly active users by platform',
+        blocks: [
+          {
+            type: 'data_visualization',
+            title: 'Weekly active users',
+            chart: {
+              type: 'line',
+              axis_config: {
+                x_axis: { title: 'Day' },
+                y_axis: { title: 'Users' },
+                categories: ['Mon', 'Tue']
+              },
+              series: [{ name: 'Desktop', data: [{ value: 800 }, { value: 920 }] }]
+            }
+          }
+        ]
+      }
+      yield { type: 'turn.completed', result: '' }
+    }
+
+    const chunks = []
+    for await (const chunk of codexAppServerToChatSdkStream(source())) chunks.push(chunk)
+
+    expect(chunks[0]).toMatchObject({
+      type: 'block_kit',
+      fallbackText: 'Weekly active users by platform',
+      blocks: [
+        {
+          type: 'data_visualization',
+          title: 'Weekly active users'
+        }
+      ]
+    })
+  })
+
   it('maps app-server agent message deltas keyed by turnId', () => {
     const mapper = new CodexAppServerRendererEventMapper()
     const events = mapper.process({
