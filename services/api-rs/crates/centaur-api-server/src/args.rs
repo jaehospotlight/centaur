@@ -626,6 +626,15 @@ struct SandboxArgs {
         value_delimiter = ','
     )]
     passthrough_env: Vec<String>,
+    /// Extended-resource name (canonically `devices.kubevirt.io/kvm`)
+    /// requested with quantity "1" in both limits and requests of every
+    /// sandbox agent container, so the node's KVM device plugin has kubelet
+    /// inject /dev/kvm without privileged mode. Empty/unset disables.
+    #[arg(
+        long = "sandbox-kvm-device-resource",
+        env = "SANDBOX_KVM_DEVICE_RESOURCE"
+    )]
+    sandbox_kvm_device: Option<String>,
     /// Operator-supplied sandbox env as a JSON list of `{"name","value"}`
     /// objects — the chart renders `sandbox.extraEnv` into this (the same
     /// contract as the Python control plane's `KUBERNETES_SANDBOX_EXTRA_ENV`).
@@ -1345,6 +1354,7 @@ impl TryFrom<&SandboxArgs> for AgentSandboxConfig {
         }
         config.iron_control = args.iron_control.settings();
         config.tools = args.tools_source.to_config();
+        config.sandbox_kvm_device = clean_optional_value(args.sandbox_kvm_device.as_deref());
         // The chart label policy handles sandbox OTLP egress; keep the
         // per-sandbox proxy's own in-cluster OTLP egress explicit.
         config.otlp_egress = args.sandbox_otlp_egress_target()?;

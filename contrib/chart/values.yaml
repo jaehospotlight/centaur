@@ -302,6 +302,27 @@ agentSandbox:
   controller:
     extensions: false
 
+# KVM device plugin (generic-device-plugin DaemonSet) advertising each node's
+# /dev/kvm as the devices.kubevirt.io/kvm extended resource. When enabled,
+# api-rs requests that resource on every sandbox agent container (see
+# apiRs.sandboxKvmDeviceResource) and kubelet injects /dev/kvm, so sandboxes
+# can run hardware-accelerated QEMU VMs while staying unprivileged with all
+# capabilities dropped — only this DaemonSet is privileged.
+kvmDevicePlugin:
+  enabled: false
+  image:
+    repository: ghcr.io/squat/generic-device-plugin
+    tag: latest
+    pullPolicy: IfNotPresent
+  # How many pods may share a node's /dev/kvm concurrently (the advertised
+  # extended-resource capacity; /dev/kvm is safely shareable).
+  deviceCount: 16
+  # Node selector for nodes that actually expose KVM, e.g.
+  # {"feature.node.kubernetes.io/kvm": "true"} with node-feature-discovery.
+  nodeSelector: {}
+  tolerations: []
+  resources: {}
+
 # Rust session control plane (services/api-rs). Owns sessions, agent-k8s
 # sandboxes (via the agents.x-k8s.io Sandbox CRD), and the per-sandbox
 # iron-proxy/firewall.
@@ -319,6 +340,10 @@ apiRs:
   runMigrations: true
   sandboxBackend: agent-k8s
   sandboxWorkload: codex-app-server
+  # Extended-resource name requested (quantity "1", limits and requests) on
+  # every sandbox agent container so kubelet injects /dev/kvm. Empty defaults
+  # to devices.kubevirt.io/kvm when kvmDevicePlugin.enabled, otherwise off.
+  sandboxKvmDeviceResource: ""
   sandboxReadyTimeoutSecs: 90
   sandboxWarmPoolSize: 3
   sandboxWarmPoolReplenishIntervalSecs: 5

@@ -1,0 +1,66 @@
+{{- if .Values.kvmDevicePlugin.enabled }}
+# generic-device-plugin advertising /dev/kvm as the devices.kubevirt.io/kvm
+# extended resource. Sandbox pods request the resource (never privilege) and
+# kubelet injects the device; the privileged/hostPath bits below are confined
+# to this DaemonSet, per the upstream manifest
+# (https://github.com/squat/generic-device-plugin).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "centaur.componentName" (dict "root" . "component" "kvm-device-plugin") }}
+  labels:
+{{ include "centaur.componentLabels" (dict "root" . "component" "kvm-device-plugin") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "kvm-device-plugin") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+{{ include "centaur.componentSelectorLabels" (dict "root" . "component" "kvm-device-plugin") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: system-node-critical
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | nindent 8 }}
+      {{- end }}
+{{- with .Values.kvmDevicePlugin.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.kvmDevicePlugin.tolerations }}
+      tolerations:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+      containers:
+        - name: generic-device-plugin
+          image: {{ printf "%s:%s" .Values.kvmDevicePlugin.image.repository .Values.kvmDevicePlugin.image.tag | quote }}
+          imagePullPolicy: {{ .Values.kvmDevicePlugin.image.pullPolicy }}
+          args:
+            - --domain
+            - devices.kubevirt.io
+            - --device
+            - '{"name": "kvm", "groups": [{"paths": [{"path": "/dev/kvm"}], "count": {{ int .Values.kvmDevicePlugin.deviceCount }}}]}'
+          ports:
+            - containerPort: 8080
+              name: http
+          # Device-plugin exception: needs /dev and the kubelet device-plugin
+          # socket dir; sandbox pods themselves stay unprivileged.
+          securityContext:
+            privileged: true
+          resources:
+{{ toYaml .Values.kvmDevicePlugin.resources | nindent 12 }}
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: dev
+              mountPath: /dev
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: dev
+          hostPath:
+            path: /dev
+{{- end }}

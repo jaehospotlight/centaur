@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows 11 unattended answer file for building the computeruse golden image.
+
+  Usage: computeruse install <win11.iso> with the "virtio-iso" option pointed
+  at a virtio-win drivers ISO and the "autounattend" option pointed at this
+  file (it gets wrapped into a small ISO automatically).
+
+  Before use, replace the AUTOUNATTEND_PASSWORD placeholder with the local
+  admin password you want baked into the image (keep it out of git).
+
+  What this file does:
+    - Wipes disk 0 and lays out a standard UEFI/GPT partition scheme.
+    - Installs Windows 11 Pro (image index 1 of install.wim/install.esd)
+      with a generic KMS client key (never activates — replace if needed).
+    - Skips all OOBE screens (EULA, network, privacy, Microsoft account).
+    - Creates local administrator "agent" with the placeholder password and
+      auto-logs it in.
+    - First-logon commands: enable RDP + firewall rule, disable the lock
+      screen, screensaver, and UAC consent prompts, and never sleep — so a
+      VNC-driven agent is never blocked by a credential or consent dialog.
+    - Sets the display to 1280x800 to match the computeruse default
+      display_size.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+  <!-- ============================== windowsPE ============================== -->
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-International-Core-WinPE"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS">
+      <SetupUILanguage>
+        <UILanguage>en-US</UILanguage>
+      </SetupUILanguage>
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS">
+      <!-- Wipe disk 0 and create a standard UEFI layout: ESP / MSR / OS. -->
+      <DiskConfiguration>
+        <Disk wcm:action="add"
+              xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <DiskID>0</DiskID>
+          <WillWipeDisk>true</WillWipeDisk>
+          <CreatePartitions>
+            <CreatePartition wcm:action="add">
+              <Order>1</Order>
+              <Type>EFI</Type>
+              <Size>300</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>2</Order>
+              <Type>MSR</Type>
+              <Size>16</Size>
+            </CreatePartition>
+            <CreatePartition wcm:action="add">
+              <Order>3</Order>
+              <Type>Primary</Type>
+              <Extend>true</Extend>
+            </CreatePartition>
+          </CreatePartitions>
+          <ModifyPartitions>
+            <ModifyPartition wcm:action="add">
+              <Order>1</Order>
+              <PartitionID>1</PartitionID>
+              <Format>FAT32</Format>
+              <Label>System</Label>
+            </ModifyPartition>
+            <ModifyPartition wcm:action="add">
+              <Order>2</Order>
+              <PartitionID>3</PartitionID>
+              <Format>NTFS</Format>
+              <Label>Windows</Label>
+              <Letter>C</Letter>
+            </ModifyPartition>
+          </ModifyPartitions>
+        </Disk>
+      </DiskConfiguration>
+
+      <ImageInstall>
+        <OSImage>
+          <InstallTo>
+            <DiskID>0</DiskID>
+            <PartitionID>3</PartitionID>
+          </InstallTo>
+        </OSImage>
+      </ImageInstall>
+
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>agent</FullName>
+        <Organization>computeruse</Organization>
+        <ProductKey>
+          <!-- Generic Windows 11 Pro KMS client key; installs but does not activate. -->
+          <Key>W269N-WFGWX-YVC9B-4J6C9-T83GX</Key>
+          <WillShowUI>OnError</WillShowUI>
+        </ProductKey>
+      </UserData>
+    </component>
+  </settings>
+
+  <!-- ============================== specialize ============================= -->
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS">
+      <ComputerName>computeruse</ComputerName>
+      <TimeZone>UTC</TimeZone>
+    </component>
+
+    <!-- Enable RDP at the service level (firewall opened at first logon). -->
+    <component name="Microsoft-Windows-TerminalServices-LocalSessionManager"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS">
+      <fDenyTSConnections>false</fDenyTSConnections>
+    </component>
+    <component name="Microsoft-Windows-TerminalServices-RDP-WinStationExtensions"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS">
+      <UserAuthentication>0</UserAuthentication>
+    </component>
+  </settings>
+
+  <!-- ============================== oobeSystem ============================= -->
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS">
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral"
+               versionScope="nonSxS">
+      <!-- Skip every OOBE screen so the install is fully hands-off. -->
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+        <SkipMachineOOBE>true</SkipMachineOOBE>
+        <SkipUserOOBE>true</SkipUserOOBE>
+      </OOBE>
+
+      <!-- Match computeruse's default display_size of 1280x800. -->
+      <Display>
+        <ColorDepth>32</ColorDepth>
+        <HorizontalResolution>1280</HorizontalResolution>
+        <VerticalResolution>800</VerticalResolution>
+      </Display>
+
+      <!-- Local admin "agent". Replace AUTOUNATTEND_PASSWORD before building. -->
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add"
+                        xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+            <Name>agent</Name>
+            <DisplayName>agent</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>AUTOUNATTEND_PASSWORD</Value>
+              <PlainText>true</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <Username>agent</Username>
+        <Password>
+          <Value>AUTOUNATTEND_PASSWORD</Value>
+          <PlainText>true</PlainText>
+        </Password>
+        <LogonCount>999999</LogonCount>
+      </AutoLogon>
+
+      <!-- Make the desktop automation-friendly on first logon. -->
+      <FirstLogonCommands>
+        <SynchronousCommand wcm:action="add"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>1</Order>
+          <Description>Enable RDP</Description>
+          <CommandLine>reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>2</Order>
+          <Description>Open RDP firewall rule</Description>
+          <CommandLine>netsh advfirewall firewall set rule group="remote desktop" new enable=Yes</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>3</Order>
+          <Description>Disable lock screen</Description>
+          <CommandLine>reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization" /v NoLockScreen /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>4</Order>
+          <Description>Disable screensaver</Description>
+          <CommandLine>reg add "HKCU\Control Panel\Desktop" /v ScreenSaveActive /t REG_SZ /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>5</Order>
+          <Description>Disable UAC consent prompts for administrators</Description>
+          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>6</Order>
+          <Description>Disable UAC secure desktop prompt</Description>
+          <CommandLine>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v PromptOnSecureDesktop /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add"
+                            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+          <Order>7</Order>
+          <Description>Never sleep or turn off the display</Description>
+          <CommandLine>powercfg /change standby-timeout-ac 0 &amp;&amp; powercfg /change monitor-timeout-ac 0</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>

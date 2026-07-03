@@ -137,6 +137,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       echo "Skipping browser install: Chrome for Testing does not publish Linux ARM64 builds"; \
     fi
 
+# ── computeruse Windows VM deps (QEMU + TPM emulator; x86 guests only) ──────
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        qemu-system-x86 qemu-utils ovmf swtpm; \
+    else \
+      echo "Skipping QEMU install: Windows x86 guests are not supported on ARM64 nodes"; \
+    fi
+
 USER agent
 WORKDIR /home/agent
 

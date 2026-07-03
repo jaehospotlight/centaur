@@ -64,6 +64,8 @@ The open-source tool inventory lives in this `tools/` tree and changes over time
 
 - `centaur_investigator`: parse Centaur Slack thread references and enrich them
   with best-effort vlogs/vmetrics context without exposing message context.
+- `computeruse`: spawn and drive Windows VMs (QEMU) with computer-use actions
+  over VNC; requires `COMPUTERUSE_WINDOWS_IMAGE_URL`.
 - `preqin`: query Preqin Operational API fund and fund-manager data, with
   redacted auth diagnostics for `PREQIN_*` credentials.
 

@@ -48,6 +48,13 @@
 {{- if and .Values.repoCache.enabled (gt (len $sandboxWorkflowDirList) 0) -}}
 {{- $sandboxWorkflowDirs = join ":" $sandboxWorkflowDirList -}}
 {{- end -}}
+{{- /* Empty apiRs.sandboxKvmDeviceResource auto-follows the KVM device
+plugin: when the DaemonSet is enabled, sandboxes request its canonical
+devices.kubevirt.io/kvm extended resource. */ -}}
+{{- $sandboxKvmDeviceResource := .Values.apiRs.sandboxKvmDeviceResource | default "" -}}
+{{- if and (not $sandboxKvmDeviceResource) .Values.kvmDevicePlugin.enabled -}}
+{{- $sandboxKvmDeviceResource = "devices.kubevirt.io/kvm" -}}
+{{- end -}}
 {{- $apiRsMetricsAnnotations := dict -}}
 {{- if .Values.apiRs.metrics.scrapeAnnotations -}}
 {{- $apiRsMetricsAnnotations = dict "prometheus.io/scrape" "true" "prometheus.io/path" .Values.apiRs.metrics.path "prometheus.io/port" (printf "%v" .Values.apiRs.port) -}}
@@ -293,6 +300,13 @@ spec:
 {{- if .Values.global.imagePullSecrets }}
             - name: SESSION_SANDBOX_IMAGE_PULL_SECRETS
               value: "{{- range $index, $secret := .Values.global.imagePullSecrets }}{{- if $index }},{{ end -}}{{ $secret.name }}{{- end }}"
+{{- end }}
+{{- if $sandboxKvmDeviceResource }}
+            # Extended resource requested on every sandbox agent container so
+            # kubelet injects /dev/kvm (advertised by the KVM device plugin
+            # DaemonSet) without privileged mode.
+            - name: SANDBOX_KVM_DEVICE_RESOURCE
+              value: {{ $sandboxKvmDeviceResource | quote }}
 {{- end }}
             # Sandboxes call back into this control plane via the in-cluster Service.
             - name: SESSION_SANDBOX_CENTAUR_API_URL

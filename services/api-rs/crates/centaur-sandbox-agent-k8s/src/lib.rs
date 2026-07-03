@@ -70,6 +70,11 @@ pub struct AgentSandboxConfig {
     /// sandboxes. Sandbox pod egress is granted by chart-level label policy;
     /// the per-sandbox proxy uses this target for its own explicit egress.
     pub otlp_egress: Option<OtlpEgressTarget>,
+    /// Extended-resource name (canonically `devices.kubevirt.io/kvm`) requested
+    /// with quantity "1" in both limits and requests of the agent container, so
+    /// a node-local device plugin has kubelet inject /dev/kvm without the pod
+    /// being privileged. Unset disables KVM device access.
+    pub sandbox_kvm_device: Option<String>,
     pub ready_timeout: Duration,
 }
 
@@ -111,6 +116,7 @@ impl AgentSandboxConfig {
             iron_control: None,
             tools: None,
             otlp_egress: None,
+            sandbox_kvm_device: None,
             ready_timeout: Duration::from_secs(60),
         }
     }
@@ -637,7 +643,7 @@ fn build_agent_sandbox(
         }),
     );
     insert_optional(&mut container, "workingDir", spec.working_dir.clone());
-    insert_optional(&mut container, "resources", resources_json(spec));
+    insert_optional(&mut container, "resources", resources_json(spec, config));
 
     let (mut volumes, mut volume_mounts) = mount_json(spec);
     let mut init_containers = Vec::new();
@@ -784,16 +790,35 @@ fn mount_json(spec: &SandboxSpec) -> (Vec<Value>, Vec<Value>) {
     (volumes, mounts)
 }
 
-fn resources_json(spec: &SandboxSpec) -> Option<Value> {
-    let resources = spec.resources.as_ref()?;
+fn resources_json(spec: &SandboxSpec, config: &AgentSandboxConfig) -> Option<Value> {
     let mut limits = serde_json::Map::new();
-    if let Some(cpu_millis) = resources.cpu_millis {
-        limits.insert("cpu".to_owned(), json!(format!("{cpu_millis}m")));
+    if let Some(resources) = spec.resources.as_ref() {
+        if let Some(cpu_millis) = resources.cpu_millis {
+            limits.insert("cpu".to_owned(), json!(format!("{cpu_millis}m")));
+        }
+        if let Some(memory_bytes) = resources.memory_bytes {
+            limits.insert("memory".to_owned(), json!(format!("{memory_bytes}")));
+        }
     }
-    if let Some(memory_bytes) = resources.memory_bytes {
-        limits.insert("memory".to_owned(), json!(format!("{memory_bytes}")));
+    let mut requests = serde_json::Map::new();
+    // Extended resources must be set with equal quantities in both limits and
+    // requests; kubelet then injects the device (e.g. /dev/kvm) advertised by
+    // the node's device plugin into the otherwise-unprivileged container.
+    if let Some(kvm_device) = &config.sandbox_kvm_device {
+        limits.insert(kvm_device.clone(), json!("1"));
+        requests.insert(kvm_device.clone(), json!("1"));
     }
-    (!limits.is_empty()).then(|| json!({ "limits": limits }))
+    if limits.is_empty() && requests.is_empty() {
+        return None;
+    }
+    let mut resources = serde_json::Map::new();
+    if !limits.is_empty() {
+        resources.insert("limits".to_owned(), Value::Object(limits));
+    }
+    if !requests.is_empty() {
+        resources.insert("requests".to_owned(), Value::Object(requests));
+    }
+    Some(Value::Object(resources))
 }
 
 fn state_volume_claim_json(state_volume: &StateVolumeConfig) -> Vec<Value> {
@@ -866,6 +891,7 @@ fn map_kube_error(operation: &str, err: Error) -> SandboxError {
 mod tests {
     use centaur_sandbox_core::{ResourceLimits, SandboxCapabilities, SandboxSpec};
     use k8s_openapi::api::core::v1::{PodCondition, PodStatus};
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
     use super::*;
 
@@ -908,6 +934,45 @@ mod tests {
         assert_eq!(container.stdin, Some(true));
         assert_eq!(container.volume_mounts.as_ref().unwrap().len(), 2);
         assert!(container.resources.as_ref().unwrap().limits.is_some());
+    }
+
+    #[test]
+    fn requests_kvm_device_in_limits_and_requests_when_configured() {
+        let spec = SandboxSpec::new("centaur-agent:latest")
+            .resources(ResourceLimits::new().cpu_millis(500));
+        let mut config = AgentSandboxConfig::new("centaur");
+        config.sandbox_kvm_device = Some("devices.kubevirt.io/kvm".to_owned());
+
+        let sandbox = build_agent_sandbox(&SandboxId::new("asbx-test"), &spec, &config).unwrap();
+        let resources = sandbox.spec.pod_template.spec.containers[0]
+            .resources
+            .as_ref()
+            .unwrap();
+        let kvm_quantity = IntOrString::String("1".to_owned());
+        let limits = resources.limits.as_ref().unwrap();
+        assert_eq!(limits.get("devices.kubevirt.io/kvm"), Some(&kvm_quantity));
+        assert_eq!(
+            limits.get("cpu"),
+            Some(&IntOrString::String("500m".to_owned()))
+        );
+        let requests = resources.requests.as_ref().unwrap();
+        assert_eq!(requests.get("devices.kubevirt.io/kvm"), Some(&kvm_quantity));
+
+        // Disabled (unset) keeps the previous shape: limits only.
+        let config = AgentSandboxConfig::new("centaur");
+        let sandbox = build_agent_sandbox(&SandboxId::new("asbx-test"), &spec, &config).unwrap();
+        let resources = sandbox.spec.pod_template.spec.containers[0]
+            .resources
+            .as_ref()
+            .unwrap();
+        assert!(resources.requests.is_none());
+        assert!(
+            !resources
+                .limits
+                .as_ref()
+                .unwrap()
+                .contains_key("devices.kubevirt.io/kvm")
+        );
     }
 
     #[test]
