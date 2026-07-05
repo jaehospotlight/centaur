@@ -1231,7 +1231,9 @@ describe('slackbotv2', () => {
     expect(steeredText).toContain('Prompted by: @bob-gh')
     expect(steeredText).not.toContain('@alice-gh')
 
-    codexApi.closeStreams()
+    // An empty-closed stream now defers instead of completing the render, so
+    // finish the run with a real answer before draining the background waits.
+    codexApi.emitOutputLines(threadKey(rootMention.ts), sampleCodexOutputLines('Long PR run done.'))
     await Promise.all(rootWaits)
   })
 
@@ -1501,7 +1503,9 @@ describe('slackbotv2', () => {
       'Actually queue this extra constraint.'
     ])
 
-    codexApi.closeStreams()
+    // An empty-closed stream now defers instead of completing the render, so
+    // finish the run with a real answer before draining the background waits.
+    codexApi.emitOutputLines(threadKey(parent.ts), sampleCodexOutputLines('Long run done.'))
     await Promise.all(firstWaits)
   })
 
@@ -1563,7 +1567,9 @@ describe('slackbotv2', () => {
     expect(secondAppendTexts[0]).toContain('# Requester Context')
     expect(secondAppendTexts.at(-1)).toBe(`@${BOT_USER_ID} add this while still running`)
 
-    codexApi.closeStreams()
+    // An empty-closed stream now defers instead of completing the render, so
+    // finish the run with a real answer before draining the background waits.
+    codexApi.emitOutputLines(threadKey(parent.ts), sampleCodexOutputLines('Long mention run done.'))
     await Promise.all(firstWaits)
   })
 
@@ -3211,7 +3217,9 @@ describe('slackbotv2', () => {
     )
     await waitFor(() => codexApi.eventRequests.length === 1)
     await waitFor(() => codexApi.streamCount === 1)
-    codexApi.closeStreams()
+    // An empty-closed stream now defers instead of completing the render, so
+    // finish the run with a real answer before draining the background waits.
+    codexApi.emitOutputLines(threadKey(parent.ts), sampleCodexOutputLines('Slow run done.'))
     await Promise.all(waits)
     expect(
       slackApi.calls
@@ -3827,7 +3835,7 @@ describe('slackbotv2', () => {
     expect(Number(recoveredThreadState?.lastEventId)).toBeGreaterThan(0)
   })
 
-  it('retries an empty event stream after execute until the first answer event arrives', async () => {
+  it('retries an empty event stream in-process until the first answer event arrives', async () => {
     const sharedState = createMemoryState()
     await sharedState.connect()
     bot = createTestBot({ state: sharedState })
@@ -3871,8 +3879,9 @@ describe('slackbotv2', () => {
     }, 3000)
     expect(slackApi.calls.some(call => call.method === 'chat.stopStream')).toBe(false)
 
+    // No bot restart: the live render loop itself must retry the empty
+    // stream, so the answer renders once the execution emits its events.
     codexApi.emitOutputLines(key, sampleCodexOutputLines('Recovered after empty stream.'))
-    bot = createTestBot({ state: sharedState })
     await waitFor(() => codexApi.eventRequests.length >= 2, 3000)
     await waitFor(() => slackApi.calls.some(call => call.method === 'chat.stopStream'), 3000)
     await Promise.all(waits)

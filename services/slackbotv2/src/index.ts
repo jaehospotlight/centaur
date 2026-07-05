@@ -28,11 +28,12 @@ import { renderSlackDisplayText, slackMessagePromptText } from './slack-display-
 import { slackUserIdForMessage } from './slack-user'
 import {
   collectInitialContext,
+  emptySessionEventStreamError,
   forwardToSessionApi,
   harnessRestartPreamble,
+  isEmptySessionEventStreamError,
   isRetryableSessionApiError,
   openSessionEventStream,
-  SessionApiError,
   serializeAttachment,
   serializeMessageLinks,
   serializeMessage,
@@ -119,7 +120,7 @@ const RENDER_RECOVERY_THREAD_TIMEOUT_MS = 2 * 60 * 1000
 const RENDER_RECOVERY_MAX_THREAD_FAILURES = 5
 const RENDER_RETRY_INITIAL_DELAY_MS = 250
 const RENDER_RETRY_MAX_DELAY_MS = 5_000
-const EMPTY_EVENT_STREAM_RETRY_MAX_AGE_MS = 10
+const EMPTY_EVENT_STREAM_FIRST_EVENT_DEADLINE_MS = 60_000
 const ASSISTANT_STATUS_MAX_CHARS = 50
 const SLACK_TASK_DETAILS_MAX_CHARS = 500
 const SLACK_FALLBACK_TEXT_MAX_CHARS = 35_000
@@ -959,6 +960,7 @@ function scheduleExecutionRender(
     slackbotMetrics.activeLiveRenders.inc()
     try {
       let attempt = 0
+      const firstAttemptStartedAtMs = nowMs()
       while (true) {
         const result = await renderExecutionAttempt(
           thread,
@@ -971,6 +973,26 @@ function scheduleExecutionRender(
           consoleSessionBlock
         )
         if (result === 'complete') return
+        if (
+          result === 'empty_stream'
+          && elapsedMs(firstAttemptStartedAtMs) > EMPTY_EVENT_STREAM_FIRST_EVENT_DEADLINE_MS
+        ) {
+          // The execution produced no events for the entire first-event
+          // window. Stop polling live and leave the preserved obligation to
+          // the recovery sweep instead of spinning on an event stream that
+          // may never fill.
+          traceLog(
+            options,
+            'slackbotv2_render_empty_stream_abandoned',
+            trace,
+            {
+              deadline_ms: EMPTY_EVENT_STREAM_FIRST_EVENT_DEADLINE_MS,
+              last_event_id: getLastEventId()
+            },
+            'error'
+          )
+          return
+        }
         const delayMs = renderRetryDelayMs(attempt)
         attempt += 1
         traceLog(options, 'slackbotv2_render_retry_scheduled', trace, {
@@ -1013,7 +1035,7 @@ async function renderExecutionAttempt(
   assistantStatusVisible: boolean,
   trace?: SlackbotV2Trace,
   consoleSessionBlock?: SlackContextBlock
-): Promise<'complete' | 'retry'> {
+): Promise<'complete' | 'retry' | 'empty_stream'> {
   const renderStartedAtMs = nowMs()
   let outcome = 'failure'
   let rendered = false
@@ -1067,6 +1089,11 @@ async function renderExecutionAttempt(
     // the whole stream instead of posting the durable final answer.
     const answerLost = slackAnswerLost(error)
     if (isEmptySessionEventStreamError(error)) {
+      // The stream closed before the execution's first event existed (for
+      // example a slow-first-token model racing the /events long-poll). Keep
+      // the execution active and let the live loop retry until the
+      // first-event deadline; the render obligation stays preserved for the
+      // recovery sweep as the final backstop.
       retry = true
       outcome = 'empty_stream_deferred'
       traceLog(
@@ -1079,7 +1106,7 @@ async function renderExecutionAttempt(
         },
         'warn'
       )
-      return 'complete'
+      return 'empty_stream'
     }
     if (answerLost === undefined && isRetryableSessionApiError(error)) {
       retry = true
@@ -1618,7 +1645,7 @@ async function recoverRenderObligation(
     })
     const streamResult = await renderRecoveredExecutionStream(
       thread,
-      streamOpenedSession(input, openedStream),
+      throwOnEmptySessionEventStream(input.threadId, openedStream),
       obligation.message,
       options,
       trace
@@ -1652,12 +1679,26 @@ async function recoverRenderObligation(
     })
   } catch (error) {
     if (isEmptySessionEventStreamError(error)) {
+      const obligationAgeMs = renderObligationAgeMs(obligation)
+      if (
+        obligationAgeMs !== undefined
+        && obligationAgeMs > EMPTY_EVENT_STREAM_FIRST_EVENT_DEADLINE_MS
+      ) {
+        // The execution has had the entire first-event window and still has
+        // no events; rethrow so the sweep counts the miss toward the
+        // abandonment budget instead of deferring the obligation forever.
+        renderOutcome = 'empty_stream_stale'
+        throw error
+      }
+      // Too early to give up: the execution may simply not have produced its
+      // first event yet. Defer without burning the failure budget; the finally
+      // below records the attempt and preserves the obligation.
       renderOutcome = 'empty_stream_deferred'
       traceLog(options, 'slackbotv2_render_recovery_empty_stream_deferred', trace, {
         error: errorMessage(error),
-        last_event_id: lastEventId
+        last_event_id: lastEventId,
+        obligation_age_ms: obligationAgeMs
       })
-      recordRenderAttempt('recovery', renderOutcome, renderStartedAtMs)
       return true
     }
     const answerLost = slackAnswerLost(error)
@@ -1749,19 +1790,25 @@ async function indexRenderObligation(
   traceLog(input.options, 'slackbotv2_render_obligation_indexed', input.trace)
 }
 
-async function* streamOpenedSession(
-  input: Pick<ForwardSessionInput, 'threadId' | 'trace'>,
+/**
+ * The /events long-poll is supposed to hold the connection for an active
+ * execution, but the stream can still end before the execution's first event
+ * exists (for example a race between the initial durable read and the notify
+ * subscription, or a proxy that ends idle responses early). Zero events for
+ * an execution this bot accepted means "not ready yet", never a completed
+ * render — regardless of how long the stream took to close — so surface it
+ * as a retryable error instead of a clean end of stream.
+ */
+async function* throwOnEmptySessionEventStream(
+  threadId: string,
   stream: AsyncIterable<SlackbotV2RendererSource>
 ): AsyncIterable<SlackbotV2RendererSource> {
-  const startedAtMs = nowMs()
   let yielded = false
   for await (const event of stream) {
     yielded = true
     yield event
   }
-  if (!yielded && elapsedMs(startedAtMs) <= EMPTY_EVENT_STREAM_RETRY_MAX_AGE_MS) {
-    throw emptySessionEventStreamError(input.threadId)
-  }
+  if (!yielded) throw emptySessionEventStreamError(threadId)
 }
 
 function renderRecoveryLeaseKey(threadId: string): string {
@@ -2187,29 +2234,7 @@ async function* streamSessionAfterHandoff(
     return
   }
 
-  const startedAtMs = nowMs()
-  let yielded = false
-  for await (const event of stream) {
-    yielded = true
-    yield event
-  }
-  if (!yielded && elapsedMs(startedAtMs) <= EMPTY_EVENT_STREAM_RETRY_MAX_AGE_MS) {
-    throw emptySessionEventStreamError(input.threadId)
-  }
-}
-
-function emptySessionEventStreamError(threadId: string): SessionApiError {
-  return new SessionApiError({
-    action: 'stream events',
-    body: `empty event stream for ${threadId}`,
-    retryable: true,
-    status: 503,
-    statusText: 'Empty Event Stream'
-  })
-}
-
-function isEmptySessionEventStreamError(error: unknown): boolean {
-  return error instanceof SessionApiError && error.statusText === 'Empty Event Stream'
+  yield* throwOnEmptySessionEventStream(input.threadId, stream)
 }
 
 async function* streamError(error: unknown): AsyncIterable<SlackbotV2RendererSource> {

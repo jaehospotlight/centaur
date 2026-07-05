@@ -62,6 +62,29 @@ export function isRetryableSessionApiError(error: unknown): boolean {
   return error.name === 'AbortError' || error.name === 'TypeError'
 }
 
+const EMPTY_EVENT_STREAM_STATUS_TEXT = 'Empty Event Stream'
+
+/**
+ * Synthetic retryable error for a session event stream that ended without
+ * producing a single event. An active execution always eventually emits
+ * events, so an empty stream means the /events response ended before the
+ * first event existed and the render must be retried, not treated as
+ * complete.
+ */
+export function emptySessionEventStreamError(threadId: string): SessionApiError {
+  return new SessionApiError({
+    action: 'stream events',
+    body: `empty event stream for ${threadId}`,
+    retryable: true,
+    status: 503,
+    statusText: EMPTY_EVENT_STREAM_STATUS_TEXT
+  })
+}
+
+export function isEmptySessionEventStreamError(error: unknown): boolean {
+  return error instanceof SessionApiError && error.statusText === EMPTY_EVENT_STREAM_STATUS_TEXT
+}
+
 export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 3 * 60 * 60 * 1000
 const DEFAULT_SESSION_API_TIMEOUT_MS = 30_000
 const DEFAULT_SLACK_API_TIMEOUT_MS = 5_000
