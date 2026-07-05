@@ -32,6 +32,7 @@ import {
   harnessRestartPreamble,
   isRetryableSessionApiError,
   openSessionEventStream,
+  SessionApiError,
   serializeAttachment,
   serializeMessageLinks,
   serializeMessage,
@@ -118,6 +119,7 @@ const RENDER_RECOVERY_THREAD_TIMEOUT_MS = 2 * 60 * 1000
 const RENDER_RECOVERY_MAX_THREAD_FAILURES = 5
 const RENDER_RETRY_INITIAL_DELAY_MS = 250
 const RENDER_RETRY_MAX_DELAY_MS = 5_000
+const EMPTY_EVENT_STREAM_RETRY_MAX_AGE_MS = 10
 const ASSISTANT_STATUS_MAX_CHARS = 50
 const SLACK_TASK_DETAILS_MAX_CHARS = 500
 const SLACK_FALLBACK_TEXT_MAX_CHARS = 35_000
@@ -1064,6 +1066,21 @@ async function renderExecutionAttempt(
     // otherwise be misclassified as retryable session API errors and re-render
     // the whole stream instead of posting the durable final answer.
     const answerLost = slackAnswerLost(error)
+    if (isEmptySessionEventStreamError(error)) {
+      retry = true
+      outcome = 'empty_stream_deferred'
+      traceLog(
+        options,
+        'slackbotv2_render_empty_stream_deferred',
+        trace,
+        {
+          error: errorMessage(error),
+          last_event_id: getLastEventId()
+        },
+        'warn'
+      )
+      return 'complete'
+    }
     if (answerLost === undefined && isRetryableSessionApiError(error)) {
       retry = true
       outcome = 'retry'
@@ -1634,6 +1651,15 @@ async function recoverRenderObligation(
       divergence_reconciled: divergenceReconciled
     })
   } catch (error) {
+    if (isEmptySessionEventStreamError(error)) {
+      renderOutcome = 'empty_stream_deferred'
+      traceLog(options, 'slackbotv2_render_recovery_empty_stream_deferred', trace, {
+        error: errorMessage(error),
+        last_event_id: lastEventId
+      })
+      recordRenderAttempt('recovery', renderOutcome, renderStartedAtMs)
+      return true
+    }
     const answerLost = slackAnswerLost(error)
     if (answerLost === false) {
       // The recovered stream broke only after the final answer became
@@ -1724,10 +1750,18 @@ async function indexRenderObligation(
 }
 
 async function* streamOpenedSession(
-  _input: Pick<ForwardSessionInput, 'threadId' | 'trace'>,
+  input: Pick<ForwardSessionInput, 'threadId' | 'trace'>,
   stream: AsyncIterable<SlackbotV2RendererSource>
 ): AsyncIterable<SlackbotV2RendererSource> {
-  for await (const event of stream) yield event
+  const startedAtMs = nowMs()
+  let yielded = false
+  for await (const event of stream) {
+    yielded = true
+    yield event
+  }
+  if (!yielded && elapsedMs(startedAtMs) <= EMPTY_EVENT_STREAM_RETRY_MAX_AGE_MS) {
+    throw emptySessionEventStreamError(input.threadId)
+  }
 }
 
 function renderRecoveryLeaseKey(threadId: string): string {
@@ -2153,7 +2187,29 @@ async function* streamSessionAfterHandoff(
     return
   }
 
-  for await (const event of stream) yield event
+  const startedAtMs = nowMs()
+  let yielded = false
+  for await (const event of stream) {
+    yielded = true
+    yield event
+  }
+  if (!yielded && elapsedMs(startedAtMs) <= EMPTY_EVENT_STREAM_RETRY_MAX_AGE_MS) {
+    throw emptySessionEventStreamError(input.threadId)
+  }
+}
+
+function emptySessionEventStreamError(threadId: string): SessionApiError {
+  return new SessionApiError({
+    action: 'stream events',
+    body: `empty event stream for ${threadId}`,
+    retryable: true,
+    status: 503,
+    statusText: 'Empty Event Stream'
+  })
+}
+
+function isEmptySessionEventStreamError(error: unknown): boolean {
+  return error instanceof SessionApiError && error.statusText === 'Empty Event Stream'
 }
 
 async function* streamError(error: unknown): AsyncIterable<SlackbotV2RendererSource> {

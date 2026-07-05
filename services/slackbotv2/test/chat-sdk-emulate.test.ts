@@ -3827,6 +3827,79 @@ describe('slackbotv2', () => {
     expect(Number(recoveredThreadState?.lastEventId)).toBeGreaterThan(0)
   })
 
+  it('retries an empty event stream after execute until the first answer event arrives', async () => {
+    const sharedState = createMemoryState()
+    await sharedState.connect()
+    bot = createTestBot({ state: sharedState })
+    codexApi.autoRespond = false
+    codexApi.endNextEvents = true
+
+    const parent = await postUserMessage('Context before empty stream retry.')
+    const mentionText = `<@${BOT_USER_ID}> wait for a slow first token`
+    const mention = await postUserMessage(mentionText, parent.ts)
+    const key = threadKey(parent.ts)
+    const waits: Promise<unknown>[] = []
+
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-slackbotv2-empty-stream-retry',
+        event: {
+          type: 'app_mention',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: mention.ts,
+          thread_ts: parent.ts,
+          text: mentionText
+        }
+      }),
+      {},
+      waitUntilContext(waits)
+    )
+    expect(response.status).toBe(200)
+
+    await waitFor(() => codexApi.executes.length === 1)
+    await waitFor(() => codexApi.eventRequests.length === 1)
+
+    await waitFor(async () => {
+      const threadState = await sharedState.get<Record<string, unknown>>(`thread-state:${key}`)
+      return (
+        threadState?.activeExecution === true
+        && typeof threadState.renderObligation === 'object'
+      )
+    }, 3000)
+    expect(slackApi.calls.some(call => call.method === 'chat.stopStream')).toBe(false)
+
+    codexApi.emitOutputLines(key, sampleCodexOutputLines('Recovered after empty stream.'))
+    bot = createTestBot({ state: sharedState })
+    await waitFor(() => codexApi.eventRequests.length >= 2, 3000)
+    await waitFor(() => slackApi.calls.some(call => call.method === 'chat.stopStream'), 3000)
+    await Promise.all(waits)
+
+    expect(codexApi.executes).toHaveLength(1)
+    expect(codexApi.eventRequests).toEqual([
+      { afterEventId: 0, executionId: 'exe-1', threadKey: key },
+      { afterEventId: 0, executionId: 'exe-1', threadKey: key }
+    ])
+    expect(await threadText(parent.ts)).toContain('Recovered after empty stream.')
+    await waitFor(async () => {
+      const threadState = await sharedState.get<Record<string, unknown>>(`thread-state:${key}`)
+      return threadState?.renderObligation === null
+    }, 2000)
+    const recoveredThreadState = await sharedState.get<Record<string, unknown>>(
+      `thread-state:${key}`
+    )
+    expect(recoveredThreadState).toEqual(
+      expect.objectContaining({
+        activeExecution: false,
+        lastEventId: expect.any(Number),
+        renderObligation: null
+      })
+    )
+    expect(Number(recoveredThreadState?.lastEventId)).toBeGreaterThan(0)
+  })
+
   it('returns 503 for retryable execute failure and lets Slack retry without duplicate append', async () => {
     codexApi.failNextExecute = true
 
@@ -4471,6 +4544,7 @@ type MockSessionApi = {
   emitOutputLines(threadKey: string, lines: string[], executionId?: string): void
   emitSessionEvent(threadKey: string, event: string, data: unknown, executionId?: string): void
   eventRequests: MockSessionEventRequest[]
+  endNextEvents: boolean
   executes: MockSessionRequest<SlackbotV2ExecuteSessionRequest>[]
   failNextEvents: boolean
   failNextExecute: boolean
@@ -4490,6 +4564,7 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
   const idempotentExecutions = new Map<string, string>()
   const streams = new Set<ServerResponse>()
   let autoRespond = true
+  let endNextEvents = false
   let executeHold: Promise<void> | null = null
   let executeHoldRelease: (() => void) | null = null
   let eventId = 0
@@ -4514,6 +4589,9 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
       get executeHold() {
         return executeHold
       },
+      get endNextEvents() {
+        return endNextEvents
+      },
       get failNextExecute() {
         return failNextExecute
       },
@@ -4531,6 +4609,9 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
       port,
       setFailNextEvents(value) {
         failNextEvents = value
+      },
+      setEndNextEvents(value) {
+        endNextEvents = value
       },
       setFailNextExecute(value) {
         failNextExecute = value
@@ -4563,6 +4644,7 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
       executeHoldRelease = null
       closeStreams()
       autoRespond = true
+      endNextEvents = false
       eventId = 0
       failNextEvents = false
       failNextExecute = false
@@ -4578,6 +4660,12 @@ async function startMockCodexApi(): Promise<MockSessionApi> {
     },
     get failNextExecute() {
       return failNextExecute
+    },
+    get endNextEvents() {
+      return endNextEvents
+    },
+    set endNextEvents(value: boolean) {
+      endNextEvents = value
     },
     set failNextExecute(value: boolean) {
       failNextExecute = value
@@ -4649,6 +4737,7 @@ async function handleMockCodexRequest(
     appends: MockSessionRequest<SlackbotV2AppendMessagesRequest>[]
     autoRespond: boolean
     creates: MockSessionRequest<SlackbotV2CreateSessionRequest>[]
+    endNextEvents: boolean
     events: MockSessionEvent[]
     eventRequests: MockSessionEventRequest[]
     executeHold: Promise<void> | null
@@ -4660,6 +4749,7 @@ async function handleMockCodexRequest(
     nextEventId(): number
     port: number
     setFailNextEvents(value: boolean): void
+    setEndNextEvents(value: boolean): void
     setFailNextExecute(value: boolean): void
     setFailNextExecuteAfterAccept(value: boolean): void
     streams: Set<ServerResponse>
@@ -4701,6 +4791,16 @@ async function handleMockCodexRequest(
         res,
         new Response('unavailable', { status: 503, statusText: 'Service Unavailable' })
       )
+      return
+    }
+    if (input.endNextEvents) {
+      input.setEndNextEvents(false)
+      res.writeHead(200, {
+        'cache-control': 'no-cache',
+        connection: 'close',
+        'content-type': 'text/event-stream'
+      })
+      res.end()
       return
     }
     res.writeHead(200, {
