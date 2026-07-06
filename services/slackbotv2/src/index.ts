@@ -124,6 +124,7 @@ const RENDER_RETRY_MAX_DELAY_MS = 5_000
 const ASSISTANT_STATUS_MAX_CHARS = 50
 const SLACK_TASK_DETAILS_MAX_CHARS = 500
 const SLACK_FALLBACK_TEXT_MAX_CHARS = 35_000
+const STILL_WORKING_TEXT = 'Still working...'
 const POSTGRES_CONNECT_INITIAL_DELAY_MS = 250
 const POSTGRES_CONNECT_MAX_DELAY_MS = 10_000
 const LATE_SLACK_FILE_MATCH_WINDOW_MS = 15_000
@@ -1180,6 +1181,7 @@ async function renderExecutionAttempt(
       )
       return 'complete'
     }
+    await postStillWorkingStatus(thread, options, trace)
     const fallback = await renderFallbackFinalAnswer(
       thread,
       options,
@@ -1733,6 +1735,7 @@ async function recoverRenderObligation(
         )
         return false
       }
+      await postStillWorkingStatus(thread, options, trace)
       const fallback = await renderFallbackFinalAnswer(
         thread,
         options,
@@ -2117,6 +2120,31 @@ class SlackRenderFallback {
       : event
     const text = terminalResultText(data)
     if (text) this.terminalText = text
+  }
+}
+
+async function postStillWorkingStatus(
+  thread: Thread,
+  options: SlackbotV2Options,
+  trace?: SlackbotV2Trace
+): Promise<void> {
+  const startedAtMs = nowMs()
+  try {
+    await thread.post(STILL_WORKING_TEXT)
+    traceLog(options, 'slackbotv2_still_working_status_posted', trace, {
+      phase_ms: elapsedMs(startedAtMs)
+    })
+  } catch (error) {
+    traceLog(
+      options,
+      'slackbotv2_still_working_status_failed',
+      trace,
+      {
+        error: errorMessage(error),
+        phase_ms: elapsedMs(startedAtMs)
+      },
+      'warn'
+    )
   }
 }
 

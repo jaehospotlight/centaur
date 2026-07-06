@@ -2068,6 +2068,24 @@ describe('slackbotv2', () => {
         }
       })
     )
+    codexApi.emitOutputLine(
+      key,
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'cmd-still-running',
+          type: 'commandExecution',
+          command: 'download reports',
+          status: 'completed',
+          aggregatedOutput: 'still going'
+        }
+      })
+    )
+    await waitFor(async () => {
+      const texts = await threadTexts(parent.ts)
+      return texts.some(text => text.includes('Still working...'))
+    }, 2000)
+
     codexApi.emitSessionEvent(key, 'session.execution_completed', {
       execution_id: 'exe-stream-expired',
       status: 'completed',
@@ -2080,6 +2098,7 @@ describe('slackbotv2', () => {
       text.includes('EXPIRED_STREAM_FALLBACK_VISIBLE')
     )
     expect(visibleFinalReplies).toHaveLength(1)
+    expect(texts.some(text => text.includes('Still working...'))).toBe(true)
     const threadState = await sharedState.get<Record<string, unknown>>(`thread-state:${key}`)
     expect(threadState).toEqual(
       expect.objectContaining({
