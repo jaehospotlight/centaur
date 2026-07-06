@@ -46,7 +46,6 @@ impl ClaudeEventNormalizer {
     pub fn normalize(&mut self, event: AnthropicStreamEvent) -> Vec<NormalizedEvent> {
         let token_usage = event.token_usage();
         let message_stop_reason = event.message_stop_reason().map(str::to_string);
-        let is_message_stop = event.is_message_stop();
         let normalized = self.inner.normalize(event);
         let mut out = Vec::new();
         if let Some(usage) = token_usage {
@@ -81,9 +80,6 @@ impl ClaudeEventNormalizer {
             NormalizedEvent::TokenUsage { .. } => {}
             NormalizedEvent::Ignored => {}
             event => out.push(event),
-        }
-        if is_message_stop {
-            self.flush_pending(Some("end_turn".to_string()), &mut out);
         }
         out
     }
