@@ -1945,13 +1945,26 @@ async function renderExecutionStream(
       ),
       liveRenderFirstVisibleChunkTimeoutMs(options)
     )
-    if (!visibleStream) return { diverged: false }
+    if (!visibleStream) {
+      traceLog(options, 'slackbotv2_render_visible_stream_empty', trace)
+      return { diverged: false }
+    }
+    traceLog(options, 'slackbotv2_render_first_visible_chunk_ready', trace)
     // Stream via the adapter (as renderRecoveredExecutionStream does) so the
     // posted message id is available for divergence reconciliation. For Slack
     // this matches thread.post(StreamingPlan): updateIntervalMs is a no-op
     // (Slack streams server-side) and the recipient context is the message
     // author.
-    const sent = await thread.adapter.stream!(thread.id, visibleStream, {
+    const adapterStartedAtMs = nowMs()
+    traceLog(options, 'slackbotv2_render_adapter_stream_started', trace, {
+      task_display_mode: taskDisplayMode
+    })
+    const sent = await thread.adapter.stream!(thread.id, traceChatSdkStream(
+      visibleStream,
+      options,
+      trace,
+      'live'
+    ), {
       recipientTeamId: message.teamId,
       recipientUserId: message.author.userId,
       ...(taskDisplayMode === 'none' ? {} : { taskDisplayMode }),
@@ -1959,6 +1972,10 @@ async function renderExecutionStream(
       // chat.stopStream. Present only for the first assistant message so the
       // Console link renders once per thread.
       ...(consoleSessionBlock ? { stopBlocks: [consoleSessionBlock] } : {})
+    })
+    traceLog(options, 'slackbotv2_render_adapter_stream_complete', trace, {
+      message_id: sent?.id ?? '',
+      phase_ms: elapsedMs(adapterStartedAtMs)
     })
     return { diverged: capture.diverged, messageId: sent?.id }
   } finally {
@@ -2000,16 +2017,34 @@ async function renderRecoveredExecutionStream(
         )
       )
     )
-    if (!visibleStream) return { diverged: false }
+    if (!visibleStream) {
+      traceLog(options, 'slackbotv2_render_visible_stream_empty', trace, {
+        recovery: true
+      })
+      return { diverged: false }
+    }
+    traceLog(options, 'slackbotv2_render_first_visible_chunk_ready', trace, {
+      recovery: true
+    })
+    const adapterStartedAtMs = nowMs()
+    traceLog(options, 'slackbotv2_render_adapter_stream_started', trace, {
+      recovery: true,
+      task_display_mode: taskDisplayMode
+    })
     const sent = await thread.adapter.stream!(
       thread.id,
-      visibleStream,
+      traceChatSdkStream(visibleStream, options, trace, 'recovery'),
       {
         recipientTeamId: message.teamId,
         recipientUserId: message.author.userId,
         ...(taskDisplayMode === 'none' ? {} : { taskDisplayMode })
       }
     )
+    traceLog(options, 'slackbotv2_render_adapter_stream_complete', trace, {
+      message_id: sent?.id ?? '',
+      phase_ms: elapsedMs(adapterStartedAtMs),
+      recovery: true
+    })
     return { diverged: capture.diverged, messageId: sent?.id }
   } finally {
     await setAssistantStatus(thread, '', options, trace)
@@ -2050,10 +2085,15 @@ async function renderPlainTextExecutionStream(
       )
     )
     const visibleStream = await streamAfterFirstChunk(chatStream, firstVisibleChunkTimeoutMs)
-    if (!visibleStream) return
-    for await (const _chunk of visibleStream) {
+    if (!visibleStream) {
+      traceLog(options, 'slackbotv2_render_plain_text_visible_stream_empty', trace)
+      return
+    }
+    traceLog(options, 'slackbotv2_render_plain_text_first_visible_chunk_ready', trace)
+    for await (const _chunk of traceChatSdkStream(visibleStream, options, trace, 'plain_text')) {
       void _chunk
     }
+    traceLog(options, 'slackbotv2_render_plain_text_visible_stream_complete', trace)
     const text = truncateSlackText(
       fallback.textOrDefault(),
       SLACK_FALLBACK_TEXT_MAX_CHARS,
@@ -2155,6 +2195,60 @@ async function* slackVisibleChatSdkStream(
   for await (const chunk of stream) {
     if (taskDisplayMode === 'none' && chunk.type !== 'markdown_text') continue
     yield chunk
+  }
+}
+
+async function* traceChatSdkStream(
+  stream: AsyncIterable<ChatSDKStreamChunk>,
+  options: SlackbotV2Options,
+  trace: SlackbotV2Trace | undefined,
+  path: string
+): AsyncIterable<ChatSDKStreamChunk> {
+  let chunkCount = 0
+  const startedAtMs = nowMs()
+  try {
+    for await (const chunk of stream) {
+      chunkCount += 1
+      traceLog(options, 'slackbotv2_render_visible_chunk', trace, {
+        ...chatSdkChunkLogFields(chunk),
+        chunk_count: chunkCount,
+        path
+      })
+      yield chunk
+    }
+    traceLog(options, 'slackbotv2_render_visible_stream_complete', trace, {
+      chunk_count: chunkCount,
+      path,
+      phase_ms: elapsedMs(startedAtMs)
+    })
+  } finally {
+    traceLog(options, 'slackbotv2_render_visible_stream_closed', trace, {
+      chunk_count: chunkCount,
+      path,
+      phase_ms: elapsedMs(startedAtMs)
+    })
+  }
+}
+
+function chatSdkChunkLogFields(chunk: ChatSDKStreamChunk): JsonObject {
+  if (chunk.type === 'markdown_text') {
+    return {
+      chunk_type: chunk.type,
+      text_chars: chunk.text.length
+    }
+  }
+  if (chunk.type === 'task_update') {
+    return {
+      chunk_type: chunk.type,
+      task_status: chunk.status,
+      task_title_chars: chunk.title.length,
+      has_details: Boolean(chunk.details),
+      has_output: Boolean(chunk.output)
+    }
+  }
+  return {
+    chunk_type: chunk.type,
+    title_chars: chunk.title.length
   }
 }
 
