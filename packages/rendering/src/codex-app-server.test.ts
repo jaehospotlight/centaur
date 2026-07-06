@@ -287,6 +287,25 @@ describe('CodexAppServerRendererEventMapper', () => {
     expect(events).toEqual([])
   })
 
+  it('can stream the first answer delta immediately when pre-stream grace is disabled', () => {
+    const mapper = new CodexAppServerRendererEventMapper({ preStreamGraceMs: 0 })
+    const events = mapper.process({
+      eventKind: 'session.output.line',
+      data: JSON.stringify({
+        type: 'item.agentMessage.delta',
+        turnId: 'turn-1',
+        delta: 'PONG 1'
+      })
+    })
+
+    expect(events).toContainEqual({
+      type: 'renderer.message.delta',
+      delta: 'PONG 1',
+      force: false,
+      planPrefix: false
+    })
+  })
+
   it('accepts already-parsed Rust session output payloads from API clients', () => {
     const mapper = new CodexAppServerRendererEventMapper()
     mapper.process({

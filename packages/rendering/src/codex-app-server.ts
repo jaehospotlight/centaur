@@ -71,6 +71,7 @@ export type CodexAppServerRendererEventMapperOptions = {
   sessionId?: string
   logInfo?: RendererLogInfo
   unknownAgentMessagePhase?: AgentMessagePhase
+  preStreamGraceMs?: number
   taskOutput?: 'full' | 'omit'
 }
 
@@ -86,12 +87,14 @@ export class CodexAppServerRendererEventMapper
   private readonly sessionId: string
   private readonly logInfo?: RendererLogInfo
   private readonly unknownAgentMessagePhase: AgentMessagePhase
+  private readonly preStreamGraceMs: number
   private readonly includeTaskOutput: boolean
 
   constructor(options: CodexAppServerRendererEventMapperOptions = {}) {
     this.sessionId = options.sessionId ?? ''
     this.logInfo = options.logInfo
     this.unknownAgentMessagePhase = options.unknownAgentMessagePhase ?? 'final_answer'
+    this.preStreamGraceMs = options.preStreamGraceMs ?? PRE_STREAM_GRACE_MS
     this.includeTaskOutput = options.taskOutput === 'full'
   }
 
@@ -387,7 +390,7 @@ export class CodexAppServerRendererEventMapper
     const hasPlan = this.state.taskByUseId.size > 0
     const graceExpired =
       this.state.firstBufferedTextAt !== null &&
-      Date.now() - this.state.firstBufferedTextAt >= PRE_STREAM_GRACE_MS
+      Date.now() - this.state.firstBufferedTextAt >= this.preStreamGraceMs
     const canStream = hasPlan || opts.force || graceExpired
     if (!canStream) return
 

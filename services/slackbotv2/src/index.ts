@@ -119,6 +119,7 @@ const RENDER_LEASE_REFRESH_INTERVAL_MS = 60 * 1000
 const RENDER_RECOVERY_MAX_OBLIGATION_AGE_MS = 24 * 60 * 60 * 1000
 const RENDER_RECOVERY_THREAD_TIMEOUT_MS = 2 * 60 * 1000
 const RENDER_RECOVERY_MAX_THREAD_FAILURES = 5
+const RENDER_FIRST_VISIBLE_CHUNK_TIMEOUT_MS = 30_000
 const RENDER_RETRY_INITIAL_DELAY_MS = 250
 const RENDER_RETRY_MAX_DELAY_MS = 5_000
 const ASSISTANT_STATUS_MAX_CHARS = 50
@@ -131,6 +132,13 @@ const LATE_SLACK_FILE_PENDING_TTL_MS = 60_000
 const LATE_SLACK_FILE_CONSUMED_TTL_MS = 5 * 60_000
 const LATE_SLACK_FILE_IDLE_WAIT_MS = 90_000
 const LATE_SLACK_FILE_IDLE_POLL_MS = 500
+
+class FirstVisibleChunkTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`Slack render did not receive a visible assistant chunk within ${timeoutMs}ms`)
+    this.name = 'FirstVisibleChunkTimeoutError'
+  }
+}
 const LATE_SLACK_FILE_MESSAGE_TEXT = 'Late Slack file attachment for the previous message.'
 
 type PendingLateSlackFileMention = {
@@ -1057,6 +1065,7 @@ async function renderExecutionAttempt(
   let rendered = false
   let retry = false
   let fallbackLastEventId = 0
+  let preserveLastEventId = false
   try {
     const streamResult = await renderExecutionStream(
       thread,
@@ -1099,6 +1108,21 @@ async function renderExecutionAttempt(
     })
     return 'complete'
   } catch (error) {
+    if (error instanceof FirstVisibleChunkTimeoutError) {
+      outcome = 'deferred_no_visible_chunk'
+      traceLog(
+        options,
+        'slackbotv2_render_deferred_no_visible_chunk',
+        trace,
+        {
+          last_event_id: getLastEventId(),
+          timeout_ms: error.timeoutMs
+        },
+        'warn'
+      )
+      preserveLastEventId = true
+      return 'complete'
+    }
     // Check the Slack adapter's delivery annotation before retryability:
     // Slack network failures can surface as TypeError/AbortError, which would
     // otherwise be misclassified as retryable session API errors and re-render
@@ -1189,7 +1213,9 @@ async function renderExecutionAttempt(
     const latest = (await thread.state) ?? {}
     await thread.setState({
       activeExecution: retry,
-      lastEventId: Math.max(latest.lastEventId ?? 0, getLastEventId(), fallbackLastEventId),
+      lastEventId: preserveLastEventId
+        ? latest.lastEventId ?? 0
+        : Math.max(latest.lastEventId ?? 0, getLastEventId(), fallbackLastEventId),
       ...(rendered ? { renderObligation: null } : {})
     })
     traceLog(options, 'slackbotv2_render_finalized', trace, {
@@ -1915,7 +1941,8 @@ async function renderExecutionStream(
             taskDisplayMode
           )
         )
-      )
+      ),
+      liveRenderFirstVisibleChunkTimeoutMs(options)
     )
     if (!visibleStream) return { diverged: false }
     // Stream via the adapter (as renderRecoveredExecutionStream does) so the
@@ -2163,22 +2190,53 @@ function truncateSlackText(value: string, maxChars: number, label: string): stri
 }
 
 async function streamAfterFirstChunk(
-  stream: AsyncIterable<ChatSDKStreamChunk>
+  stream: AsyncIterable<ChatSDKStreamChunk>,
+  timeoutMs?: number
 ): Promise<AsyncIterable<ChatSDKStreamChunk> | null> {
   const iterator = stream[Symbol.asyncIterator]()
-  const first = await iterator.next()
-  if (first.done) return null
+  let timedOut = false
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let first: IteratorResult<ChatSDKStreamChunk>
+  try {
+    const firstChunk = iterator.next()
+    first = await Promise.race([
+      firstChunk,
+      new Promise<IteratorResult<ChatSDKStreamChunk>>((_, reject) => {
+        if (timeoutMs === undefined || timeoutMs <= 0) return
+        timeout = setTimeout(() => {
+          timedOut = true
+          void iterator.return?.()
+          reject(new FirstVisibleChunkTimeoutError(timeoutMs))
+        }, timeoutMs)
+      })
+    ])
+    if (first.done) return null
+  } catch (error) {
+    if (!timedOut) await iterator.return?.()
+    throw error
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 
   return {
     async *[Symbol.asyncIterator](): AsyncIterator<ChatSDKStreamChunk> {
-      yield first.value
-      for (;;) {
-        const next = await iterator.next()
-        if (next.done) return
-        yield next.value
+      try {
+        yield first.value
+        for (;;) {
+          const next = await iterator.next()
+          if (next.done) return
+          yield next.value
+        }
+      } finally {
+        await iterator.return?.()
       }
     }
   }
+}
+
+function liveRenderFirstVisibleChunkTimeoutMs(options: SlackbotV2Options): number {
+  const configured = options.renderFirstVisibleChunkTimeoutMs
+  return configured === undefined ? RENDER_FIRST_VISIBLE_CHUNK_TIMEOUT_MS : configured
 }
 
 function isTerminalCodexAppServerEvent(event: unknown): boolean {
@@ -2862,6 +2920,7 @@ function rendererOptions(
   return {
     ...mapper,
     logInfo: rendererLogInfo(options, capture),
+    preStreamGraceMs: 0,
     async onRendererEvent(event: RendererEvent) {
       await mapper?.onRendererEvent?.(event)
       if (event.type === 'renderer.title.update') {
@@ -2884,6 +2943,7 @@ function fallbackRendererOptions(options: SlackbotV2Options): CodexAppServerToCh
   return {
     ...mapper,
     logInfo: rendererLogInfo(options),
+    preStreamGraceMs: 0,
     async onRendererEvent(event: RendererEvent) {
       try {
         await mapper?.onRendererEvent?.(event)
