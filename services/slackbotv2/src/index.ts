@@ -1914,7 +1914,8 @@ async function renderExecutionStream(
       message,
       options,
       trace,
-      assistantStatusVisible
+      assistantStatusVisible,
+      liveRenderFirstVisibleChunkTimeoutMs(options)
     )
     return { diverged: false }
   }
@@ -2021,7 +2022,8 @@ async function renderPlainTextExecutionStream(
   message: SlackbotV2ApiMessage,
   options: SlackbotV2Options,
   trace?: SlackbotV2Trace,
-  assistantStatusVisible = false
+  assistantStatusVisible = false,
+  firstVisibleChunkTimeoutMs?: number
 ): Promise<void> {
   const fallback = new SlackRenderFallback()
   const titleStartedAtMs = nowMs()
@@ -2047,7 +2049,9 @@ async function renderPlainTextExecutionStream(
         )
       )
     )
-    for await (const _chunk of chatStream) {
+    const visibleStream = await streamAfterFirstChunk(chatStream, firstVisibleChunkTimeoutMs)
+    if (!visibleStream) return
+    for await (const _chunk of visibleStream) {
       void _chunk
     }
     const text = truncateSlackText(

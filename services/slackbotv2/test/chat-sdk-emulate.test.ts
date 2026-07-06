@@ -3775,6 +3775,72 @@ describe('slackbotv2', () => {
     expect(await threadText(parent.ts)).not.toContain('Thinking')
   }, 10_000)
 
+  it('defers a plain-text live render with no visible chunks so recovery can post the answer', async () => {
+    const sharedState = createMemoryState()
+    await sharedState.connect()
+    const logs: CapturedLog[] = []
+
+    codexApi.autoRespond = false
+    bot = createTestBot({
+      logger: captureLogger(logs),
+      renderFirstVisibleChunkTimeoutMs: 50,
+      renderRecoveryThreadTimeoutMs: 100,
+      streamTaskDisplayMode: 'none',
+      state: sharedState
+    })
+
+    const parent = await postUserMessage('Context before delayed plain text render.')
+    const mentionText = `<@${BOT_USER_ID}> plain text only`
+    const mention = await postUserMessage(mentionText, parent.ts)
+    const waits: Promise<unknown>[] = []
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-delayed-plain-visible-render',
+        event: {
+          type: 'app_mention',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: mention.ts,
+          thread_ts: parent.ts,
+          text: mentionText
+        }
+      }),
+      {},
+      waitUntilContext(waits)
+    )
+    expect(response.status).toBe(200)
+
+    const key = threadKey(parent.ts)
+    await waitFor(() => codexApi.executes.length === 1, 2000)
+    await waitFor(() => hasLog(logs, 'slackbotv2_render_deferred_no_visible_chunk'), 3000)
+    const deferredState = await sharedState.get<Record<string, unknown>>(`thread-state:${key}`)
+    expect(deferredState).toEqual(
+      expect.objectContaining({
+        activeExecution: false,
+        lastEventId: 0,
+        renderObligation: expect.objectContaining({ afterEventId: 0 })
+      })
+    )
+
+    codexApi.emitOutputLines(key, sampleCodexOutputLines('Recovered delayed plain text answer.'))
+    bot = createTestBot({
+      logger: captureLogger(logs),
+      renderRecoveryThreadTimeoutMs: 100,
+      streamTaskDisplayMode: 'none',
+      state: sharedState
+    })
+    await Promise.all(waits)
+    await waitFor(async () => {
+      const threadState = await sharedState.get<Record<string, unknown>>(`thread-state:${key}`)
+      return threadState?.renderObligation === null
+    }, 5000)
+
+    expect(await threadText(parent.ts)).toContain('Recovered delayed plain text answer.')
+    expect(await threadText(parent.ts)).not.toContain('Thinking')
+  }, 10_000)
+
   it('does not duplicate the live render while the recovery sweep is cycling', async () => {
     const sharedState = createMemoryState()
     await sharedState.connect()
