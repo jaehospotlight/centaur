@@ -676,7 +676,19 @@ async function syncThreadMessageToSession(
     )
   }
   if (!shouldStartExecution && input.initialAssistantStatusVisible) {
-    await setAssistantStatus(thread, '', input.options, trace)
+    if (state.activeExecution === true && input.mode === 'execute') {
+      const visible = await setAssistantStatus(
+        thread,
+        input.options.assistantStatus ?? 'Still working...',
+        input.options,
+        trace
+      )
+      traceLog(input.options, 'slackbotv2_forward_active_execution_status_refreshed', trace, {
+        visible
+      })
+    } else {
+      await setAssistantStatus(thread, '', input.options, trace)
+    }
   }
 
   const serializeStartedAtMs = nowMs()
@@ -1057,6 +1069,7 @@ async function renderExecutionAttempt(
   let rendered = false
   let retry = false
   let fallbackLastEventId = 0
+  let fallbackInterrupted = false
   try {
     const streamResult = await renderExecutionStream(
       thread,
@@ -1182,18 +1195,22 @@ async function renderExecutionAttempt(
       rendered = true
       outcome = 'fallback'
       fallbackLastEventId = fallback.lastEventId
+      fallbackInterrupted = fallback.interrupted
       return 'complete'
     }
     throw error
   } finally {
     const latest = (await thread.state) ?? {}
+    const executionStillActive = retry || (fallbackInterrupted && latest.activeExecution === true)
+    const shouldClearObligation = rendered && !executionStillActive
     await thread.setState({
-      activeExecution: retry,
+      activeExecution: executionStillActive,
       lastEventId: Math.max(latest.lastEventId ?? 0, getLastEventId(), fallbackLastEventId),
-      ...(rendered ? { renderObligation: null } : {})
+      ...(shouldClearObligation ? { renderObligation: null } : {})
     })
     traceLog(options, 'slackbotv2_render_finalized', trace, {
-      obligation_cleared: rendered,
+      active_execution_preserved: executionStillActive,
+      obligation_cleared: shouldClearObligation,
       render_duration_ms: elapsedMs(renderStartedAtMs),
       retry_scheduled: retry,
       last_event_id: getLastEventId()
@@ -1254,7 +1271,7 @@ async function renderFallbackFinalAnswer(
   source: { afterEventId: number; executionId?: string; threadId: string },
   trace?: SlackbotV2Trace,
   replacement?: { replaceMessageId: string }
-): Promise<{ lastEventId: number } | null> {
+): Promise<{ interrupted: boolean; lastEventId: number } | null> {
   const startedAtMs = nowMs()
   let outcome = 'error'
   let lastEventId = source.afterEventId
@@ -1314,7 +1331,7 @@ async function renderFallbackFinalAnswer(
       phase_ms: elapsedMs(startedAtMs)
     })
     outcome = 'complete'
-    return { lastEventId }
+    return { interrupted: fallback.isInterrupted(), lastEventId }
   } catch (error) {
     outcome = 'error'
     traceLog(
