@@ -668,17 +668,10 @@ export function rustSessionEventToServerNotification(source: unknown): RustSessi
     return { kind: 'failed', error: String(data.error ?? 'Execution failed') }
   }
 
-  if (eventKind === 'session.execution_cancelled') {
-    const data = isRecord(source.data) ? source.data : source
-    const resultText =
-      terminalResultText(data).trim() || String(data.error ?? 'Execution interrupted').trim()
-    return {
-      kind: 'completed',
-      ...(resultText ? { resultText } : {})
-    }
-  }
-
-  if (eventKind === 'session.execution_completed') {
+  if (
+    eventKind === 'session.execution_completed' ||
+    eventKind === 'session.execution_cancelled'
+  ) {
     const data = isRecord(source.data) ? source.data : source
     const resultText = terminalResultText(data).trim()
     return {
