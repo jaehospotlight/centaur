@@ -349,14 +349,14 @@ describe('slackbotv2', () => {
   // The paragraph break (`\n\n`) after the model value is deliberate: the
   // unpatched chat SDK dropped it, gluing the value to the next word
   // (`fablefirst`); this exercises the patched extractPlainText end to end.
-  it('keeps harness and model flags sticky within a Slack thread', async () => {
+  it('keeps persona, harness, and model flags sticky within a Slack thread', async () => {
     const sharedState = createMemoryState()
     await sharedState.connect()
     bot = createTestBot({ state: sharedState })
 
     const parent = await postUserMessage('Thread default context.')
     const firstMention = await postUserMessage(
-      `<@${BOT_USER_ID}> --claude --model=fable\n\nfirst pass`,
+      `<@${BOT_USER_ID}> --invest --claude --model=fable\n\nfirst pass`,
       parent.ts
     )
     const firstWaits: Promise<unknown>[] = []
@@ -371,7 +371,7 @@ describe('slackbotv2', () => {
           team: TEAM_ID,
           ts: firstMention.ts,
           thread_ts: parent.ts,
-          text: `<@${BOT_USER_ID}> --claude --model=fable\n\nfirst pass`
+          text: `<@${BOT_USER_ID}> --invest --claude --model=fable\n\nfirst pass`
         }
       }),
       {},
@@ -409,6 +409,10 @@ describe('slackbotv2', () => {
       'claudecode',
       'claudecode'
     ])
+    expect(codexApi.creates.map(create => create.body.persona_id)).toEqual([
+      'invest',
+      'invest'
+    ])
     expect(codexApi.executes).toHaveLength(2)
     const firstInput = JSON.parse(codexApi.executes[0]!.body.input_lines.at(-1)!) as Record<
       string,
@@ -420,6 +424,7 @@ describe('slackbotv2', () => {
     >
     expect(firstInput.model).toBe('claude-fable-5')
     expect(secondInput.model).toBe('claude-fable-5')
+    expect(JSON.stringify(firstInput)).not.toContain('--invest')
     expect(JSON.stringify(firstInput)).not.toContain('--claude')
     expect(JSON.stringify(firstInput)).not.toContain('--model')
     expect(JSON.stringify(firstInput)).toContain('first pass')
@@ -431,7 +436,8 @@ describe('slackbotv2', () => {
     expect(state).toEqual(
       expect.objectContaining({
         harnessType: 'claudecode',
-        model: 'claude-fable-5'
+        model: 'claude-fable-5',
+        personaId: 'invest'
       })
     )
   })

@@ -142,7 +142,10 @@ type PendingLateSlackFileMention = {
   user: string
 }
 
-type StickyThreadOverrides = Pick<SlackbotV2ThreadState, 'harnessType' | 'model' | 'provider'>
+type StickyThreadOverrides = Pick<
+  SlackbotV2ThreadState,
+  'harnessType' | 'model' | 'personaId' | 'provider'
+>
 
 function stickyThreadOverrideUpdate(
   overrides: StickyThreadOverrides
@@ -154,6 +157,7 @@ function stickyThreadOverrideUpdate(
     if (!overrides.provider) update.provider = null
   }
   if (overrides.model) update.model = overrides.model
+  if (overrides.personaId) update.personaId = overrides.personaId
   if (overrides.provider) {
     update.provider = overrides.provider
     if (!overrides.model) update.model = null
@@ -168,10 +172,12 @@ function resolveStickyThreadOverrides(
   harnessType?: string
   model?: string
   provider?: string
+  personaId?: string
 } {
   return {
     harnessType: stickyOverrideValue(state, update, 'harnessType'),
     model: stickyOverrideValue(state, update, 'model'),
+    personaId: stickyOverrideValue(state, update, 'personaId'),
     provider: stickyOverrideValue(state, update, 'provider')
   }
 }
@@ -752,10 +758,17 @@ async function syncThreadMessageToSession(
         model: effectiveModel
       })
     : undefined
-  if (overrides.harnessType || overrides.model || overrides.provider || overrides.reasoning) {
+  if (
+    overrides.harnessType ||
+    overrides.model ||
+    overrides.personaId ||
+    overrides.provider ||
+    overrides.reasoning
+  ) {
     traceLog(input.options, 'slackbotv2_forward_overrides_parsed', trace, {
       harness_type: overrides.harnessType,
       model: overrides.model,
+      persona_id: overrides.personaId,
       provider: overrides.provider,
       reasoning: overrides.reasoning
     })
@@ -821,6 +834,7 @@ async function syncThreadMessageToSession(
     messages: messagesToAppend,
     model: shouldStartExecution ? effectiveOverrides.model : undefined,
     metadataModel: shouldStartExecution ? effectiveModel : undefined,
+    personaId: shouldStartExecution ? effectiveOverrides.personaId : undefined,
     provider: shouldStartExecution ? effectiveOverrides.provider : undefined,
     reasoning: overrides.reasoning,
     onEventId: eventId => {

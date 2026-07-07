@@ -475,6 +475,7 @@ export async function forwardToSessionApi(
       options,
       input.threadId,
       input.harnessType,
+      input.personaId,
       sessionRequesterMessage(input)
     ),
     sessionApiTimeoutMs(options),
@@ -725,6 +726,7 @@ async function createSession(
   options: SlackbotV2Options,
   threadId: string,
   harnessType?: string,
+  personaId?: string,
   message?: SlackbotV2ApiMessage
 ): Promise<CreateSessionOutcome> {
   const requested = harnessType ?? options.defaultHarnessType ?? DEFAULT_HARNESS_TYPE
@@ -734,8 +736,9 @@ async function createSession(
     options,
     threadId,
     requested,
+    personaId,
     message,
-    harnessType ? 'restart' : undefined
+    harnessType || personaId ? 'restart' : undefined
   )
   if (response.ok) {
     return { harnessSwitched: await harnessSwitchedFromResponse(response) }
@@ -753,7 +756,7 @@ async function createSession(
   // harness instead of failing the message.
   const existing = response.status === 409 ? existingHarnessFromConflict(body) : undefined
   if (existing && existing !== requested) {
-    const retry = await postCreateSession(options, threadId, existing, message)
+    const retry = await postCreateSession(options, threadId, existing, personaId, message)
     await ensureApiOk(retry, 'create session')
     return { harnessSwitched: false }
   }
@@ -770,6 +773,7 @@ async function postCreateSession(
   options: SlackbotV2Options,
   threadId: string,
   harnessType: string,
+  personaId?: string,
   message?: SlackbotV2ApiMessage,
   onHarnessConflict?: 'reject' | 'restart'
 ): Promise<Response> {
@@ -787,6 +791,7 @@ async function postCreateSession(
       ...sessionRequesterMetadata(message),
       ...(conversationName ? { slack_conversation_name: conversationName } : {})
     },
+    ...(personaId ? { persona_id: personaId } : {}),
     ...(onHarnessConflict ? { on_harness_conflict: onHarnessConflict } : {})
   }
   return fetchWithTimeout(

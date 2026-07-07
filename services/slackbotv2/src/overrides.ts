@@ -3,6 +3,8 @@
  *   --claude | --claude-code | --amp | --codex   pick the harness for the thread
  *   --bedrock                                    codex via the AWS Bedrock provider
  *   --meta                                       codex via Meta AI direct
+ *   --persona <id> (or --persona=<id>)           pick the persona independently
+ *   --invest                                     shortcut for --persona=invest
  *   --model <name> (or --model=<name>)           pick the model within that harness
  *   -rsn <effort> (or -rsn=<effort>)             per-turn reasoning effort (codex)
  *   --fable | --opus | --sonnet | --haiku        model shortcuts (imply claude-code)
@@ -24,6 +26,7 @@ export type MessageOverrides = {
   cleanedText: string
   harnessType?: string
   model?: string
+  personaId?: string
   provider?: string
   reasoning?: string
 }
@@ -72,6 +75,15 @@ const MODEL_FLAG_PATTERN = new RegExp(
   'i'
 )
 
+const PERSONA_FLAG_PATTERN = new RegExp(
+  String.raw`(?:^|\s)--persona${MODEL_VALUE_SEPARATOR}([A-Za-z0-9._-]+)${FLAG_VALUE_BOUNDARY}`,
+  'i'
+)
+
+const PERSONA_SHORTCUTS: Record<string, string> = {
+  invest: 'invest'
+}
+
 // Single dash by design: a short per-turn knob (`-rsn high`), so it can't reuse
 // the `--`-prefixed flagPattern() helper. Value-capturing like --model.
 const REASONING_FLAG_PATTERN = new RegExp(
@@ -98,8 +110,15 @@ export function extractMessageOverrides(text: string): MessageOverrides {
   let cleaned = text
   let harnessType: string | undefined
   let model: string | undefined
+  let personaId: string | undefined
   let provider: string | undefined
   let reasoning: string | undefined
+
+  const personaMatch = PERSONA_FLAG_PATTERN.exec(cleaned)
+  if (personaMatch) {
+    personaId = personaMatch[1]!
+    cleaned = stripMatch(cleaned, personaMatch)
+  }
 
   const modelMatch = MODEL_FLAG_PATTERN.exec(cleaned)
   if (modelMatch) {
@@ -140,10 +159,18 @@ export function extractMessageOverrides(text: string): MessageOverrides {
     cleaned = stripMatch(cleaned, match)
   }
 
+  for (const [flag, persona] of Object.entries(PERSONA_SHORTCUTS)) {
+    const match = flagPattern(flag).exec(cleaned)
+    if (!match) continue
+    personaId ??= persona
+    cleaned = stripMatch(cleaned, match)
+  }
+
   return {
     cleanedText: cleaned === text ? text : cleaned.trim(),
     harnessType,
     model,
+    personaId,
     provider,
     reasoning
   }

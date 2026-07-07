@@ -53,6 +53,26 @@ describe('extractMessageOverrides', () => {
     })
   })
 
+  test('parses persona independently from harness and model', () => {
+    expect(extractMessageOverrides('--invest --claude --model=fable reason through this')).toEqual({
+      cleanedText: 'reason through this',
+      harnessType: 'claudecode',
+      model: 'claude-fable-5',
+      personaId: 'invest',
+      reasoning: undefined
+    })
+    expect(extractMessageOverrides('--persona eng --codex debug this')).toEqual({
+      cleanedText: 'debug this',
+      harnessType: 'codex',
+      model: undefined,
+      personaId: 'eng',
+      reasoning: undefined
+    })
+    expect(extractMessageOverrides('--persona=legal --sonnet review this').personaId).toBe(
+      'legal'
+    )
+  })
+
   test('model shortcuts set model and imply claude-code', () => {
     expect(extractMessageOverrides('--opus fix it')).toEqual({
       cleanedText: 'fix it',
