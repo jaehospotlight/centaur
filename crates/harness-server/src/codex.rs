@@ -305,51 +305,6 @@ fn run_codex_user_turn<W: Write>(
     traceparent: Option<&str>,
 ) -> Result<()> {
     let (model, model_provider) = model_and_provider;
-    if thread_id.is_none() {
-        *thread_id = Some(start_or_resume_thread(
-            codex,
-            stdout,
-            request_id,
-            &model_provider,
-            traceparent,
-        )?);
-        *thread_provider = Some(model_provider.clone());
-    } else if let (Some(requested), Some(pinned)) =
-        (requested_provider.as_deref(), thread_provider.as_deref())
-        && requested != pinned
-    {
-        // codex pins the provider at thread start, so an explicit mid-thread
-        // override (e.g. a later `--bedrock`) cannot take effect. Surface it
-        // rather than silently staying on the pinned provider; switching
-        // providers requires a new thread (a harness flag like `--bedrock`
-        // already restarts across harnesses, but a codex->codex provider switch
-        // does not).
-        eprintln!(
-            "Codex provider `{requested}` ignored: this thread is pinned to `{pinned}` \
-             (provider is fixed at thread start; start a new thread to switch providers)"
-        );
-    }
-    let current_thread_id = thread_id
-        .as_ref()
-        .expect("thread id was initialized")
-        .clone();
-
-    let mut params = json!({
-        "threadId": current_thread_id,
-        "input": input,
-    });
-    if let Some(client_user_message_id) = client_user_message_id {
-        params["clientUserMessageId"] = Value::String(client_user_message_id);
-    }
-    if let Some(model) = model {
-        params["model"] = Value::String(model);
-    }
-    // Per-turn reasoning effort (codex `turn/start.effort`), parsed from the
-    // `-rsn` message flag. Values match codex's ReasoningEffort enum
-    // (none|minimal|low|medium|high|xhigh); validation happens upstream.
-    if let Some(reasoning) = reasoning {
-        params["effort"] = Value::String(reasoning);
-    }
 
     // codex occasionally fails a turn at job-registration time with a transient
     // "Engine not found" 404 (its backend engine is still warming up), reported
@@ -363,8 +318,53 @@ fn run_codex_user_turn<W: Write>(
     let max_retries = engine_retry_max();
     let mut retries = 0u32;
     loop {
+        if thread_id.is_none() {
+            *thread_id = Some(start_or_resume_thread(
+                codex,
+                stdout,
+                request_id,
+                &model_provider,
+                traceparent,
+            )?);
+            *thread_provider = Some(model_provider.clone());
+        } else if let (Some(requested), Some(pinned)) =
+            (requested_provider.as_deref(), thread_provider.as_deref())
+            && requested != pinned
+        {
+            // codex pins the provider at thread start, so an explicit mid-thread
+            // override (e.g. a later `--bedrock`) cannot take effect. Surface it
+            // rather than silently staying on the pinned provider; switching
+            // providers requires a new thread (a harness flag like `--bedrock`
+            // already restarts across harnesses, but a codex->codex provider switch
+            // does not).
+            eprintln!(
+                "Codex provider `{requested}` ignored: this thread is pinned to `{pinned}` \
+                 (provider is fixed at thread start; start a new thread to switch providers)"
+            );
+        }
+        let current_thread_id = thread_id
+            .as_ref()
+            .expect("thread id was initialized")
+            .clone();
+        let mut params = json!({
+            "threadId": current_thread_id,
+            "input": input,
+        });
+        if let Some(client_user_message_id) = &client_user_message_id {
+            params["clientUserMessageId"] = Value::String(client_user_message_id.clone());
+        }
+        if let Some(model) = &model {
+            params["model"] = Value::String(model.clone());
+        }
+        // Per-turn reasoning effort (codex `turn/start.effort`), parsed from the
+        // `-rsn` message flag. Values match codex's ReasoningEffort enum
+        // (none|minimal|low|medium|high|xhigh); validation happens upstream.
+        if let Some(reasoning) = &reasoning {
+            params["effort"] = Value::String(reasoning.clone());
+        }
+
         let turn_request_id = next_request_id(request_id);
-        codex.send_request(turn_request_id, "turn/start", params.clone(), traceparent)?;
+        codex.send_request(turn_request_id, "turn/start", params, traceparent)?;
         let result = codex.read_response_or_forward(turn_request_id, stdout)?;
         let turn_id = result
             .pointer("/turn/id")
@@ -397,6 +397,22 @@ fn run_codex_user_turn<W: Write>(
                     "codex turn hit a transient engine-registration error; \
                      retrying ({retries}/{max_retries})"
                 );
+                thread::sleep(retry_backoff(retries));
+            }
+            TurnTermination::RetriablePoisonedThread { withheld } => {
+                if retries >= max_retries {
+                    for value in &withheld {
+                        write_value(stdout, value)?;
+                    }
+                    return Ok(());
+                }
+                retries += 1;
+                eprintln!(
+                    "codex turn hit malformed provider history; retrying on a fresh thread \
+                     ({retries}/{max_retries})"
+                );
+                *thread_id = None;
+                *thread_provider = None;
                 thread::sleep(retry_backoff(retries));
             }
         }
@@ -625,6 +641,9 @@ impl CodexJsonRpcChild {
                 GuardStep::Retry(withheld) => {
                     return Ok(TurnTermination::RetriableEngineError { withheld });
                 }
+                GuardStep::RestartThread(withheld) => {
+                    return Ok(TurnTermination::RetriablePoisonedThread { withheld });
+                }
                 GuardStep::Forward(values) => {
                     for value in &values {
                         write_value(stdout, value)?;
@@ -730,6 +749,10 @@ enum TurnTermination {
     /// were withheld so the caller can drop them and re-submit the turn, or
     /// forward them once its retry budget is spent.
     RetriableEngineError { withheld: Vec<Value> },
+    /// The provider rejected codex's serialized conversation history before any
+    /// output streamed. The current codex thread can be poisoned, so the caller
+    /// should start a fresh thread before re-submitting the turn.
+    RetriablePoisonedThread { withheld: Vec<Value> },
 }
 
 /// Per-turn notification filter. Sits between codex's stdout and the client so
@@ -755,6 +778,9 @@ enum GuardStep {
     /// Withhold these (retriable) notifications; the caller drops them and
     /// re-submits the turn, or forwards them if it is out of retry budget.
     Retry(Vec<Value>),
+    /// Withhold these notifications and re-submit the turn on a fresh codex
+    /// thread, or forward them if retry budget is spent.
+    RestartThread(Vec<Value>),
 }
 
 impl TurnGuard {
@@ -762,7 +788,7 @@ impl TurnGuard {
         // Owned so `value` can be moved into `pending_system_error`/`out` below.
         let method = notification_method(&value).unwrap_or_default().to_owned();
 
-        // A retriable engine error before any output: withhold it (and the
+        // A retriable error before any output: withhold it (and the
         // `systemError` status we were holding) and hand both back so the caller
         // can drop them on retry or forward them once out of budget.
         if terminal && method == "error" && !self.streamed && is_retriable_engine_error(&value) {
@@ -772,6 +798,14 @@ impl TurnGuard {
             }
             withheld.push(value);
             return GuardStep::Retry(withheld);
+        }
+        if terminal && method == "error" && !self.streamed && is_poisoned_thread_error(&value) {
+            let mut withheld = Vec::new();
+            if let Some(status) = self.pending_system_error.take() {
+                withheld.push(status);
+            }
+            withheld.push(value);
+            return GuardStep::RestartThread(withheld);
         }
 
         // We are forwarding `value`; release any held status first to preserve
@@ -834,6 +868,24 @@ fn is_retriable_engine_error(value: &Value) -> bool {
     };
     message.contains("Engine not found")
         || (message.contains("Job registration failed") && message.contains("404"))
+}
+
+/// True for provider-side validation failures caused by codex replaying a
+/// malformed Responses history item, e.g. "`input[66]` missing required field
+/// `id`". These are tied to the current codex thread state; retrying on the
+/// same thread just replays the malformed item again.
+fn is_poisoned_thread_error(value: &Value) -> bool {
+    let Some(message) = value
+        .pointer("/params/error/message")
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    message.contains("missing required field")
+        && (message.contains("`id`")
+            || message.contains("\"id\"")
+            || message.contains("required field id"))
+        && message.contains("input[")
 }
 
 /// True for a `thread/status/changed` notification reporting a `systemError`.
@@ -975,6 +1027,20 @@ mod tests {
         })
     }
 
+    fn poisoned_thread_error() -> Value {
+        json!({
+            "method": "error",
+            "params": {
+                "error": {
+                    "message": "Execution failed: {\"error\":{\"code\":null,\
+                                \"message\":\"`input[66]` missing required field `id`\",\
+                                \"param\":\"input[66]\",\"type\":\"invalid_request_error\"}}"
+                },
+                "willRetry": false
+            }
+        })
+    }
+
     fn agent_delta() -> Value {
         json!({ "method": "item/agentMessage/delta", "params": { "delta": "hi" } })
     }
@@ -988,6 +1054,9 @@ mod tests {
         for (value, terminal) in events {
             match guard.observe(value, terminal) {
                 GuardStep::Retry(withheld) => {
+                    return (methods(&forwarded), Some(methods(&withheld)));
+                }
+                GuardStep::RestartThread(withheld) => {
                     return (methods(&forwarded), Some(methods(&withheld)));
                 }
                 GuardStep::Forward(values) => forwarded.extend(values),
@@ -1043,6 +1112,23 @@ mod tests {
     }
 
     #[test]
+    fn classifies_poisoned_thread_error() {
+        assert!(is_poisoned_thread_error(&poisoned_thread_error()));
+        assert!(!is_poisoned_thread_error(&json!({
+            "method": "error",
+            "params": {
+                "error": {
+                    "message": "`input[66]` missing required field `call_id`"
+                }
+            }
+        })));
+        assert!(!is_poisoned_thread_error(&json!({
+            "method": "error",
+            "params": { "error": { "message": "missing required field id" } }
+        })));
+    }
+
+    #[test]
     fn detects_system_error_status() {
         assert!(is_system_error_status(&system_error_status()));
         assert!(!is_system_error_status(&json!({
@@ -1073,6 +1159,23 @@ mod tests {
     }
 
     #[test]
+    fn withholds_output_free_poisoned_thread_error_for_retry() {
+        let (forwarded, withheld) = drive(vec![
+            (turn_started(), false),
+            (system_error_status(), false),
+            (poisoned_thread_error(), true),
+        ]);
+        assert_eq!(forwarded, vec!["turn/started"]);
+        assert_eq!(
+            withheld,
+            Some(vec![
+                "thread/status/changed".to_string(),
+                "error".to_string(),
+            ])
+        );
+    }
+
+    #[test]
     fn never_retries_after_output_streamed() {
         // The engine dropped mid-turn after streaming: retrying would duplicate
         // output, so the error is forwarded rather than withheld.
@@ -1080,6 +1183,20 @@ mod tests {
             (agent_delta(), false),
             (system_error_status(), false),
             (engine_error(), true),
+        ]);
+        assert_eq!(withheld, None);
+        assert_eq!(
+            forwarded,
+            vec!["item/agentMessage/delta", "thread/status/changed", "error"]
+        );
+    }
+
+    #[test]
+    fn never_retries_poisoned_thread_error_after_output_streamed() {
+        let (forwarded, withheld) = drive(vec![
+            (agent_delta(), false),
+            (system_error_status(), false),
+            (poisoned_thread_error(), true),
         ]);
         assert_eq!(withheld, None);
         assert_eq!(
