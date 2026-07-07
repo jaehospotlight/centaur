@@ -41,7 +41,7 @@ const PROXY_TLS_MODE: &str = "mitm";
 const PROXY_TLS_CA_CERT_PATH: &str = "/etc/iron-proxy/ca.crt";
 const PROXY_TLS_CA_KEY_PATH: &str = "/etc/iron-proxy/ca.key";
 const PROXY_UPSTREAM_RESPONSE_HEADER_TIMEOUT: &str = "120s";
-const PROXY_UPSTREAM_DENY_CIDRS_ENV: &str = "IRON_PROXY_UPSTREAM_DENY_CIDRS";
+const PROXY_CONFIG_YAML_ENV: &str = "IRON_PROXY_CONFIG_YAML";
 const PROXY_LOG_LEVEL: &str = "info";
 // iron-control multiplexes every Postgres upstream through a single listener,
 // routing by database name; the control plane owns each upstream DSN/role/
@@ -1244,8 +1244,9 @@ fn iron_proxy_env_vars(
         "IRON_PROXY_TOKEN".to_owned(),
         env_var("IRON_PROXY_TOKEN", &sync.token),
     );
-    // The local listen/TLS settings the control plane does not own, passed as
-    // env instead of a config file. CA paths match the entrypoint's CA copy.
+    // Keep these envs for older proxy images and for api-rs's management-port
+    // discovery. Newer images receive the same local settings as config YAML
+    // when config-only fields such as upstream_deny_cidrs are configured.
     for (name, value) in [
         ("IRON_PROXY_TUNNEL_LISTEN", format!(":{PROXY_TUNNEL_PORT}")),
         (
@@ -1261,13 +1262,10 @@ fn iron_proxy_env_vars(
     ] {
         env.insert(name.to_owned(), env_var(name, &value));
     }
-    if !iron_proxy.upstream_deny_cidrs.is_empty() {
+    if let Some(config_yaml) = managed_proxy_config_yaml(iron_proxy) {
         env.insert(
-            PROXY_UPSTREAM_DENY_CIDRS_ENV.to_owned(),
-            env_var(
-                PROXY_UPSTREAM_DENY_CIDRS_ENV,
-                &iron_proxy.upstream_deny_cidrs.join(","),
-            ),
+            PROXY_CONFIG_YAML_ENV.to_owned(),
+            env_var(PROXY_CONFIG_YAML_ENV, &config_yaml),
         );
     }
     for (name, value) in &iron_proxy.extra_env {
@@ -1287,6 +1285,36 @@ fn iron_proxy_env_vars(
         }
     }
     env.into_values().collect()
+}
+
+fn managed_proxy_config_yaml(iron_proxy: &IronProxyConfig) -> Option<String> {
+    if iron_proxy.upstream_deny_cidrs.is_empty() {
+        return None;
+    }
+    let config = serde_json::json!({
+        "dns": {
+            "listen": PROXY_DNS_LISTEN,
+            "proxy_ip": PROXY_DNS_PROXY_IP,
+        },
+        "proxy": {
+            "tunnel_listen": format!(":{PROXY_TUNNEL_PORT}"),
+            "upstream_response_header_timeout": PROXY_UPSTREAM_RESPONSE_HEADER_TIMEOUT,
+            "upstream_deny_cidrs": iron_proxy.upstream_deny_cidrs,
+        },
+        "management": {
+            "listen": format!(":{PROXY_MANAGEMENT_PORT}"),
+            "api_key_env": "IRON_MANAGEMENT_API_KEY",
+        },
+        "tls": {
+            "mode": PROXY_TLS_MODE,
+            "ca_cert": PROXY_TLS_CA_CERT_PATH,
+            "ca_key": PROXY_TLS_CA_KEY_PATH,
+        },
+        "log": {
+            "level": PROXY_LOG_LEVEL,
+        },
+    });
+    serde_yaml::to_string(&config).ok()
 }
 
 fn iron_proxy_env_from(iron_proxy: &IronProxyConfig) -> Option<Vec<EnvFromSource>> {
@@ -2234,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_proxy_env_sets_upstream_deny_cidrs() {
+    fn managed_proxy_env_sets_config_yaml_with_upstream_deny_cidrs() {
         let mut iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
         iron_proxy.upstream_deny_cidrs = vec![
             "169.254.169.254/32".to_owned(),
@@ -2249,15 +2277,24 @@ mod tests {
         };
 
         let env = iron_proxy_env_vars(&iron_proxy, &resolved(), &sync);
-        let deny_cidrs = env
+        let config_yaml = env
             .iter()
-            .find(|var| var.name == PROXY_UPSTREAM_DENY_CIDRS_ENV)
-            .and_then(|var| var.value.as_deref());
+            .find(|var| var.name == PROXY_CONFIG_YAML_ENV)
+            .and_then(|var| var.value.as_deref())
+            .unwrap();
+        let config: serde_json::Value = serde_yaml::from_str(config_yaml).unwrap();
 
         assert_eq!(
-            deny_cidrs,
-            Some("169.254.169.254/32,127.0.0.0/8,10.42.0.0/16,10.43.0.0/16")
+            config["proxy"]["upstream_deny_cidrs"],
+            serde_json::json!([
+                "169.254.169.254/32",
+                "127.0.0.0/8",
+                "10.42.0.0/16",
+                "10.43.0.0/16"
+            ])
         );
+        assert_eq!(config["proxy"]["tunnel_listen"], ":8080");
+        assert_eq!(config["management"]["listen"], ":9092");
     }
 
     #[test]
