@@ -31,15 +31,10 @@ log_json "info" "ca_loaded" "loaded CA from mounted volume at $CA_MOUNT_DIR"
 cp "$CA_CERT" "$CERT_SHARE/ca-cert.pem"
 log_json "info" "ca_shared" "CA cert shared at /certs/ca-cert.pem"
 
-# ── Managed mode: the control plane is the source of truth for dynamic
-# secrets/transforms, but config-only local settings still need a YAML file.
-# When the controller provides one, write it and pass -config explicitly. ───
+# ── Managed mode: the control plane is the source of truth for the proxy
+# config, and everything local comes from IRON_* env vars, so run with no
+# -config. A local config file would conflict (e.g. management.listen). ────
 if [ -n "${IRON_CONTROL_PLANE_URL:-}" ]; then
-    if [ -n "${IRON_PROXY_CONFIG_YAML:-}" ]; then
-        printf '%s\n' "$IRON_PROXY_CONFIG_YAML" > "$CONFIG_FILE"
-        log_json "info" "managed_config_written" "wrote managed config to $CONFIG_FILE"
-        exec iron-proxy -config "$CONFIG_FILE"
-    fi
     log_json "info" "managed_mode" "IRON_CONTROL_PLANE_URL set; running without a local config"
     exec iron-proxy
 fi
