@@ -55,6 +55,7 @@ use uuid::Uuid;
 use crate::{
     ApiError,
     mcp::{mcp_get, mcp_post, mcp_protected_resource_metadata},
+    slack_proxy::slack_proxy_router,
     types::{
         AppendMessagesRequest, AppendMessagesResponse, CreateSessionRequest, CreateSessionResponse,
         EmitWorkflowEventRequest, EventsQuery, ExecuteSessionRequest, ExecuteSessionResponse,
@@ -226,6 +227,7 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
         )
         .route("/api/session/{thread_key}/events", get(stream_events))
         .route("/api/sandboxes/drain", post(drain_sandboxes))
+        .merge(slack_proxy_router())
         .route("/api/workflows/schedules", get(list_workflow_schedules))
         .route(
             "/api/workflows/runs",
@@ -2329,14 +2331,14 @@ fn slack_archive_upload_config() -> Result<SlackArchiveUploadConfig, ApiError> {
     })
 }
 
-fn non_empty_env(name: &str) -> Option<String> {
+pub(crate) fn non_empty_env(name: &str) -> Option<String> {
     env::var(name)
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
 }
 
-fn positive_env_u64(name: &str, default: u64) -> u64 {
+pub(crate) fn positive_env_u64(name: &str, default: u64) -> u64 {
     env::var(name)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
