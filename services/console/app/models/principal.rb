@@ -13,13 +13,19 @@ class Principal < ApplicationRecord
   has_many :proxies, dependent: :nullify
   has_many :principal_roles, dependent: :destroy
   has_many :roles, through: :principal_roles
+  has_many :slack_channel_permissions, dependent: :destroy
   has_many :sync_config_snapshots, class_name: "PrincipalSyncConfigSnapshot", dependent: :destroy
   has_many :mcp_oauth_authorization_codes, dependent: :destroy
   has_many :mcp_oauth_refresh_tokens, dependent: :destroy
   belongs_to :created_by, class_name: "User"
 
+  accepts_nested_attributes_for :slack_channel_permissions,
+                                allow_destroy: true,
+                                reject_if: :reject_slack_channel_permission_attributes?
+
   after_commit :auto_grant_matching_oauth_credentials, on: %i[create update]
   before_validation :apply_sandbox_repo_cache_setting
+  after_create :create_slack_channel_permission_from_label
   after_save :clear_sandbox_repo_cache_setting
   before_commit :bump_own_sync_config_cache_version, on: :update, if: :sync_config_fields_changed?
 
@@ -152,6 +158,31 @@ class Principal < ApplicationRecord
     self.labels = labels.to_h.merge(SANDBOX_REPO_CACHE_LABEL => (enabled ? "all" : "none"))
   end
 
+  def slack_channel_permissions_payload
+    permissions = if association(:slack_channel_permissions).loaded?
+      slack_channel_permissions.sort_by { |permission| [ permission.channel_id, permission.id ] }
+    else
+      slack_channel_permissions.ordered
+    end
+    permissions.map(&:as_permission_json)
+  end
+
+  def slack_upload_channel_ids
+    slack_channel_ids_for(:upload_enabled)
+  end
+
+  def slack_download_channel_ids
+    slack_channel_ids_for(:download_enabled)
+  end
+
+  def slack_history_channel_ids
+    slack_channel_ids_for(:history_enabled)
+  end
+
+  def slack_jwt_channel_ids
+    (slack_upload_channel_ids + slack_download_channel_ids + slack_history_channel_ids).uniq
+  end
+
   def self.bump_sync_config_cache_versions(ids)
     ids = Array(ids).compact.uniq
     return if ids.empty?
@@ -199,6 +230,21 @@ class Principal < ApplicationRecord
     @sandbox_repo_cache_setting = nil
   end
 
+  def reject_slack_channel_permission_attributes?(attributes)
+    attributes["channel_id"].blank?
+  end
+
+  def create_slack_channel_permission_from_label
+    channel_id = legacy_slack_channel_id
+    return if channel_id.blank?
+
+    slack_channel_permissions.find_or_create_by!(channel_id: channel_id) do |permission|
+      permission.upload_enabled = true
+      permission.download_enabled = true
+      permission.history_enabled = true
+    end
+  end
+
   # The credentials actually delivered to the proxy, grouped by type, after
   # cross-type conflict resolution. Static secrets without a deliverable source
   # are dropped first (the proxy can't resolve a value for them) so a
@@ -236,8 +282,7 @@ class Principal < ApplicationRecord
   def api_server_jwt_secret
     return nil unless sandbox_api_server_enabled?
 
-    channel_id = labels.to_h[SLACK_CHANNEL_ID_LABEL].to_s.strip
-    return nil unless channel_id.match?(SLACK_CHANNEL_ID_FORMAT)
+    return nil if slack_jwt_channel_ids.empty?
 
     token = ApiServer::Jwt.encode_for_principal(self)
     return nil if token.blank?
@@ -250,6 +295,15 @@ class Principal < ApplicationRecord
       "inject" => { "header" => "Authorization", "formatter" => "Bearer {{ .Value }}" },
       "rules" => rules
     }
+  end
+
+  def slack_channel_ids_for(permission)
+    slack_channel_permissions.where(permission => true).ordered.pluck(:channel_id)
+  end
+
+  def legacy_slack_channel_id
+    channel_id = labels.to_h[SLACK_CHANNEL_ID_LABEL].to_s.strip.upcase
+    channel_id.match?(SLACK_CHANNEL_ID_FORMAT) ? channel_id : nil
   end
 
   def api_server_hosts
@@ -402,7 +456,9 @@ class Principal < ApplicationRecord
   end
 
   def sync_config_fields_changed?
-    previous_changes.key?("name") || previous_changes.key?("labels")
+    previous_changes.key?("name") ||
+      previous_changes.key?("labels") ||
+      previous_changes.key?("sandbox_api_server_enabled")
   end
 
   def bump_own_sync_config_cache_version

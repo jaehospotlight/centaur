@@ -1,8 +1,12 @@
 module Api
   module V1
     class PrincipalsController < Api::BaseController
+      InvalidSlackChannelPermissions = Class.new(StandardError)
+
+      rescue_from InvalidSlackChannelPermissions, with: :render_slack_channel_permissions_error
+
       def index
-        records, meta = paginated_label_search(Principal.all)
+        records, meta = paginated_label_search(Principal.includes(:slack_channel_permissions))
         render json: { data: records.map { |p| record_payload(p) }, meta: meta }
       end
 
@@ -24,8 +28,11 @@ module Api
       def create
         principal = Principal.new(namespace: upsert_namespace, foreign_id: data_params[:foreign_id],
                                   created_by: current_user)
-        principal.assign_attributes(principal_params)
-        principal.save!
+        ActiveRecord::Base.transaction do
+          principal.assign_attributes(principal_params)
+          principal.save!
+          replace_slack_channel_permissions!(principal) if data_params.key?(:slack_channel_permissions)
+        end
         render status: :created, json: { data: record_payload(principal) }
       rescue ActiveRecord::RecordInvalid => e
         render_validation_error(e.record)
@@ -37,8 +44,11 @@ module Api
       def update
         principal = resolve_for_upsert(Principal)
         was_new = principal.new_record?
-        principal.assign_attributes(principal_params)
-        principal.save!
+        ActiveRecord::Base.transaction do
+          principal.assign_attributes(principal_params)
+          principal.save!
+          replace_slack_channel_permissions!(principal) if data_params.key?(:slack_channel_permissions)
+        end
         render status: (was_new ? :created : :ok), json: { data: record_payload(principal) }
       rescue ActiveRecord::RecordInvalid => e
         render_validation_error(e.record)
@@ -74,6 +84,7 @@ module Api
           foreign_id: principal.foreign_id,
           name: principal.name,
           labels: principal.labels,
+          slack_channel_permissions: principal.slack_channel_permissions_payload,
           sandbox_repo_cache: principal.sandbox_repo_cache,
           sandbox_observability_enabled: principal.sandbox_observability_enabled,
           sandbox_api_server_enabled: principal.sandbox_api_server_enabled,
@@ -90,6 +101,40 @@ module Api
           :sandbox_api_server_enabled,
           labels: {}
         )
+      end
+
+      def replace_slack_channel_permissions!(principal)
+        SlackChannelPermission.replace_for_principal!(
+          principal,
+          slack_channel_permission_params
+        )
+      end
+
+      def slack_channel_permission_params
+        raw = data_params[:slack_channel_permissions]
+        unless raw.nil? || raw.is_a?(Array)
+          raise InvalidSlackChannelPermissions, "slack_channel_permissions must be an array"
+        end
+
+        rows = data_params.permit(
+          slack_channel_permissions: %i[
+            channel_id
+            channel_name
+            upload_enabled
+            download_enabled
+            history_enabled
+          ]
+        ).fetch(:slack_channel_permissions, [])
+
+        if raw.present? && rows.length != raw.length
+          raise InvalidSlackChannelPermissions, "slack_channel_permissions rows must be objects"
+        end
+
+        rows
+      end
+
+      def render_slack_channel_permissions_error(error)
+        render_error(status: :unprocessable_entity, message: error.message)
       end
     end
   end

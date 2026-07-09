@@ -83,6 +83,51 @@ module Console
       assert_equal false, principal.sandbox_api_server_enabled
     end
 
+    test "update_slack_channel_permissions stores selected Slack channel permissions" do
+      principal = principals(:acme_user_bob)
+
+      patch console_principal_slack_channel_permissions_url(principal.oid),
+            params: {
+              principal: {
+                slack_channel_permissions_attributes: {
+                  "0" => {
+                    channel_id: "C0123456789",
+                    upload_enabled: "1",
+                    download_enabled: "0",
+                    history_enabled: "1"
+                  },
+                  "1" => {
+                    channel_id: "G9876543210",
+                    upload_enabled: "0",
+                    download_enabled: "1",
+                    history_enabled: "0"
+                  }
+                }
+              }
+            }
+
+      assert_redirected_to console_principal_path(principal.oid)
+      assert_equal(
+        [
+          {
+            "channel_id" => "C0123456789",
+            "channel_name" => nil,
+            "upload_enabled" => true,
+            "download_enabled" => false,
+            "history_enabled" => true
+          },
+          {
+            "channel_id" => "G9876543210",
+            "channel_name" => nil,
+            "upload_enabled" => false,
+            "download_enabled" => true,
+            "history_enabled" => false
+          }
+        ],
+        principal.reload.slack_channel_permissions_payload
+      )
+    end
+
     test "destroy deletes the principal and dependent access records" do
       principal = principals(:acme_channel)
       proxy = proxies(:acme_proxy)

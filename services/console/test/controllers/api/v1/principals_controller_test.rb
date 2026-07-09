@@ -65,7 +65,16 @@ module Api
           data: {
             namespace: "acme",
             foreign_id: "U-new-id",
-            labels: { "kind" => "user", "team" => "platform" }
+            labels: { "kind" => "user", "team" => "platform" },
+            slack_channel_permissions: [
+              {
+                channel_id: "C0123456789",
+                channel_name: "general",
+                upload_enabled: true,
+                download_enabled: false,
+                history_enabled: true
+              }
+            ]
           }
         }
 
@@ -79,6 +88,18 @@ module Api
         assert_equal "acme", data["namespace"]
         assert_equal "U-new-id", data["foreign_id"]
         assert_equal({ "kind" => "user", "team" => "platform" }, data["labels"])
+        assert_equal(
+          [
+            {
+              "channel_id" => "C0123456789",
+              "channel_name" => "general",
+              "upload_enabled" => true,
+              "download_enabled" => false,
+              "history_enabled" => true
+            }
+          ],
+          data["slack_channel_permissions"]
+        )
         assert_equal "all", data["sandbox_repo_cache"]
         assert_not data.key?("sandbox_repo_cache_enabled")
         assert_equal true, data["sandbox_observability_enabled"]
@@ -173,6 +194,102 @@ module Api
 
         principal.reload
         assert_equal({ "kind" => "slack_channel", "team" => "ops" }, principal.labels)
+      end
+
+      test "PUT replaces Slack channel permission rows" do
+        principal = principals(:acme_channel)
+        SlackChannelPermission.create!(
+          principal: principal,
+          channel_id: "C1111111111",
+          upload_enabled: true
+        )
+        body = {
+          data: {
+            slack_channel_permissions: [
+              {
+                channel_id: "C0123456789",
+                upload_enabled: true,
+                download_enabled: true,
+                history_enabled: false
+              },
+              {
+                channel_id: "G9876543210",
+                upload_enabled: false,
+                download_enabled: false,
+                history_enabled: true
+              }
+            ]
+          }
+        }
+
+        put api_v1_principal_url(id: principal.oid), params: body.to_json, headers: auth_headers
+        assert_response :ok
+
+        assert_equal(
+          [
+            {
+              "channel_id" => "C0123456789",
+              "channel_name" => nil,
+              "upload_enabled" => true,
+              "download_enabled" => true,
+              "history_enabled" => false
+            },
+            {
+              "channel_id" => "G9876543210",
+              "channel_name" => nil,
+              "upload_enabled" => false,
+              "download_enabled" => false,
+              "history_enabled" => true
+            }
+          ],
+          principal.reload.slack_channel_permissions_payload
+        )
+      end
+
+      test "PUT rejects a single Slack channel permission object" do
+        principal = principals(:acme_channel)
+        body = {
+          data: {
+            slack_channel_permissions: {
+              channel_id: "C0123456789",
+              upload_enabled: true,
+              download_enabled: false,
+              history_enabled: true
+            }
+          }
+        }
+
+        put api_v1_principal_url(id: principal.oid), params: body.to_json, headers: auth_headers
+        assert_response :unprocessable_content
+        assert_equal "slack_channel_permissions must be an array", json_body.dig("error", "message")
+      end
+
+      test "PUT rejects malformed Slack channel permission rows" do
+        principal = principals(:acme_channel)
+        body = { data: { slack_channel_permissions: [ "not-an-object" ] } }
+
+        put api_v1_principal_url(id: principal.oid), params: body.to_json, headers: auth_headers
+        assert_response :unprocessable_content
+        assert_equal "slack_channel_permissions rows must be objects", json_body.dig("error", "message")
+      end
+
+      test "PUT can clear Slack channel permission rows" do
+        principal = principals(:acme_channel)
+        principal.update!(labels: { Principal::SLACK_CHANNEL_ID_LABEL => "C0123456789" })
+        SlackChannelPermission.create!(
+          principal: principal,
+          channel_id: "C0123456789",
+          upload_enabled: true,
+          download_enabled: true,
+          history_enabled: true
+        )
+        body = { data: { slack_channel_permissions: [] } }
+
+        put api_v1_principal_url(id: principal.oid), params: body.to_json, headers: auth_headers
+        assert_response :ok
+
+        assert_empty principal.reload.slack_channel_permissions
+        assert_equal [], json_body.dig("data", "slack_channel_permissions")
       end
 
       test "PUT ignores attempts to change immutable namespace and foreign_id" do
