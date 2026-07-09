@@ -39,58 +39,132 @@ env:
   RUST_BUILD_PROFILE: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && 'debug' || 'release' }}
 
 jobs:
+  image_changes:
+    name: Detect image changes
+    runs-on: depot-ubuntu-24.04
+    outputs:
+      build_matrix: ${{ steps.plan.outputs.build_matrix }}
+      merge_matrix: ${{ steps.plan.outputs.merge_matrix }}
+      has_images: ${{ steps.plan.outputs.has_images }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: plan
+        name: Plan image builds
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          set -euo pipefail
+
+          all_services=(api-rs slackbotv2 linearbot discordbot teamsbot agent iron-proxy console)
+          selected=()
+
+          add_service() {
+            local service="$1"
+            local existing
+            for existing in "${selected[@]}"; do
+              if [ "$existing" = "$service" ]; then
+                return
+              fi
+            done
+            selected+=("$service")
+          }
+
+          add_all_services() {
+            selected=("${all_services[@]}")
+          }
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$IS_TAG" = "true" ]; then
+            add_all_services
+          else
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              changed_files="$(git diff --name-only "${BASE_SHA}...HEAD")"
+            elif [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+              changed_files="$(git diff --name-only HEAD~1...HEAD || true)"
+            else
+              changed_files="$(git diff --name-only "${BEFORE_SHA}...HEAD")"
+            fi
+
+            if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/publish-images\.yml|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$)'; then
+              add_all_services
+            else
+              while IFS= read -r file; do
+                case "$file" in
+                  services/api-rs/*) add_service api-rs ;;
+                  services/slackbotv2/*) add_service slackbotv2 ;;
+                  services/linearbot/*) add_service linearbot ;;
+                  services/discordbot/*) add_service discordbot ;;
+                  services/teamsbot/*) add_service teamsbot ;;
+                  services/sandbox/*|harness/*|crates/harness-server/*|centaur_sdk/*|tools/*|.agents/skills/*|scripts/bootstrap-k8s-secrets.sh) add_service agent ;;
+                  services/iron-proxy/*) add_service iron-proxy ;;
+                  services/console/*) add_service console ;;
+                esac
+              done <<< "$changed_files"
+            fi
+          fi
+
+          service_json() {
+            local service="$1"
+            case "$service" in
+              api-rs) jq -cn '{service:"api-rs", image:"centaur-api-rs", context:".", dockerfile:"services/api-rs/Dockerfile", target:""}' ;;
+              slackbotv2) jq -cn '{service:"slackbotv2", image:"centaur-slackbotv2", context:".", dockerfile:"services/slackbotv2/Dockerfile", target:""}' ;;
+              linearbot) jq -cn '{service:"linearbot", image:"centaur-linearbot", context:".", dockerfile:"services/linearbot/Dockerfile", target:""}' ;;
+              discordbot) jq -cn '{service:"discordbot", image:"centaur-discordbot", context:".", dockerfile:"services/discordbot/Dockerfile", target:""}' ;;
+              teamsbot) jq -cn '{service:"teamsbot", image:"centaur-teamsbot", context:".", dockerfile:"services/teamsbot/Dockerfile", target:""}' ;;
+              agent) jq -cn '{service:"agent", image:"centaur-agent", context:".", dockerfile:"services/sandbox/Dockerfile", target:"sandbox"}' ;;
+              iron-proxy) jq -cn '{service:"iron-proxy", image:"centaur-iron-proxy", context:".", dockerfile:"services/iron-proxy/Dockerfile", target:""}' ;;
+              console) jq -cn '{service:"console", image:"centaur-console", context:"services/console", dockerfile:"services/console/Dockerfile", target:""}' ;;
+            esac
+          }
+
+          if [ "$EVENT_NAME" = "push" ]; then
+            platforms=(linux/amd64 linux/arm64)
+          else
+            platforms=(linux/amd64)
+          fi
+
+          build_entries=()
+          merge_entries=()
+          for service in "${selected[@]}"; do
+            service_config="$(service_json "$service")"
+            image="$(jq -r '.image' <<< "$service_config")"
+            merge_entries+=("$(jq -cn --arg image "$image" '{image:$image}')")
+            for platform in "${platforms[@]}"; do
+              build_entries+=("$(jq -cn --argjson service_config "$service_config" --arg platform "$platform" '$service_config + {platform:$platform}')")
+            done
+          done
+
+          build_matrix="$(printf '%s\n' "${build_entries[@]}" | jq -sc '{include:.}')"
+          merge_matrix="$(printf '%s\n' "${merge_entries[@]}" | jq -sc '{include:.}')"
+
+          {
+            echo "build_matrix=$build_matrix"
+            echo "merge_matrix=$merge_matrix"
+            if [ "${#selected[@]}" -gt 0 ]; then
+              echo "has_images=true"
+            else
+              echo "has_images=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
   # Build each image with Depot's hosted builders, push by digest, and hand
   # the digests to the merge job below which assembles the multi-arch manifest.
   # arm64 is only built on pushes to main and release tags — PR and manual
   # dispatch builds stay amd64-only to keep iteration fast.
   build:
+    needs: image_changes
+    if: needs.image_changes.outputs.has_images == 'true'
     runs-on: ${{ matrix.platform == 'linux/arm64' && 'depot-ubuntu-24.04-arm-16' || 'depot-ubuntu-24.04-16' }}
     strategy:
       fail-fast: false
-      matrix:
-        service: [api-rs, slackbotv2, linearbot, discordbot, teamsbot, agent, iron-proxy, console]
-        platform: ${{ github.event_name == 'push' && fromJSON('["linux/amd64", "linux/arm64"]') || fromJSON('["linux/amd64"]') }}
-        include:
-          - service: api-rs
-            image: centaur-api-rs
-            context: .
-            dockerfile: services/api-rs/Dockerfile
-            target: ""
-          - service: slackbotv2
-            image: centaur-slackbotv2
-            context: .
-            dockerfile: services/slackbotv2/Dockerfile
-            target: ""
-          - service: linearbot
-            image: centaur-linearbot
-            context: .
-            dockerfile: services/linearbot/Dockerfile
-            target: ""
-          - service: discordbot
-            image: centaur-discordbot
-            context: .
-            dockerfile: services/discordbot/Dockerfile
-            target: ""
-          - service: teamsbot
-            image: centaur-teamsbot
-            context: .
-            dockerfile: services/teamsbot/Dockerfile
-            target: ""
-          - service: agent
-            image: centaur-agent
-            context: .
-            dockerfile: services/sandbox/Dockerfile
-            target: sandbox
-          - service: iron-proxy
-            image: centaur-iron-proxy
-            context: .
-            dockerfile: services/iron-proxy/Dockerfile
-            target: ""
-          - service: console
-            image: centaur-console
-            context: services/console
-            dockerfile: services/console/Dockerfile
-            target: ""
+      matrix: ${{ fromJSON(needs.image_changes.outputs.build_matrix) }}
 
     steps:
       - name: Checkout
@@ -159,20 +233,13 @@ jobs:
 
   merge:
     runs-on: depot-ubuntu-24.04-16
-    needs: build
-    if: ${{ !github.event.pull_request.head.repo.fork }}
+    needs:
+      - image_changes
+      - build
+    if: ${{ needs.image_changes.outputs.has_images == 'true' && needs.build.result == 'success' && (github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork) }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - image: centaur-api-rs
-          - image: centaur-slackbotv2
-          - image: centaur-linearbot
-          - image: centaur-agent
-          - image: centaur-iron-proxy
-          - image: centaur-console
-          - image: centaur-discordbot
-          - image: centaur-teamsbot
+      matrix: ${{ fromJSON(needs.image_changes.outputs.merge_matrix) }}
 
     steps:
       - name: Download digests
