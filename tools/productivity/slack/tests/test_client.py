@@ -537,6 +537,129 @@ def test_get_thread_replies_proxy_validates_inputs() -> None:
         client.get_thread_replies_proxy("C123456789", "1700000000.000001", limit=1000)
 
 
+def test_new_slack_proxy_endpoints_call_centaur_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.parse
+    import urllib.request
+
+    client, _ = _make_client()
+    request_urls: list[str] = []
+
+    def fake_urlopen(req, *args, **kwargs):
+        request_urls.append(req.full_url)
+        path = urllib.parse.urlparse(req.full_url).path
+        if path.endswith("/members"):
+            body = {"ok": True, "members": ["U123456789"], "response_metadata": {}}
+        elif path == "/api/slack/users":
+            body = {"ok": True, "members": [], "response_metadata": {}}
+        elif path.endswith("/info"):
+            body = {"ok": True, "user": {"id": "U123456789"}}
+        elif path.endswith("/files/F123456789"):
+            body = {"ok": True, "file": {"id": "F123456789"}}
+        else:
+            body = {"ok": True, "files": [], "response_metadata": {}}
+        return _FakeHTTPResponse(json.dumps(body).encode(), "application/json")
+
+    monkeypatch.setenv("CENTAUR_API_URL", "http://api.internal:8080")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert client.get_channel_members_proxy("C123456789", limit=50)["members"] == ["U123456789"]
+    assert client.list_users_proxy(limit=25, cursor="user-cursor")["ok"] is True
+    assert client.get_user_info_proxy("<@U123456789>")["user"]["id"] == "U123456789"
+    assert client.get_file_info_proxy("F123456789", "C123456789")["file"]["id"] == "F123456789"
+    assert (
+        client.list_files_proxy(
+            "C123456789",
+            limit=10,
+            page=2,
+            ts_from=0,
+            ts_to="1700000000.000001",
+            types="pdfs",
+            user="U123456789",
+            show_files_hidden_by_limit=True,
+        )["ok"]
+        is True
+    )
+
+    parsed = [urllib.parse.urlparse(url) for url in request_urls]
+    assert parsed[0].path == "/api/slack/channels/C123456789/members"
+    assert urllib.parse.parse_qs(parsed[0].query) == {"limit": ["50"]}
+    assert parsed[1].path == "/api/slack/users"
+    assert urllib.parse.parse_qs(parsed[1].query) == {
+        "limit": ["25"],
+        "cursor": ["user-cursor"],
+    }
+    assert parsed[2].path == "/api/slack/users/U123456789/info"
+    assert parsed[3].path == "/api/slack/channels/C123456789/files/F123456789"
+    assert parsed[4].path == "/api/slack/channels/C123456789/files"
+    assert urllib.parse.parse_qs(parsed[4].query) == {
+        "limit": ["10"],
+        "page": ["2"],
+        "ts_from": ["0.000000"],
+        "ts_to": ["1700000000.000001"],
+        "types": ["pdfs"],
+        "user": ["U123456789"],
+        "show_files_hidden_by_limit": ["true"],
+    }
+
+
+def test_proxy_normalizers_preserve_user_and_file_shapes() -> None:
+    client, _ = _make_client()
+
+    client.list_users_proxy = lambda **kwargs: {  # type: ignore[method-assign]
+        "members": [
+            {
+                "id": "U123456789",
+                "name": "alice",
+                "real_name": "Alice Example",
+                "profile": {"display_name": "Alice", "email": "alice@example.com", "title": "Eng"},
+            }
+        ],
+        "response_metadata": {},
+    }
+    assert client.list_users_via_proxy(limit=10) == [
+        {
+            "id": "U123456789",
+            "name": "alice",
+            "real_name": "Alice Example",
+            "display_name": "Alice",
+            "email": "alice@example.com",
+            "title": "Eng",
+            "is_bot": False,
+            "is_deleted": False,
+            "team_id": "",
+        }
+    ]
+
+    client.get_channel_members_proxy = lambda *args, **kwargs: {  # type: ignore[method-assign]
+        "members": ["U123456789"],
+        "response_metadata": {},
+    }
+    assert client.get_channel_members_via_proxy("C123456789")[0]["email"] == "alice@example.com"
+
+    client.list_files_proxy = lambda **kwargs: {  # type: ignore[method-assign]
+        "files": [
+            {
+                "id": "F123456789",
+                "name": "roadmap.pdf",
+                "title": "Roadmap",
+                "filetype": "pdf",
+                "size": 42,
+                "user": "U123456789",
+                "channels": ["C123456789"],
+            }
+        ]
+    }
+    results = client.search_files_via_proxy(
+        "roadmap",
+        channel_id="C123456789",
+        max_results=10,
+    )
+    assert results[0]["user"] == "alice"
+    assert results[0]["name"] == "roadmap.pdf"
+
+
 def test_upload_file_proxy_posts_file_bytes_to_centaur_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

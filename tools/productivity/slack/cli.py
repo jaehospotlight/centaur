@@ -596,13 +596,49 @@ def channel_members_cmd(
         slack channel-members eng-ai
         slack channel-members eng-ai --emails
     """
+    from .client import get_channel_members_via_proxy
+
+    try:
+        members = get_channel_members_via_proxy(channel)
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if not members:
+        console.print("[yellow]No members found.[/]")
+        raise typer.Exit()
+
+    if emails_only:
+        for m in members:
+            if m.get("email"):
+                console.print(m["email"])
+    else:
+        table = Table(title=f"#{channel} Members ({len(members)})")
+        table.add_column("Name", style="cyan", max_width=20)
+        table.add_column("Real Name", style="white", max_width=25)
+        table.add_column("Email", style="green", max_width=35)
+
+        for m in members:
+            table.add_row(f"@{m['name']}", m.get("real_name", ""), m.get("email", ""))
+
+        console.print(table)
+
+
+@app.command("channel-members-direct")
+def channel_members_direct_cmd(
+    channel: str = typer.Argument(..., help="Channel name (without #) or channel ID"),
+    emails_only: bool = typer.Option(
+        False, "--emails", "-e", help="Output only email addresses (one per line)"
+    ),
+):
+    """List all members of a Slack channel directly with the Slack SDK."""
     from .client import get_channel_members
 
     try:
         members = get_channel_members(channel)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if not members:
         console.print("[yellow]No members found.[/]")
@@ -631,6 +667,46 @@ def users(
     bots: bool = typer.Option(False, "--bots", "-b", help="Include bots"),
 ):
     """List all Slack workspace members."""
+    from .client import list_users_via_proxy
+
+    results = list_users_via_proxy(limit=limit)
+
+    if not bots:
+        results = [u for u in results if not u["is_bot"]]
+
+    if query:
+        query_lower = query.lower()
+        results = [
+            u
+            for u in results
+            if query_lower in u["name"].lower()
+            or query_lower in u["real_name"].lower()
+            or query_lower in u["email"].lower()
+        ]
+
+    if not results:
+        console.print("[yellow]No users found.[/]")
+        raise typer.Exit()
+
+    table = Table(title=f"Users ({len(results)})")
+    table.add_column("Name", style="cyan", max_width=20)
+    table.add_column("Real Name", style="white", max_width=25)
+    table.add_column("Title", style="dim", max_width=30)
+
+    for u in results:
+        bot = " [dim]🤖[/]" if u["is_bot"] else ""
+        table.add_row(f"@{u['name']}{bot}", u["real_name"], u["title"][:30])
+
+    console.print(table)
+
+
+@app.command("users-direct")
+def users_direct(
+    limit: int = typer.Option(100, "--limit", "-n", help="Max users"),
+    query: str = typer.Option(None, "--query", "-q", help="Filter by name/email"),
+    bots: bool = typer.Option(False, "--bots", "-b", help="Include bots"),
+):
+    """List all Slack workspace members directly with the Slack SDK."""
     from .client import list_users
 
     results = list_users(limit=limit)
@@ -905,21 +981,24 @@ def usergroup_update(
 @app.command("search-files")
 def search_files_cmd(
     query: str = typer.Argument(..., help="Search query for files"),
+    channel_id: str = typer.Option(
+        ..., "--channel-id", "-c", help="Allowed Slack channel/conversation ID"
+    ),
     limit: int = typer.Option(20, "--limit", "-n", help="Max results"),
 ):
-    """Search files shared across the workspace.
+    """Search files shared in an allowed Slack channel through the proxy.
 
     Examples:
-        slack search-files "quarterly report"
-        slack search-files "architecture diagram" -n 10
+        slack search-files "quarterly report" --channel-id C123456789
+        slack search-files "architecture diagram" -c C123456789 -n 10
     """
-    from .client import search_files
+    from .client import search_files_via_proxy
 
     try:
-        results = search_files(query, max_results=limit)
-    except RuntimeError as e:
+        results = search_files_via_proxy(query, channel_id=channel_id, max_results=limit)
+    except (RuntimeError, ValueError) as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if not results:
         console.print("[yellow]No files found.[/]")
@@ -944,6 +1023,102 @@ def search_files_cmd(
     console.print(table)
 
 
+@app.command("search-files-direct")
+def search_files_direct_cmd(
+    query: str = typer.Argument(..., help="Search query for files"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max results"),
+):
+    """Search files directly with the Slack SDK."""
+    from .client import search_files
+
+    try:
+        results = search_files(query, max_results=limit)
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if not results:
+        console.print("[yellow]No files found.[/]")
+        raise typer.Exit()
+
+    table = Table(title=f"Files matching '{query}' ({len(results)})")
+    table.add_column("Name", style="cyan", max_width=30)
+    table.add_column("Type", style="dim", max_width=8)
+    table.add_column("User", style="green", max_width=15)
+    table.add_column("Size", style="dim", justify="right", max_width=10)
+
+    for f in results:
+        size = f["size"]
+        if size > 1_000_000:
+            size_str = f"{size / 1_000_000:.1f}MB"
+        elif size > 1000:
+            size_str = f"{size / 1000:.0f}KB"
+        else:
+            size_str = f"{size}B"
+        table.add_row(f["name"], f["filetype"], f["user"], size_str)
+
+    console.print(table)
+
+
+@app.command("file-info")
+def file_info_cmd(
+    file_id: str = typer.Argument(..., help="Slack file ID, e.g. F1234567890"),
+    channel_id: str = typer.Argument(..., help="Allowed Slack channel/conversation ID"),
+    json_output: bool = typer.Option(False, "--json", help="Output raw file metadata as JSON"),
+):
+    """Get Slack file metadata through the Centaur API server proxy."""
+    import sys
+
+    from .client import get_file_info_via_proxy
+
+    try:
+        file = get_file_info_via_proxy(file_id=file_id, channel_id=channel_id)
+    except (RuntimeError, ValueError) as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if json_output:
+        print(json.dumps(file, indent=2, ensure_ascii=False), file=sys.stdout)
+        raise typer.Exit()
+
+    size = file.get("size", 0)
+    console.print(f"[bold]{file.get('name') or file.get('title') or file_id}[/]")
+    console.print(f"ID: {file.get('id', file_id)}")
+    console.print(f"Type: {file.get('filetype', '') or file.get('mimetype', '')}")
+    console.print(f"Size: {size} bytes")
+    if file.get("permalink"):
+        console.print(f"[dim]{file['permalink']}[/]")
+
+
+@app.command("file-info-direct")
+def file_info_direct_cmd(
+    file_id: str = typer.Argument(..., help="Slack file ID, e.g. F1234567890"),
+    json_output: bool = typer.Option(False, "--json", help="Output raw file metadata as JSON"),
+):
+    """Get Slack file metadata directly with the Slack SDK."""
+    import sys
+
+    from .client import get_file_info
+
+    try:
+        file = get_file_info(file_id=file_id)
+    except (RuntimeError, ValueError) as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if json_output:
+        print(json.dumps(file, indent=2, ensure_ascii=False), file=sys.stdout)
+        raise typer.Exit()
+
+    size = file.get("size", 0)
+    console.print(f"[bold]{file.get('name') or file.get('title') or file_id}[/]")
+    console.print(f"ID: {file.get('id', file_id)}")
+    console.print(f"Type: {file.get('filetype', '') or file.get('mimetype', '')}")
+    console.print(f"Size: {size} bytes")
+    if file.get("permalink"):
+        console.print(f"[dim]{file['permalink']}[/]")
+
+
 @app.command("search-users")
 def search_users_cmd(
     query: str = typer.Argument(..., help="Search by name, email, or title"),
@@ -956,13 +1131,43 @@ def search_users_cmd(
         slack search-users "@paradigm.xyz"
         slack search-users "engineer"
     """
+    from .client import search_users_via_proxy
+
+    try:
+        results = search_users_via_proxy(query, max_results=limit)
+    except RuntimeError as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+    if not results:
+        console.print("[yellow]No users found.[/]")
+        raise typer.Exit()
+
+    table = Table(title=f"Users matching '{query}' ({len(results)})")
+    table.add_column("Name", style="cyan", max_width=20)
+    table.add_column("Real Name", style="white", max_width=25)
+    table.add_column("Email", style="green", max_width=35)
+    table.add_column("Title", style="dim", max_width=30)
+
+    for u in results:
+        table.add_row(f"@{u['name']}", u["real_name"], u["email"], u["title"][:30])
+
+    console.print(table)
+
+
+@app.command("search-users-direct")
+def search_users_direct_cmd(
+    query: str = typer.Argument(..., help="Search by name, email, or title"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max results"),
+):
+    """Search workspace users directly with the Slack SDK."""
     from .client import search_users
 
     try:
         results = search_users(query, max_results=limit)
     except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
     if not results:
         console.print("[yellow]No users found.[/]")
@@ -1466,7 +1671,30 @@ def channel_emails(
         slack channel-emails eng-ai
         slack channel-emails #general -o json
     """
-    import json
+    from .client import get_channel_member_emails_via_proxy
+
+    try:
+        emails = get_channel_member_emails_via_proxy(channel)
+        if output == "json":
+            print(json.dumps({"channel": channel, "emails": emails, "count": len(emails)}))
+        else:
+            if emails:
+                console.print(f"[bold]Members of #{channel} ({len(emails)}):[/]")
+                for email in emails:
+                    console.print(f"  {email}")
+            else:
+                console.print(f"[yellow]No members with emails found in #{channel}[/]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+
+@app.command("channel-emails-direct")
+def channel_emails_direct(
+    channel: str = typer.Argument(..., help="Channel name (with or without #)"),
+    output: str = typer.Option("text", "-o", "--output", help="Output format: text or json"),
+):
+    """Get channel member emails directly with the Slack SDK."""
     from .client import get_channel_member_emails
 
     try:
@@ -1482,7 +1710,7 @@ def channel_emails(
                 console.print(f"[yellow]No members with emails found in #{channel}[/]")
     except Exception as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command("user-info")
@@ -1496,7 +1724,47 @@ def user_info(
         slack user-info U123ABC
         slack user-info U123ABC -o json
     """
-    import json
+    from .client import get_user_profile_via_proxy
+
+    try:
+        profile = get_user_profile_via_proxy(user_id)
+
+        if output == "json":
+            print(json.dumps(profile, indent=2, ensure_ascii=False))
+        else:
+            console.print(f"[bold]Name:[/] {profile['real_name'] or profile['name']}")
+            if profile["display_name"]:
+                console.print(f"[bold]Display Name:[/] {profile['display_name']}")
+            if profile["title"]:
+                console.print(f"[bold]Title:[/] {profile['title']}")
+            if profile["email"]:
+                console.print(f"[bold]Email:[/] {profile['email']}")
+            else:
+                console.print("[yellow]No email found[/]")
+            if profile["phone"]:
+                console.print(f"[bold]Phone:[/] {profile['phone']}")
+            if profile["status_text"]:
+                console.print(
+                    f"[bold]Status:[/] {profile['status_emoji']} {profile['status_text']}"
+                )
+            if profile["timezone"]:
+                console.print(f"[bold]Timezone:[/] {profile['tz_label']} ({profile['timezone']})")
+            if profile["skype"]:
+                console.print(f"[bold]Skype:[/] {profile['skype']}")
+            if profile["custom_fields"]:
+                for label, value in profile["custom_fields"].items():
+                    console.print(f"[bold]{label}:[/] {value}")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1) from e
+
+
+@app.command("user-info-direct")
+def user_info_direct(
+    user_id: str = typer.Argument(..., help="Slack user ID (e.g., U123ABC)"),
+    output: str = typer.Option("text", "-o", "--output", help="Output format: text or json"),
+):
+    """Get full user profile directly with the Slack SDK."""
     from .client import get_user_profile
 
     try:
@@ -1529,7 +1797,7 @@ def user_info(
                     console.print(f"[bold]{label}:[/] {value}")
     except Exception as e:
         console.print(f"[red]Error: {e}[/]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 if __name__ == "__main__":

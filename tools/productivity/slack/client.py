@@ -439,9 +439,7 @@ class SlackClient:
     def _normalize_explicit_channel_id(self, channel_id: str) -> str:
         """Normalize and validate an explicit Slack conversation ID."""
         normalized_channel_id = self._clean_channel_ref(channel_id).upper()
-        if len(normalized_channel_id) < 9 or not self._looks_like_channel_id(
-            normalized_channel_id
-        ):
+        if len(normalized_channel_id) < 9 or not self._looks_like_channel_id(normalized_channel_id):
             raise ValueError("channel_id must be a Slack conversation ID like C123456789")
         return normalized_channel_id
 
@@ -451,6 +449,13 @@ class SlackClient:
         if len(normalized_file_id) < 9 or not self._FILE_ID_RE.fullmatch(normalized_file_id):
             raise ValueError("file_id must be a Slack file ID like F123456789")
         return normalized_file_id
+
+    def _normalize_user_id(self, user_id: str) -> str:
+        """Normalize and validate a Slack user ID."""
+        normalized_user_id = self._clean_user_ref(user_id).upper()
+        if len(normalized_user_id) < 9 or not self._USER_ID_RE.fullmatch(normalized_user_id):
+            raise ValueError("user_id must be a Slack user ID like U123456789")
+        return normalized_user_id
 
     def _content_disposition_filename(self, value: str | None) -> str | None:
         """Extract a simple filename value from Content-Disposition."""
@@ -498,6 +503,21 @@ class SlackClient:
         if channel_name is not None:
             message["channel"] = channel_name
         return message
+
+    def _serialize_user(self, user: dict[str, Any]) -> dict[str, Any]:
+        """Normalize Slack API user payloads into a stable shape."""
+        profile = user.get("profile", {}) or {}
+        return {
+            "id": user.get("id", ""),
+            "name": user.get("name", ""),
+            "real_name": user.get("real_name", ""),
+            "display_name": profile.get("display_name", ""),
+            "email": profile.get("email", ""),
+            "title": profile.get("title", ""),
+            "is_bot": user.get("is_bot", False),
+            "is_deleted": user.get("deleted", False),
+            "team_id": user.get("team_id", "") or user.get("team", ""),
+        }
 
     def _collect_cursor_pages(
         self,
@@ -1222,6 +1242,111 @@ class SlackClient:
             params,
         )
 
+    def get_channel_members_proxy(
+        self,
+        channel_id: str,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch a page of Slack channel members through the Centaur API server."""
+        if secret("CENTAUR_SANDBOX_API_SERVER_ENABLED", "true").strip().lower() == "false":
+            raise RuntimeError(
+                "Slack channel members proxy requires the API server sandbox capability, "
+                "but it is disabled for this principal."
+            )
+
+        normalized_channel_id = self._normalize_explicit_channel_id(channel_id)
+        requested_limit = int(limit)
+        if not 1 <= requested_limit <= self._MAX_SLACK_HISTORY_PROXY_PAGE_SIZE:
+            raise ValueError("limit must be between 1 and 999")
+        channel_path = urllib.parse.quote(normalized_channel_id, safe="")
+        return self._centaur_api_get_json(
+            f"/api/slack/channels/{channel_path}/members",
+            {"limit": requested_limit, "cursor": cursor},
+        )
+
+    def list_users_proxy(
+        self,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch a page of Slack workspace users through the Centaur API server."""
+        if secret("CENTAUR_SANDBOX_API_SERVER_ENABLED", "true").strip().lower() == "false":
+            raise RuntimeError(
+                "Slack users.list proxy requires the API server sandbox capability, "
+                "but it is disabled for this principal."
+            )
+        requested_limit = int(limit)
+        if not 1 <= requested_limit <= self._MAX_SLACK_HISTORY_PROXY_PAGE_SIZE:
+            raise ValueError("limit must be between 1 and 999")
+        return self._centaur_api_get_json(
+            "/api/slack/users",
+            {"limit": requested_limit, "cursor": cursor},
+        )
+
+    def get_user_info_proxy(self, user_id: str) -> dict[str, Any]:
+        """Fetch Slack users.info through the Centaur API server."""
+        if secret("CENTAUR_SANDBOX_API_SERVER_ENABLED", "true").strip().lower() == "false":
+            raise RuntimeError(
+                "Slack users.info proxy requires the API server sandbox capability, "
+                "but it is disabled for this principal."
+            )
+        normalized_user_id = self._normalize_user_id(user_id)
+        user_path = urllib.parse.quote(normalized_user_id, safe="")
+        return self._centaur_api_get_json(f"/api/slack/users/{user_path}/info", {})
+
+    def list_files_proxy(
+        self,
+        channel_id: str,
+        limit: int = 100,
+        page: int | None = None,
+        ts_from: str | int | float | None = None,
+        ts_to: str | int | float | None = None,
+        types: str | None = None,
+        user: str | None = None,
+        show_files_hidden_by_limit: bool | None = None,
+    ) -> dict[str, Any]:
+        """Fetch Slack files.list for one allowed channel through the API server."""
+        if secret("CENTAUR_SANDBOX_API_SERVER_ENABLED", "true").strip().lower() == "false":
+            raise RuntimeError(
+                "Slack files.list proxy requires the API server sandbox capability, "
+                "but it is disabled for this principal."
+            )
+        normalized_channel_id = self._normalize_explicit_channel_id(channel_id)
+        requested_limit = int(limit)
+        if not 1 <= requested_limit <= self._MAX_SLACK_HISTORY_PROXY_PAGE_SIZE:
+            raise ValueError("limit must be between 1 and 999")
+        normalized_user = self._normalize_user_id(user) if user else None
+        channel_path = urllib.parse.quote(normalized_channel_id, safe="")
+        return self._centaur_api_get_json(
+            f"/api/slack/channels/{channel_path}/files",
+            {
+                "limit": requested_limit,
+                "page": page,
+                "ts_from": self._normalize_ts(ts_from),
+                "ts_to": self._normalize_ts(ts_to),
+                "types": types,
+                "user": normalized_user,
+                "show_files_hidden_by_limit": show_files_hidden_by_limit,
+            },
+        )
+
+    def get_file_info_proxy(self, file_id: str, channel_id: str) -> dict[str, Any]:
+        """Fetch Slack files.info through the API server and channel allowlist."""
+        if secret("CENTAUR_SANDBOX_API_SERVER_ENABLED", "true").strip().lower() == "false":
+            raise RuntimeError(
+                "Slack files.info proxy requires the API server sandbox capability, "
+                "but it is disabled for this principal."
+            )
+        normalized_file_id = self._normalize_file_id(file_id)
+        normalized_channel_id = self._normalize_explicit_channel_id(channel_id)
+        channel_path = urllib.parse.quote(normalized_channel_id, safe="")
+        file_path = urllib.parse.quote(normalized_file_id, safe="")
+        return self._centaur_api_get_json(
+            f"/api/slack/channels/{channel_path}/files/{file_path}",
+            {},
+        )
+
     def get_channel_history(
         self,
         channel: str,
@@ -1475,20 +1600,28 @@ class SlackClient:
             for user in response.get("members", []):
                 if user.get("deleted"):
                     continue
-                profile = user.get("profile", {}) or {}
-                users.append(
-                    {
-                        "id": user.get("id", ""),
-                        "name": user.get("name", ""),
-                        "real_name": user.get("real_name", ""),
-                        "display_name": profile.get("display_name", ""),
-                        "email": profile.get("email", ""),
-                        "title": profile.get("title", ""),
-                        "is_bot": user.get("is_bot", False),
-                        "is_deleted": user.get("deleted", False),
-                        "team_id": user.get("team_id", "") or user.get("team", ""),
-                    }
-                )
+                users.append(self._serialize_user(user))
+
+            cursor = response.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+
+        return sorted(users[:limit], key=lambda x: x["name"])
+
+    def list_users_via_proxy(self, limit: int = 200) -> list[dict]:
+        """List workspace users through the Centaur API server proxy."""
+        users = []
+        cursor = None
+
+        while len(users) < limit:
+            response = self.list_users_proxy(
+                limit=min(limit - len(users), self._MAX_PAGE_SIZE),
+                cursor=cursor,
+            )
+            for user in response.get("members", []):
+                if user.get("deleted"):
+                    continue
+                users.append(self._serialize_user(user))
 
             cursor = response.get("response_metadata", {}).get("next_cursor")
             if not cursor:
@@ -1548,6 +1681,42 @@ class SlackClient:
 
         return members
 
+    def get_channel_members_via_proxy(self, channel_id: str) -> list[dict]:
+        """Get all members of an allowed Slack channel through the API server proxy."""
+        normalized_channel_id = self._normalize_explicit_channel_id(channel_id)
+        member_ids = []
+        cursor = None
+
+        while True:
+            response = self.get_channel_members_proxy(
+                normalized_channel_id,
+                limit=self._MAX_PAGE_SIZE,
+                cursor=cursor,
+            )
+            member_ids.extend(response.get("members", []))
+            cursor = response.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+
+        users_by_id = {
+            user["id"]: user for user in self.list_users_via_proxy(limit=1000) if user.get("id")
+        }
+        return [
+            users_by_id.get(member_id)
+            or {
+                "id": member_id,
+                "name": member_id,
+                "real_name": "",
+                "display_name": "",
+                "email": "",
+                "title": "",
+                "is_bot": False,
+                "is_deleted": False,
+                "team_id": "",
+            }
+            for member_id in member_ids
+        ]
+
     def get_channel_member_emails(self, channel: str) -> list[str]:
         """Get email addresses of all non-bot members in a Slack channel.
 
@@ -1558,6 +1727,11 @@ class SlackClient:
             List of email addresses (excludes members without email)
         """
         members = self.get_channel_members(channel)
+        return [m["email"] for m in members if m.get("email")]
+
+    def get_channel_member_emails_via_proxy(self, channel_id: str) -> list[str]:
+        """Get email addresses of all non-bot members through the API server proxy."""
+        members = self.get_channel_members_via_proxy(channel_id)
         return [m["email"] for m in members if m.get("email")]
 
     def get_user_email(self, user_id: str) -> str | None:
@@ -1613,6 +1787,41 @@ class SlackClient:
         profile = profile_response.get("profile", {}) or user.get("profile", {})
 
         # Extract custom profile fields (Telegram, Skype, pronouns, etc.)
+        custom_fields: dict[str, str] = {}
+        raw_custom_fields: dict[str, dict] = {}
+        for field_id, field_data in (profile.get("fields") or {}).items():
+            label = field_data.get("label") or field_id
+            value = field_data.get("value")
+            if value:
+                custom_fields[label] = value
+                raw_custom_fields[field_id] = dict(field_data)
+
+        return {
+            "id": user.get("id", ""),
+            "name": user.get("name", ""),
+            "real_name": user.get("real_name", ""),
+            "display_name": profile.get("display_name", ""),
+            "email": profile.get("email", ""),
+            "title": profile.get("title", ""),
+            "phone": profile.get("phone", ""),
+            "status_text": profile.get("status_text", ""),
+            "status_emoji": profile.get("status_emoji", ""),
+            "timezone": user.get("tz", ""),
+            "tz_label": user.get("tz_label", ""),
+            "image": profile.get("image_192", ""),
+            "skype": profile.get("skype", ""),
+            "is_bot": user.get("is_bot", False),
+            "deleted": user.get("deleted", False),
+            "custom_fields": custom_fields,
+            "raw_custom_fields": raw_custom_fields,
+        }
+
+    def get_user_profile_via_proxy(self, user_id: str) -> dict:
+        """Get a Slack user's profile through the API server users.info proxy."""
+        user_response = self.get_user_info_proxy(user_id)
+        user = user_response.get("user", {})
+        profile = user.get("profile", {}) or {}
+
         custom_fields: dict[str, str] = {}
         raw_custom_fields: dict[str, dict] = {}
         for field_id, field_data in (profile.get("fields") or {}).items():
@@ -2075,6 +2284,27 @@ class SlackClient:
         except SlackApiError as e:
             raise RuntimeError(f"Slack API error: {e.response['error']}") from e
 
+    def get_file_info(self, file_id: str) -> dict:
+        """Get Slack file metadata directly with the Slack SDK."""
+        normalized_file_id = self._normalize_file_id(file_id)
+        try:
+            response = self._retry_on_ratelimit(
+                self._client.files_info,
+                file=normalized_file_id,
+                method_key="files.info",
+            )
+        except SlackApiError as e:
+            self._raise_slack_api_error(
+                e,
+                slack_method="files.info",
+                access_path="bot_token",
+            )
+        return response.get("file", {})
+
+    def get_file_info_via_proxy(self, file_id: str, channel_id: str) -> dict:
+        """Get Slack file metadata through the API server files.info proxy."""
+        return self.get_file_info_proxy(file_id=file_id, channel_id=channel_id).get("file", {})
+
     def get_message_files(self, channel_id: str, message_ts: str) -> list[dict]:
         """Get files attached to a specific message."""
         try:
@@ -2204,6 +2434,60 @@ class SlackClient:
 
         return results
 
+    def search_files_via_proxy(
+        self,
+        query: str,
+        channel_id: str,
+        max_results: int = 20,
+        page: int | None = None,
+        ts_from: str | int | float | None = None,
+        ts_to: str | int | float | None = None,
+        types: str | None = None,
+        user: str | None = None,
+    ) -> list[dict]:
+        """Search files in one allowed Slack channel through files.list proxy."""
+        response = self.list_files_proxy(
+            channel_id=channel_id,
+            limit=max_results,
+            page=page,
+            ts_from=ts_from,
+            ts_to=ts_to,
+            types=types,
+            user=user,
+        )
+        files = response.get("files", [])
+        query_lower = query.lower()
+        users_by_id = {
+            user_info["id"]: user_info
+            for user_info in self.list_users_via_proxy(limit=1000)
+            if user_info.get("id")
+        }
+
+        results = []
+        for f in files:
+            name = f.get("name", "")
+            title = f.get("title", "")
+            if query_lower and query_lower not in name.lower() and query_lower not in title.lower():
+                continue
+            user_id = f.get("user", "")
+            user_info = users_by_id.get(user_id, {})
+            results.append(
+                {
+                    "id": f.get("id", ""),
+                    "name": name,
+                    "title": title,
+                    "filetype": f.get("filetype", ""),
+                    "size": f.get("size", 0),
+                    "user": user_info.get("name") or user_id,
+                    "channels": f.get("channels", []),
+                    "permalink": f.get("permalink", ""),
+                    "url_private": f.get("url_private", ""),
+                    "created": f.get("created", 0),
+                }
+            )
+
+        return results[:max_results]
+
     def search_users(
         self,
         query: str,
@@ -2222,6 +2506,23 @@ class SlackClient:
             List of user dicts with id, name, real_name, email, title, timezone
         """
         all_users = self.list_users(limit=1000)
+        query_lower = query.lower()
+
+        matches = []
+        for u in all_users:
+            searchable = f"{u['name']} {u['real_name']} {u['email']} {u['title']}".lower()
+            if query_lower in searchable:
+                matches.append(u)
+
+        return matches[:max_results]
+
+    def search_users_via_proxy(
+        self,
+        query: str,
+        max_results: int = 20,
+    ) -> list[dict]:
+        """Search workspace users through the API server users.list proxy."""
+        all_users = self.list_users_via_proxy(limit=1000)
         query_lower = query.lower()
 
         matches = []
@@ -2384,6 +2685,42 @@ def get_thread_replies_proxy(*args, **kwargs):
     return _client().get_thread_replies_proxy(*args, **kwargs)
 
 
+def get_channel_members_proxy(*args, **kwargs):
+    return _client().get_channel_members_proxy(*args, **kwargs)
+
+
+def get_channel_members_via_proxy(*args, **kwargs):
+    return _client().get_channel_members_via_proxy(*args, **kwargs)
+
+
+def list_users_proxy(*args, **kwargs):
+    return _client().list_users_proxy(*args, **kwargs)
+
+
+def list_users_via_proxy(*args, **kwargs):
+    return _client().list_users_via_proxy(*args, **kwargs)
+
+
+def get_user_info_proxy(*args, **kwargs):
+    return _client().get_user_info_proxy(*args, **kwargs)
+
+
+def get_user_profile_via_proxy(*args, **kwargs):
+    return _client().get_user_profile_via_proxy(*args, **kwargs)
+
+
+def list_files_proxy(*args, **kwargs):
+    return _client().list_files_proxy(*args, **kwargs)
+
+
+def get_file_info_proxy(*args, **kwargs):
+    return _client().get_file_info_proxy(*args, **kwargs)
+
+
+def get_file_info_via_proxy(*args, **kwargs):
+    return _client().get_file_info_via_proxy(*args, **kwargs)
+
+
 def get_channel_history(*args, **kwargs):
     return _client().get_channel_history(*args, **kwargs)
 
@@ -2414,6 +2751,10 @@ def get_channel_members(*args, **kwargs):
 
 def get_channel_member_emails(*args, **kwargs):
     return _client().get_channel_member_emails(*args, **kwargs)
+
+
+def get_channel_member_emails_via_proxy(*args, **kwargs):
+    return _client().get_channel_member_emails_via_proxy(*args, **kwargs)
 
 
 def get_user_email(*args, **kwargs):
@@ -2456,6 +2797,10 @@ def get_message_files(*args, **kwargs):
     return _client().get_message_files(*args, **kwargs)
 
 
+def get_file_info(*args, **kwargs):
+    return _client().get_file_info(*args, **kwargs)
+
+
 def _fetch_slack_file(*args, **kwargs):
     return _client()._fetch_slack_file(*args, **kwargs)
 
@@ -2468,8 +2813,16 @@ def search_files(*args, **kwargs):
     return _client().search_files(*args, **kwargs)
 
 
+def search_files_via_proxy(*args, **kwargs):
+    return _client().search_files_via_proxy(*args, **kwargs)
+
+
 def search_users(*args, **kwargs):
     return _client().search_users(*args, **kwargs)
+
+
+def search_users_via_proxy(*args, **kwargs):
+    return _client().search_users_via_proxy(*args, **kwargs)
 
 
 def get_user_profile(*args, **kwargs):
