@@ -50,34 +50,6 @@ class PrincipalTest < ActiveSupport::TestCase
     assert_equal({}, principal.reload.labels)
   end
 
-  test "creates slack channel permission from slack channel label on create" do
-    principal = Principal.create!(
-      default_attrs(
-        namespace: "acme",
-        foreign_id: "C-auto-slack-label",
-        labels: { Principal::SLACK_CHANNEL_ID_LABEL => " c0123456789 " }
-      )
-    )
-
-    permission = principal.slack_channel_permissions.reload.sole
-    assert_equal "C0123456789", permission.channel_id
-    assert_predicate permission, :upload_enabled
-    assert_predicate permission, :download_enabled
-    assert_predicate permission, :history_enabled
-  end
-
-  test "does not create slack channel permission from invalid slack channel label" do
-    principal = Principal.create!(
-      default_attrs(
-        namespace: "acme",
-        foreign_id: "C-invalid-slack-label",
-        labels: { Principal::SLACK_CHANNEL_ID_LABEL => "C999" }
-      )
-    )
-
-    assert_empty principal.slack_channel_permissions.reload
-  end
-
   test "sandbox access defaults to enabled" do
     principal = Principal.create!(default_attrs(namespace: "acme", foreign_id: "C-default-sandbox-access"))
     principal.reload
@@ -191,14 +163,20 @@ class PrincipalTest < ActiveSupport::TestCase
     end
   end
 
-  test "clearing slack channel permissions revokes label-derived slack access" do
+  test "clearing slack channel permissions revokes slack access" do
     with_env("CENTAUR_JWT_SIGNING_SECRET" => "test-secret") do
       principal = Principal.create!(
         default_attrs(
           namespace: "acme",
-          foreign_id: "C-clear-slack-permissions",
-          labels: { Principal::SLACK_CHANNEL_ID_LABEL => "C0123456789" }
+          foreign_id: "C-clear-slack-permissions"
         )
+      )
+      SlackChannelPermission.create!(
+        principal: principal,
+        channel_id: "C0123456789",
+        upload_enabled: true,
+        download_enabled: true,
+        history_enabled: true
       )
       assert_not_nil ApiServer::Jwt.encode_for_principal(principal)
 
