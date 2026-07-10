@@ -1374,8 +1374,8 @@ impl TryFrom<&SandboxArgs> for AgentSandboxConfig {
         }
         config.iron_control = args.iron_control.settings();
         config.tools = args.tools_source.to_config();
-        // The chart label policy handles sandbox OTLP egress; keep the
-        // per-sandbox proxy's own in-cluster OTLP egress explicit.
+        // Direct harness OTLP export and the per-sandbox proxy both need the
+        // exact in-cluster collector destination in their generated policies.
         config.otlp_egress = args.sandbox_otlp_egress_target()?;
         // iron-control is the only proxy mode: a per-sandbox proxy syncs its
         // secrets from the control plane, so configuring iron-proxy without

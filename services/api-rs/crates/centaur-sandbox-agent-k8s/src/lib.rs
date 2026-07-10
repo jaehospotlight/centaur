@@ -67,8 +67,8 @@ pub struct AgentSandboxConfig {
     /// is set so the agent's shim installer finds them.
     pub tools: Option<ToolsConfig>,
     /// In-cluster OTLP collector (e.g. Laminar) used for observability-capable
-    /// sandboxes. Sandbox pod egress is granted by chart-level label policy;
-    /// the per-sandbox proxy uses this target for its own explicit egress.
+    /// sandboxes. The per-sandbox policies grant this exact destination to both
+    /// the sandbox's direct harness exporter and its egress proxy.
     pub otlp_egress: Option<OtlpEgressTarget>,
     pub ready_timeout: Duration,
 }

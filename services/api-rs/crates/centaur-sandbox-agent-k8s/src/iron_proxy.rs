@@ -1342,13 +1342,22 @@ fn build_iron_proxy_network_policies(
     observability_enabled: bool,
 ) -> Vec<NetworkPolicy> {
     let sandbox_to_proxy_ports = sandbox_to_proxy_ports(resolved);
-    let sandbox_egress = vec![
+    let mut sandbox_egress = vec![
         egress_to(
             vec![pod_peer(iron_proxy_labels(id, resolved.api_server_enabled))],
             sandbox_to_proxy_ports.clone(),
         ),
         dns_egress_rule(),
     ];
+    if observability_enabled && let Some(target) = otlp_egress {
+        // Harnesses export OTLP directly because the collector is in NO_PROXY;
+        // allow that exact in-cluster destination on the sandbox itself. The
+        // proxy keeps its matching rule for forwarded telemetry clients.
+        sandbox_egress.push(egress_to(
+            vec![namespace_peer(&target.namespace)],
+            vec![network_port(target.port)],
+        ));
+    }
     vec![
         NetworkPolicy {
             metadata: object_meta(
@@ -2105,7 +2114,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_egress_policy_does_not_inline_otlp_collector_rule() {
+    fn observable_sandbox_and_proxy_policies_allow_otlp_collector() {
         let id = SandboxId::new("asbx-test");
         let iron_proxy = IronProxyConfig::new("proxy:test", "ca-cert", "ca-key");
         let control_target = control_target();
@@ -2131,7 +2140,7 @@ mod tests {
             .unwrap()
             .clone();
         assert!(
-            !sandbox_egress
+            sandbox_egress
                 .iter()
                 .any(|rule| rule_allows_namespace_port(rule, "laminar", 8000))
         );
