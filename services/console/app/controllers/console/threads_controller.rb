@@ -81,6 +81,9 @@ class Console::ThreadsController < ApplicationController
 
   SlackThreadOwner = Struct.new(:user_id, :team_id, keyword_init: true)
 
+  # Pseudo thread key that opens a new-chat composer pane in the split view.
+  NEW_PANE_KEY = "new".freeze
+
   # The composer's model selector, in display order. Each entry pins the
   # harness the choice runs on (wire values match api-rs's HarnessType enum,
   # serde lowercase); the model ids are the ones the bots' --model flags
@@ -135,9 +138,14 @@ class Console::ThreadsController < ApplicationController
   def index
     @query = params[:q].to_s.strip
     requested_keys = requested_thread_keys
-    @selected_thread_key = requested_keys.first.to_s
-    @pane_thread_keys = requested_keys.drop(1)
-    @starting_new_thread = params[:new].present?
+    # "new" is a sentinel pane key: Cmd-clicking the sidebar's New chat adds a
+    # composer pane to the split view the same way thread keys add threads. On
+    # its own it is just the full-page new-chat screen.
+    @new_chat_pane_index = requested_keys.index(NEW_PANE_KEY) if requested_keys.size > 1
+    thread_keys = requested_keys - [ NEW_PANE_KEY ]
+    @selected_thread_key = thread_keys.first.to_s
+    @pane_thread_keys = thread_keys.drop(1)
+    @starting_new_thread = params[:new].present? || requested_keys == [ NEW_PANE_KEY ]
     @thread_db_unavailable = false
     @thread_not_found = false
 
@@ -247,7 +255,12 @@ class Console::ThreadsController < ApplicationController
       metadata: console_actor_metadata.merge(agent.model.present? ? { model: agent.model } : {})
     )
     send_prompt(thread_key, prompt, model: agent.model, effort: composer_effort_param(agent))
-    redirect_to console_threads_path(thread: thread_key)
+    # A new-chat pane in a split view swaps the sentinel for the created
+    # thread so the other panes stay open.
+    open_keys = params[:open_threads].to_s.split(",").map(&:strip).reject(&:blank?)
+    redirect_keys = open_keys.include?(NEW_PANE_KEY) ?
+      open_keys.map { |key| key == NEW_PANE_KEY ? thread_key : key } : [ thread_key ]
+    redirect_to console_threads_path(thread: redirect_keys.uniq.first(PANEL_LIMIT).join(","))
   rescue CentaurApiClient::Error => e
     redirect_to console_threads_path(new: 1), alert: "Could not start the chat: #{e.message}"
   end
@@ -451,12 +464,23 @@ class Console::ThreadsController < ApplicationController
     sessions = ([ @selected_session ] + Array(@pane_sessions)).compact
       .uniq(&:thread_key)
       .first(PANEL_LIMIT)
-    return [] if sessions.empty?
+    panels = if sessions.empty?
+      []
+    else
+      # Build the primary panel last so the @selected_* thread state (used by
+      # the page header and mention-resolution memos) ends on the primary
+      # thread.
+      extra_panels = sessions.drop(1).map { |session| thread_panel_for(session) }
+      [ thread_panel_for(sessions.first) ] + extra_panels
+    end
 
-    # Build the primary panel last so the @selected_* thread state (used by the
-    # page header and mention-resolution memos) ends on the primary thread.
-    extra_panels = sessions.drop(1).map { |session| thread_panel_for(session) }
-    [ thread_panel_for(sessions.first) ] + extra_panels
+    if @new_chat_pane_index && panels.any?
+      panels.insert(
+        [ @new_chat_pane_index, panels.size ].min,
+        { new_chat: true, thread_key: NEW_PANE_KEY, session: nil, transcript_items: [] }
+      )
+    end
+    panels
   end
 
   def thread_panel_for(session)

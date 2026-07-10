@@ -645,6 +645,48 @@ class Console::ThreadsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-console-thinking-indicator]", count: 0
   end
 
+  test "a new sentinel pane opens a composer panel alongside a thread" do
+    skip_unless_session_table
+    insert_console_session("console:with-new-pane")
+
+    with_composer do
+      get console_threads_url(thread: "console:with-new-pane,new")
+    end
+
+    assert_response :ok
+    assert_select "[data-thread-panel]", count: 2
+    assert_select "[data-thread-panel=new]", count: 1
+    assert_select "[data-thread-panel=new] textarea[name=prompt]", count: 1
+    assert_select "[data-thread-panel=new] [data-console-model-picker]", count: 1
+  end
+
+  test "the new sentinel alone renders the full-page new chat screen" do
+    with_composer do
+      with_recent_first_error do
+        get console_threads_url(thread: "new")
+      end
+    end
+
+    assert_response :ok
+    assert_select "[data-thread-panel]", count: 0
+    assert_select "textarea[name=prompt]", count: 1
+  end
+
+  test "starting a chat from a pane swaps the sentinel for the created thread" do
+    client = RecordingApiClient.new
+    with_composer(client: client) do
+      post console_threads_url,
+           params: {
+             prompt: "Reply with PONG.",
+             model: "gpt-5.5",
+             open_threads: "console:other,new"
+           }
+    end
+
+    thread_key = client.calls[0].last[:thread_key]
+    assert_redirected_to console_threads_path(thread: "console:other,#{thread_key}")
+  end
+
   test "renders a follow-up composer on an open chat" do
     skip_unless_session_table
     insert_console_session("console:composer-open")

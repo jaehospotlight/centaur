@@ -13,8 +13,11 @@
               data: { console_composer: thread_mode ? "thread" : "new" } do |form| %>
   <% if thread_mode %>
     <%= form.hidden_field :thread_key, value: composer_session.thread_key %>
-    <%= form.hidden_field :open_threads, value: params[:thread].to_s.presence %>
   <% end %>
+  <%# Both modes carry the page's open panes: replies re-open them after the
+      redirect, and a new-chat pane swaps its "new" sentinel for the created
+      thread key. %>
+  <%= form.hidden_field :open_threads, value: params[:thread].to_s.presence %>
   <div class="console-composer-box">
     <%= form.text_area :prompt,
                        rows: thread_mode ? 1 : 3,

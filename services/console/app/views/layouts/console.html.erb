@@ -1002,6 +1002,11 @@
         gap: 1rem;
       }
 
+      /* Inside a split-view pane the composer sits higher: panes are short. */
+      .console-new-chat--panel {
+        margin-top: 10vh;
+      }
+
       .console-new-chat-title {
         color: #f4f4f5;
         font-size: 1.25rem;
@@ -1592,11 +1597,17 @@
             </div>
           <% end %>
 
+          <%# New chat rides the thread-link machinery with the "new" sentinel
+              key: plain click opens the full-page composer, Cmd/Ctrl-click
+              adds a composer pane to the split view (and re-clicking an open
+              one closes it). %>
           <div class="console-thread-group">
-            <a href="<%= console_threads_path(new: 1) %>"
+            <a href="<%= console_threads_path(thread: Console::ThreadsController::NEW_PANE_KEY) %>"
                class="console-thread-group-title"
                aria-label="New chat"
-               title="New chat">
+               title="New chat"
+               data-console-thread-link
+               data-console-new-chat>
               <span class="console-nav-icon"><%= console_icon("plus", classes: "size-4") %></span>
               <span class="console-nav-label">New chat</span>
             </a>
@@ -1837,6 +1848,9 @@
             : [];
 
           document.querySelectorAll("[data-console-thread-link]").forEach((link) => {
+            // The New chat tab participates in open/close clicks but is not a
+            // thread row: no open-dot or pane-number decoration.
+            if (link.dataset.consoleNewChat !== undefined) return;
             const key = new URL(link.href, window.location.origin).searchParams.get("thread");
             const paneIndex = openKeys.indexOf(key);
             const open = paneIndex !== -1;
@@ -1866,7 +1880,8 @@
           if (!url.pathname.startsWith(THREADS_PATH)) return;
           const openKeys = (url.searchParams.get("thread") || "").split(",").filter(Boolean);
           const primary = openKeys[0];
-          if (!primary) return;
+          // "new" is the composer-pane sentinel, not a thread.
+          if (!primary || primary === "new") return;
 
           const frame = document.getElementById("console_sidebar_threads");
           if (!frame) return;
