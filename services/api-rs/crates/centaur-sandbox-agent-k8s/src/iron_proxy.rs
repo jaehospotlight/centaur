@@ -50,8 +50,7 @@ const PROXY_LOG_LEVEL: &str = "info";
 // DSN. These are the deploy-level env vars iron-proxy reads for that listener.
 const PG_LISTENER_PORT: u16 = 5432;
 const CENTAUR_POSTGRES_DSN_ENV: &str = "CENTAUR_POSTGRES_DSN";
-const CENTAUR_SANDBOX_ENTITLEMENTS_URL_ENV: &str = "CENTAUR_SANDBOX_ENTITLEMENTS_URL";
-const SANDBOX_ENTITLEMENTS_PATH: &str = "/api/v1/sandbox/permissions";
+const CENTAUR_CONSOLE_URL_ENV: &str = "CENTAUR_CONSOLE_URL";
 const PG_LISTEN_ENV: &str = "IRON_PROXY_PG_LISTEN";
 const PG_CLIENT_USER_ENV: &str = "IRON_PROXY_PG_CLIENT_USER";
 const PG_CLIENT_PASSWORD_ENV: &str = "IRON_PROXY_PG_CLIENT_PASSWORD";
@@ -1125,15 +1124,7 @@ pub(crate) fn apply_proxy_env(spec: &mut SandboxSpec, resolved: &ResolvedIronPro
         set_missing_env(spec, CENTAUR_POSTGRES_DSN_ENV, &value);
     }
     if !resolved.control_url.is_empty() {
-        set_missing_env(
-            spec,
-            CENTAUR_SANDBOX_ENTITLEMENTS_URL_ENV,
-            &format!(
-                "{}{}",
-                resolved.control_url.trim_end_matches('/'),
-                SANDBOX_ENTITLEMENTS_PATH
-            ),
-        );
+        set_missing_env(spec, CENTAUR_CONSOLE_URL_ENV, &resolved.control_url);
     }
 }
 
@@ -2665,7 +2656,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_proxy_env_adds_sandbox_entitlements_url() {
+    fn apply_proxy_env_adds_console_url() {
         let mut spec = SandboxSpec::new("centaur-agent:latest");
         let mut resolved = resolved();
         resolved.control_url = "http://console:3000/".to_owned();
@@ -2675,11 +2666,8 @@ mod tests {
         let value = spec
             .env
             .iter()
-            .find(|env| env.name == CENTAUR_SANDBOX_ENTITLEMENTS_URL_ENV)
+            .find(|env| env.name == CENTAUR_CONSOLE_URL_ENV)
             .map(|env| env.value.as_str());
-        assert_eq!(
-            value,
-            Some("http://console:3000/api/v1/sandbox/permissions")
-        );
+        assert_eq!(value, Some("http://console:3000/"));
     }
 }
