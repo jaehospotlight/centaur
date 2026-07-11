@@ -12,6 +12,10 @@ type RawSlackEvent = {
   app_id?: JsonValue
   bot_id?: JsonValue
   bot_profile?: RawSlackBotProfile
+  channel?: JsonValue
+  channel_type?: JsonValue
+  is_im?: JsonValue
+  is_mpim?: JsonValue
   source_team?: JsonValue
   subtype?: JsonValue
   team?: JsonValue
@@ -53,6 +57,17 @@ export function isAllowedSlackWebhookBody(
     })
     return false
   }
+  const allowedDmTeamIds = normalizedTeamIdSet(
+    options.allowedDmTeamIds ?? splitEnvList(process.env.SLACKBOT_DM_TEAM_ALLOWLIST)
+  )
+  const dmTeamId = slackDirectMessageTeamIdForHome(stringValue(payload.team_id), event)
+  if (dmTeamId && allowedDmTeamIds.size > 0 && !allowedDmTeamIds.has(normalizeTeamId(dmTeamId))) {
+    logger.warn('slackbotv2_dm_ignored_team_not_allowlisted', {
+      event_id: stringValue(payload.event_id),
+      slack_team_id: dmTeamId
+    })
+    return false
+  }
   return true
 }
 
@@ -69,6 +84,18 @@ export function isAllowedSlackMessage(
     logger.warn('slackbotv2_event_ignored_external_org_not_allowlisted', {
       external_team_id: externalTeamId,
       message_id: message.id,
+      thread_id: message.threadId
+    })
+    return false
+  }
+  const allowedDmTeamIds = normalizedTeamIdSet(
+    options.allowedDmTeamIds ?? splitEnvList(process.env.SLACKBOT_DM_TEAM_ALLOWLIST)
+  )
+  const dmTeamId = raw ? slackDirectMessageTeamId(raw) : undefined
+  if (dmTeamId && allowedDmTeamIds.size > 0 && !allowedDmTeamIds.has(normalizeTeamId(dmTeamId))) {
+    logger.warn('slackbotv2_dm_ignored_team_not_allowlisted', {
+      message_id: message.id,
+      slack_team_id: dmTeamId,
       thread_id: message.threadId
     })
     return false
@@ -90,6 +117,36 @@ export function isAllowedSlackMessage(
 
 function externalSlackTeamId(event: RawSlackEvent): string | undefined {
   return externalSlackTeamIdForHome(stringValue(event.team_id), event)
+}
+
+function slackDirectMessageTeamId(event: RawSlackEvent): string | undefined {
+  return slackDirectMessageTeamIdForHome(stringValue(event.team_id), event)
+}
+
+function slackDirectMessageTeamIdForHome(
+  homeTeamId: string | undefined,
+  event: RawSlackEvent
+): string | undefined {
+  if (!isSlackDirectMessageEvent(event)) return undefined
+  return (
+    externalSlackTeamIdForHome(homeTeamId, event)
+    ?? stringValue(event.user_team)
+    ?? stringValue(event.source_team)
+    ?? stringValue(event.team)
+    ?? stringValue(event.team_id)
+    ?? homeTeamId
+  )
+}
+
+function isSlackDirectMessageEvent(event: RawSlackEvent): boolean {
+  const channelType = stringValue(event.channel_type)
+  return (
+    channelType === 'im'
+    || channelType === 'mpim'
+    || event.is_im === true
+    || event.is_mpim === true
+    || stringValue(event.channel)?.startsWith('D') === true
+  )
 }
 
 function externalSlackTeamIdForHome(
@@ -134,6 +191,14 @@ function isAllowedTriggerBotMessage(
 
 function normalizedIdentifierSet(...values: Array<string | undefined>): Set<string> {
   return new Set(values.map(value => value?.trim()).filter((value): value is string => Boolean(value)))
+}
+
+function normalizedTeamIdSet(values: readonly string[] | undefined): Set<string> {
+  return new Set((values ?? []).map(normalizeTeamId).filter(Boolean))
+}
+
+function normalizeTeamId(value: string): string {
+  return value.trim().toUpperCase()
 }
 
 function parseTriggerBotAllowlistEntry(

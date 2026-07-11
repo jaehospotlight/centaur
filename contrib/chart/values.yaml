@@ -461,6 +461,10 @@ slackbotv2:
   # assumes users connect through `kubectl port-forward ... 3000:8080`.
   mcpPublicUrl: "http://localhost:3000"
   externalOrgAllowlist: ""
+  # Comma- or whitespace-separated Slack team IDs allowed to start sessions
+  # from DMs. Include the team that owns SLACK_BOT_TOKEN; Slackbot does not add
+  # it automatically.
+  dmTeamAllowlist: ""
   triggerBotAllowlist: ""
   metrics:
     # slackbotv2 serves Prometheus text metrics at /metrics. This flag only

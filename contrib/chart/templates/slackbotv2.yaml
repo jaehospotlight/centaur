@@ -85,6 +85,10 @@ spec:
             - name: SLACKBOT_EXTERNAL_ORG_ALLOWLIST
               value: {{ .Values.slackbotv2.externalOrgAllowlist | quote }}
 {{- end }}
+{{- if .Values.slackbotv2.dmTeamAllowlist }}
+            - name: SLACKBOT_DM_TEAM_ALLOWLIST
+              value: {{ .Values.slackbotv2.dmTeamAllowlist | quote }}
+{{- end }}
 {{- if .Values.slackbotv2.triggerBotAllowlist }}
             - name: SLACKBOT_TRIGGER_BOT_ALLOWLIST
               value: {{ .Values.slackbotv2.triggerBotAllowlist | quote }}

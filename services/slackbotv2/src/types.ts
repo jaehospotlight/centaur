@@ -124,6 +124,8 @@ export type SlackbotV2Options = {
    * (HarnessType wire value: codex | amp | claudecode). Defaults to codex.
    */
   defaultHarnessType?: string
+  /** When non-empty, only these Slack team IDs may start sessions from DMs. */
+  allowedDmTeamIds?: readonly string[]
   fetch?: SlackbotV2Fetch
   /**
    * Deployment-configured default model per harness wire value (claudecode |
