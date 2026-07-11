@@ -417,7 +417,22 @@ impl AgentSandboxBackend {
         id: &SandboxId,
         sandbox: &crate::crd::Sandbox,
     ) -> SandboxResult<()> {
+        let proxy_expected = sandbox
+            .metadata
+            .annotations
+            .as_ref()
+            .is_some_and(|annotations| {
+                annotations.contains_key(crate::IRON_CONTROL_PRINCIPAL_ANNOTATION)
+            });
         let Some(owner_reference) = sandbox_owner_reference(sandbox) else {
+            if proxy_expected {
+                tracing::warn!(
+                    sandbox_id = id.as_str(),
+                    sandbox_name_present = sandbox.metadata.name.is_some(),
+                    sandbox_uid_present = sandbox.metadata.uid.is_some(),
+                    "skipped iron-proxy owner adoption because sandbox owner metadata is incomplete"
+                );
+            }
             return Ok(());
         };
         let params = PatchParams::default();
@@ -432,6 +447,16 @@ impl AgentSandboxBackend {
             )))
             .await
             .map_err(|err| map_kube_error("list iron-proxy pods for adoption", err))?;
+        if pods.items.is_empty() {
+            if proxy_expected {
+                tracing::warn!(
+                    sandbox_id = id.as_str(),
+                    "no iron-proxy pods matched during owner adoption"
+                );
+            }
+            return Ok(());
+        }
+        let proxy_pod_count = pods.items.len();
         for pod in pods.items {
             let Some(name) = pod.metadata.name else {
                 continue;
@@ -461,6 +486,11 @@ impl AgentSandboxBackend {
                 Err(err) => return Err(map_kube_error("adopt iron-proxy network policy", err)),
             }
         }
+        tracing::info!(
+            sandbox_id = id.as_str(),
+            proxy_pod_count,
+            "adopted iron-proxy resources into sandbox ownership"
+        );
         Ok(())
     }
 
