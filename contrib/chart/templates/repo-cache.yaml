@@ -2,6 +2,7 @@
 {{- $overlaySources := include "centaur.overlaySources" . | fromJsonArray -}}
 {{- $repoCacheRepositories := list -}}
 {{- $repoCacheRepositoryVisibilities := dict -}}
+{{- $repoCacheExplicitRepositoryVisibilities := dict -}}
 {{- $repoCacheRepositoryRefs := list -}}
 {{- $repoCacheRepositoryRefRepos := list -}}
 {{- range $repo, $ref := .Values.repoCache.repositoryRefs }}
@@ -20,6 +21,9 @@
 {{- if $repo -}}
 {{- $repoCacheRepositories = append $repoCacheRepositories $repo -}}
 {{- $_ := set $repoCacheRepositoryVisibilities $repo (include "centaur.repositoryVisibility" (get . "visibility")) -}}
+{{- if hasKey . "visibility" -}}
+{{- $_ := set $repoCacheExplicitRepositoryVisibilities $repo true -}}
+{{- end -}}
 {{- $ref := get . "ref" | default "" -}}
 {{- if and $ref (not (has $repo $repoCacheRepositoryRefRepos)) -}}
 {{- $repoCacheRepositoryRefs = append $repoCacheRepositoryRefs (printf "%s=%s" $repo $ref) -}}
@@ -31,7 +35,9 @@
 {{- range $source := $overlaySources }}
 {{- with (get $source "repo") }}
 {{- $repoCacheRepositories = append $repoCacheRepositories . -}}
+{{- if not (hasKey $repoCacheExplicitRepositoryVisibilities .) -}}
 {{- $_ := set $repoCacheRepositoryVisibilities . (get $source "visibility" | default "private") -}}
+{{- end -}}
 {{- end }}
 {{- end }}
 {{- $repoCacheRepositories = uniq $repoCacheRepositories -}}
