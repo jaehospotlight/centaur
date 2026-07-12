@@ -124,7 +124,7 @@ pub(crate) struct ResolvedIronProxy {
     proxy_host: String,
     proxy_pod_name: String,
     proxy_port: u16,
-    control_url: String,
+    console_url: String,
     // iron-control principal OID this sandbox's proxy binds to.
     principal_id: String,
     // The single Postgres listener the proxy multiplexes all upstreams through,
@@ -321,7 +321,7 @@ impl AgentSandboxBackend {
             proxy_host: iron_proxy_service_name(id),
             proxy_pod_name: new_iron_proxy_pod_name(id),
             proxy_port: PROXY_TUNNEL_PORT,
-            control_url: self
+            console_url: self
                 .config
                 .iron_control
                 .as_ref()
@@ -1123,8 +1123,8 @@ pub(crate) fn apply_proxy_env(spec: &mut SandboxSpec, resolved: &ResolvedIronPro
         );
         set_missing_env(spec, CENTAUR_POSTGRES_DSN_ENV, &value);
     }
-    if !resolved.control_url.is_empty() {
-        set_missing_env(spec, CENTAUR_CONSOLE_URL_ENV, &resolved.control_url);
+    if !resolved.console_url.is_empty() {
+        set_missing_env(spec, CENTAUR_CONSOLE_URL_ENV, &resolved.console_url);
     }
 }
 
@@ -1950,7 +1950,7 @@ mod tests {
             proxy_host: "asbx-test-iron-proxy".to_owned(),
             proxy_pod_name: "asbx-test-iron-proxy-1".to_owned(),
             proxy_port: 8080,
-            control_url: "http://console:3000".to_owned(),
+            console_url: "http://console:3000".to_owned(),
             principal_id: "principal".to_owned(),
             pg: None,
             replace_placeholders: BTreeMap::new(),
@@ -2659,7 +2659,7 @@ mod tests {
     fn apply_proxy_env_adds_console_url() {
         let mut spec = SandboxSpec::new("centaur-agent:latest");
         let mut resolved = resolved();
-        resolved.control_url = "http://console:3000/".to_owned();
+        resolved.console_url = "http://console:3000/".to_owned();
 
         apply_proxy_env(&mut spec, &resolved);
 
