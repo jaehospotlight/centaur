@@ -70,7 +70,10 @@ apiRs:
       # Private-channel rows stay RLS-guarded (visible only to sessions in
       # that channel). The earlier default-deny glob wall is retired; if a
       # public channel the bot idles in must NOT be synced, name it here.
-      excludedChannelPatterns: ""
+      # #leadership is deliberately NOT ingested (same judgment as the old
+      # coach corpus, which excluded leadership-only material). Its already-
+      # synced rows were purged 2026-07-13.
+      excludedChannelPatterns: "leadership"
       attachments:
         # Skip downloading attachment bytes into Postgres (bytea): the mini's
         # disk is chronically tight and document projection only indexes
