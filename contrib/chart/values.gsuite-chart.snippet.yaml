@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------
+# Spotlight snippet: enable the gsuite + chart bundled tools.
+# MERGE these keys into values.spotlight.yaml (do not pass this file to helm
+# on its own — it is a fragment, not a complete values overlay).
+#
+# What this covers (chart-values side ONLY — see the runbook/report for the
+# out-of-cluster steps):
+#   * gsuite tool  — NO chart change needed. Auth is the GOOGLE_TOKEN_JSON
+#     key added to the `centaur-infra-env` Kubernetes Secret (secretManager
+#     backend is already `env` in values.spotlight.yaml), then registered +
+#     granted in iron-control via `centaur-perms principals grant ... --tool
+#     gsuite`. The tool ships in the base fork's tools/ tree, so it is already
+#     on TOOL_DIRS.
+#   * chart tool   — NO chart change needed at all. No secrets, no grants;
+#     pure matplotlib/pandas rendering inside the sandbox. Listed here only
+#     so the merge note is self-documenting.
+#   * Drive/Docs + Calendar ETL workflows — the apiRs.etl block below is the
+#     actual chart change. It renders GOOGLE_DRIVE_ETL_ENABLED /
+#     GOOGLE_CALENDAR_ETL_ENABLED (+ interval) env vars into api-rs, and the
+#     chart automatically adds them to the workflow-host sandbox passthrough
+#     list (templates/apirs.yaml derives SESSION_SANDBOX_PASSTHROUGH_ENV from
+#     this same config).
+# ---------------------------------------------------------------------------
+
+apiRs:
+  etl:
+    # Google Drive ETL: workflows/gsuite/drive_sync.py (schedule_id
+    # "google_drive_sync"). Lists every Google Doc *visible to the OAuth'd
+    # account* (mimeType application/vnd.google-apps.document, incl. shared
+    # drives), pulls full plain text, and upserts into:
+    #   google_drive_sync_files / google_drive_sync_runs /
+    #   google_drive_sync_checkpoints
+    # Incremental via modifiedTime watermark (60s overlap). Requires the
+    # GOOGLE_TOKEN_JSON secret to be granted to the workflow-host principal.
+    googleDrive:
+      enabled: true
+      # 4h default; drop to e.g. 3600 once the first full backfill completes
+      # if fresher docs context is wanted.
+      syncIntervalSeconds: 14400
+
+    # Google Calendar ETL: workflows/gsuite/calendar_sync.py (schedule_id
+    # "google_calendar_sync"). Syncs all visible calendars + events
+    # (incremental via Google syncToken, auto full-resync on 410) into:
+    #   google_calendar_sync_calendars / google_calendar_sync_events /
+    #   google_calendar_sync_runs / google_calendar_sync_checkpoints
+    googleCalendar:
+      enabled: true
+      syncIntervalSeconds: 14400
+
+    # Projection of synced rows into company_context documents
+    # (workflows/company_context_documents.py). Its chart default is already
+    # enabled:true and its SCHEDULE self-activates once any *_ETL_ENABLED
+    # flag is true, so this stanza is explicit documentation, not a change.
+    # Sources projected once the two ETLs above run: google_doc (from
+    # google_drive_sync_files) and calendar_event (from
+    # google_calendar_sync_events); searchable via the company_context tool.
+    companyContextDocuments:
+      enabled: true
+      intervalSeconds: 14400
+      maxWindowSeconds: 21600
+
+# OPTIONAL — only if Spotlight wants the gsuite Google-Analytics subcommands
+# without passing --property on every call. Uncomment and set a real GA4
+# property id; the tool's built-in site aliases are Paradigm's and useless
+# for Spotlight. Copied into every sandbox pod.
+# sandbox:
+#   extraEnv:
+#     GA_PROPERTY_ID: "<spotlight GA4 property id>"

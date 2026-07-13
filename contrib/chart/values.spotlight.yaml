@@ -17,8 +17,8 @@ ironProxy:
   manager:
     secretSource: env
 
-console:
-  enabled: false
+# console (iron-control) is mandatory: per-sandbox iron-proxies sync their
+# effective config from it. values.dev.yaml already enables it.
 
 sandbox:
   # Claude Code is the default harness for new threads (--codex/--amp still
@@ -27,6 +27,83 @@ sandbox:
   # Secret; sandboxes only ever see placeholder credentials.
   harnessEngine: claudecode
   claudeCodeAuthMode: access_token
+
+# Slack ETL: scheduled workflows (slack_sync hourly-ish, slack_backfill,
+# company_context_documents) that copy Slack channel history into Postgres
+# (slack_sync_* tables) and project it into company_context_documents, which
+# the company_context tool searches (ParadeDB full-text over the cluster's own
+# ai_v2 database via the CENTAUR_POSTGRES_DSN pg_dsn secret).
+#
+# Deployment prerequisites (NOT expressed in chart values):
+#   - centaur-infra-env must contain SLACK_ETL_TOKEN (the workflows read Slack
+#     with it via iron-proxy; reuse the bot token from SLACKBOT_API_KEY).
+#   - The Slack app needs OAuth scopes: channels:read + users:read (new), and
+#     groups:read (new, only because indexPrivateChannels is true below).
+#     channels:history / groups:history / files:read are already granted.
+#   - The bot must be a member of #spotlight-claude (bot tokens can only read
+#     history of channels they are in).
+apiRs:
+  etl:
+    slack:
+      # Master switch: registers/enables the slack_sync, slack_backfill and
+      # (with companyContextDocuments below) document-projection schedules.
+      enabled: true
+      # Incremental sync cadence. 30 min keeps agent memory reasonably fresh;
+      # with a single channel this is a handful of Slack API calls per run.
+      syncIntervalSeconds: 1800
+      # Historical window seeded as backfill jobs the first time a channel is
+      # synced. 365 days covers #spotlight-claude's full history.
+      syncBackfillLookbackDays: 365
+      # Trailing window in which existing threads are re-read so late replies
+      # and edits are picked up. Claude threads stay active for days; widen
+      # from the 3-day default.
+      syncThreadLookbackDays: 7
+      # Also list private channels (needs groups:read). Safe with the
+      # default-deny exclusion list below; covers the case where
+      # #spotlight-claude is/becomes private. Private rows are RLS-guarded:
+      # only sessions whose principal is in that channel can read them.
+      indexPrivateChannels: true
+      # CHANNEL ALLOWLIST (approximated): the ETL has no include-list, only
+      # name-glob exclusions, so this default-deny set excludes every channel
+      # name EXCEPT exactly "spotlight-claude" (C0BB7UFPP96):
+      #   - 16 globs excluding names that diverge from it at each position,
+      #   - 15 exact patterns excluding its proper prefixes ("s".."spotlight-claud"),
+      #   - "spotlight-claude?*" excluding longer names sharing the prefix.
+      # New channels are therefore excluded by default. CAVEAT: matching is by
+      # channel NAME, not ID — renaming #spotlight-claude stops its sync, and
+      # a new channel reusing the name would be synced. To add channels later,
+      # regenerate this set (see the sync report / prefix construction).
+      excludedChannelPatterns: "[!s]*,s[!p]*,sp[!o]*,spo[!t]*,spot[!l]*,spotl[!i]*,spotli[!g]*,spotlig[!h]*,spotligh[!t]*,spotlight[!-]*,spotlight-[!c]*,spotlight-c[!l]*,spotlight-cl[!a]*,spotlight-cla[!u]*,spotlight-clau[!d]*,spotlight-claud[!e]*,s,sp,spo,spot,spotl,spotli,spotlig,spotligh,spotlight,spotlight-,spotlight-c,spotlight-cl,spotlight-cla,spotlight-clau,spotlight-claud,spotlight-claude?*"
+      attachments:
+        # Skip downloading attachment bytes into Postgres (bytea): the mini's
+        # disk is chronically tight and document projection only indexes
+        # attachment METADATA (names, types, permalinks), never the bytes, so
+        # downloads add storage without adding search value. Metadata rows are
+        # still written and searchable.
+        enabled: false
+      backfill:
+        # Drain deferred historical-backfill jobs (chart defaults, stated
+        # explicitly): every 10 min, up to 50 jobs/run, 5 Slack history pages
+        # per job before requeueing. Plenty for one channel.
+        enabled: true
+        intervalSeconds: 600
+        channelBatchLimit: 50
+        channelPagesPerJob: 5
+      retention:
+        # Retention pruning stays enabled but with TTL 0 = keep everything
+        # forever (this data IS the agents' long-term memory).
+        enabled: true
+        intervalMinutes: 60
+        etlDays: 0
+        dmDays: 0
+    companyContextDocuments:
+      # Projects changed slack_sync_* rows into company_context_documents
+      # (what company_context actually searches). Tighten from the 4h default
+      # to 1h so end-to-end memory lag is ~sync + 1h at worst.
+      enabled: true
+      intervalSeconds: 3600
+      # Max source updated_at window per projection run (chart default).
+      maxWindowSeconds: 21600
 
 # Base tools come from our fork rather than paradigmxyz/centaur.
 toolServer:
