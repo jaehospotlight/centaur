@@ -22,11 +22,20 @@ ironProxy:
 
 sandbox:
   # Claude Code is the default harness for new threads (--codex/--amp still
-  # available per-thread). Auth rides the Claude Max subscription via
-  # iron-token-broker: CLAUDE_CODE_CLIENT_ID + CLAUDE_CODE_BLOB in the infra
-  # Secret; sandboxes only ever see placeholder credentials.
+  # available per-thread), authenticated with the Max subscription.
   harnessEngine: claudecode
-  claudeCodeAuthMode: access_token
+  # api_key mode + CLAUDE_CODE_OAUTH_TOKEN passthrough (below): the CLI sends
+  # the dedicated long-lived setup-token itself. access_token/broker mode was
+  # abandoned 2026-07-13: the broker shared a refresh-token lineage with the
+  # mini's interactive Claude Code, and each rotation invalidated the other
+  # (recurring 401s). Tradeoff: sandboxes can read the token from env; egress
+  # is proxy-allowlisted, and the token is subscription-scoped + revocable.
+  claudeCodeAuthMode: api_key
+
+# apiRs.extraEnv.SESSION_SANDBOX_PASSTHROUGH_ENV: env var NAMES forwarded from
+# the api-rs pod (which envFroms centaur-infra-env) into every sandbox.
+# CLAUDE_CODE_OAUTH_TOKEN carries the dedicated long-lived subscription token
+# the Claude Code CLI consumes natively (see sandbox.claudeCodeAuthMode note).
 
 # Slack ETL: scheduled workflows (slack_sync hourly-ish, slack_backfill,
 # company_context_documents) that copy Slack channel history into Postgres
@@ -43,6 +52,8 @@ sandbox:
 #   - The bot must be a member of #spotlight-claude (bot tokens can only read
 #     history of channels they are in).
 apiRs:
+  extraEnv:
+    SESSION_SANDBOX_PASSTHROUGH_ENV: "CLAUDE_CODE_OAUTH_TOKEN"
   etl:
     slack:
       # Master switch: registers/enables the slack_sync, slack_backfill and
