@@ -1,0 +1,62 @@
+# Spotlight deployment values — Mac mini (kind, locally built arm64 images).
+# Layered on top of values.dev.yaml:
+#   helm ... -f values.dev.yaml -f values.spotlight.yaml
+# Differences from dev: env-backed secrets (no 1Password), Claude Code as the
+# default harness on the Claude Max subscription, console disabled to avoid
+# building the Rails image, and the Spotlight overlay sources.
+
+secretManager:
+  backend: env
+  envPrefix: ""
+  existingSecretName: centaur-infra-env
+
+ironProxy:
+  # iron-proxy resolves tool/harness credentials from env vars on the proxy
+  # container (backed by the centaur-infra-env Secret) instead of 1Password.
+  secretSource: env
+  manager:
+    secretSource: env
+
+console:
+  enabled: false
+
+sandbox:
+  # Claude Code is the default harness for new threads (--codex/--amp still
+  # available per-thread). Auth rides the Claude Max subscription via
+  # iron-token-broker: CLAUDE_CODE_CLIENT_ID + CLAUDE_CODE_BLOB in the infra
+  # Secret; sandboxes only ever see placeholder credentials.
+  harnessEngine: claudecode
+  claudeCodeAuthMode: access_token
+
+# Base tools come from our fork rather than paradigmxyz/centaur.
+toolServer:
+  repo: jaehospotlight/centaur
+  visibility: public
+
+repoCache:
+  githubToken:
+    existingSecretName: centaur-infra-env
+    secretKey: GITHUB_TOKEN
+
+overlays:
+  sources:
+    # Base: our Centaur fork (tools/, workflows/, .agents/skills/).
+    - repo: jaehospotlight/centaur
+      ref: main
+      visibility: public
+    # Spotlight overlay lives inside the existing internal repo under
+    # centaur-overlay/ (skills, spotlight-metrics tool, morning-brief workflow).
+    - repo: jaehospotlight/internal
+      ref: coo-system
+      visibility: private
+      toolsSubdir: centaur-overlay/tools
+      workflowsSubdir: centaur-overlay/workflows
+      skillsSubdir: centaur-overlay/.agents/skills
+    # Training corpus (playbook) checked out into sandboxes for the coach
+    # behavior; contributes no tools/workflows/skills surfaces.
+    - repo: jaehospotlight/SpotlightHQ
+      ref: main
+      visibility: private
+      toolsSubdir: ""
+      workflowsSubdir: ""
+      skillsSubdir: ""
