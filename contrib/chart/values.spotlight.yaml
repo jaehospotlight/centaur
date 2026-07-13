@@ -79,13 +79,14 @@ apiRs:
         # still written and searchable.
         enabled: false
       backfill:
-        # Drain deferred historical-backfill jobs (chart defaults, stated
-        # explicitly): every 10 min, up to 50 jobs/run, 5 Slack history pages
-        # per job before requeueing. Plenty for one channel.
+        # Drain aggressively: 20 channels x 365d to ingest. Slack's per-app
+        # rate limit (~50 req/min on history endpoints) is the real ceiling —
+        # the worker retries politely on rate_limited, so a 60s drain interval
+        # just keeps the pipe full instead of idling 10 min between sips.
         enabled: true
-        intervalSeconds: 600
+        intervalSeconds: 60
         channelBatchLimit: 50
-        channelPagesPerJob: 5
+        channelPagesPerJob: 10
       retention:
         # Retention pruning stays enabled but with TTL 0 = keep everything
         # forever (this data IS the agents' long-term memory).
