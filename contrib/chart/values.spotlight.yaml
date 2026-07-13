@@ -33,13 +33,14 @@ sandbox:
   claudeCodeAuthMode: api_key
   # Blank the ANTHROPIC_API_KEY stub so the CLI can't prefer it over
   # CLAUDE_CODE_OAUTH_TOKEN (observed: stub wins precedence when present).
+  # CLAUDE_CODE_OAUTH_TOKEN is a PLACEHOLDER (the literal var name), same
+  # pattern as codex's OPENAI_API_KEY: the CLI sends "Bearer <placeholder>"
+  # and iron-proxy's infra-claude-oauth static secret replaces it with the
+  # real long-lived token (env CLAUDE_CODE_OAT) at egress. Sandboxes never
+  # hold the credential.
   extraEnv:
     ANTHROPIC_API_KEY: ""
-
-# apiRs.extraEnv.SESSION_SANDBOX_PASSTHROUGH_ENV: env var NAMES forwarded from
-# the api-rs pod (which envFroms centaur-infra-env) into every sandbox.
-# CLAUDE_CODE_OAUTH_TOKEN carries the dedicated long-lived subscription token
-# the Claude Code CLI consumes natively (see sandbox.claudeCodeAuthMode note).
+    CLAUDE_CODE_OAUTH_TOKEN: "CLAUDE_CODE_OAUTH_TOKEN"
 
 # Slack ETL: scheduled workflows (slack_sync hourly-ish, slack_backfill,
 # company_context_documents) that copy Slack channel history into Postgres
@@ -56,8 +57,6 @@ sandbox:
 #   - The bot must be a member of #spotlight-claude (bot tokens can only read
 #     history of channels they are in).
 apiRs:
-  extraEnv:
-    SESSION_SANDBOX_PASSTHROUGH_ENV: "CLAUDE_CODE_OAUTH_TOKEN"
   etl:
     slack:
       # Master switch: registers/enables the slack_sync, slack_backfill and
