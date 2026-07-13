@@ -96,8 +96,21 @@ apiRs:
         intervalMinutes: 60
         etlDays: 0
         dmDays: 0
+    # Google Drive ETL (workflows/gsuite/drive_sync.py): full text of every
+    # Google Doc visible to the GOOGLE_TOKEN_JSON account (incl. shared
+    # drives), incremental by modifiedTime. Scope is controlled by WHAT THE
+    # CONSENTED ACCOUNT CAN SEE — share folders with it to add knowledge.
+    googleDrive:
+      enabled: true
+      syncIntervalSeconds: 14400
+    # Google Calendar ETL (workflows/gsuite/calendar_sync.py): all visible
+    # calendars + events, incremental via syncToken (auto resync on 410).
+    googleCalendar:
+      enabled: true
+      syncIntervalSeconds: 14400
     companyContextDocuments:
-      # Projects changed slack_sync_* rows into company_context_documents
+      # Projects changed slack_sync_* / google_drive_sync_files /
+      # google_calendar_sync_events rows into company_context_documents
       # (what company_context actually searches). Tighten from the 4h default
       # to 1h so end-to-end memory lag is ~sync + 1h at worst.
       enabled: true
