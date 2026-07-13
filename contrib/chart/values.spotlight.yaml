@@ -31,6 +31,10 @@ sandbox:
   # (recurring 401s). Tradeoff: sandboxes can read the token from env; egress
   # is proxy-allowlisted, and the token is subscription-scoped + revocable.
   claudeCodeAuthMode: api_key
+  # Blank the ANTHROPIC_API_KEY stub so the CLI can't prefer it over
+  # CLAUDE_CODE_OAUTH_TOKEN (observed: stub wins precedence when present).
+  extraEnv:
+    ANTHROPIC_API_KEY: ""
 
 # apiRs.extraEnv.SESSION_SANDBOX_PASSTHROUGH_ENV: env var NAMES forwarded from
 # the api-rs pod (which envFroms centaur-infra-env) into every sandbox.
