@@ -63,17 +63,14 @@ apiRs:
       # #spotlight-claude is/becomes private. Private rows are RLS-guarded:
       # only sessions whose principal is in that channel can read them.
       indexPrivateChannels: true
-      # CHANNEL ALLOWLIST (approximated): the ETL has no include-list, only
-      # name-glob exclusions, so this default-deny set excludes every channel
-      # name EXCEPT exactly "spotlight-claude" (C0BB7UFPP96):
-      #   - 16 globs excluding names that diverge from it at each position,
-      #   - 15 exact patterns excluding its proper prefixes ("s".."spotlight-claud"),
-      #   - "spotlight-claude?*" excluding longer names sharing the prefix.
-      # New channels are therefore excluded by default. CAVEAT: matching is by
-      # channel NAME, not ID — renaming #spotlight-claude stops its sync, and
-      # a new channel reusing the name would be synced. To add channels later,
-      # regenerate this set (see the sync report / prefix construction).
-      excludedChannelPatterns: "[!s]*,s[!p]*,sp[!o]*,spo[!t]*,spot[!l]*,spotl[!i]*,spotli[!g]*,spotlig[!h]*,spotligh[!t]*,spotlight[!-]*,spotlight-[!c]*,spotlight-c[!l]*,spotlight-cl[!a]*,spotlight-cla[!u]*,spotlight-clau[!d]*,spotlight-claud[!e]*,s,sp,spo,spot,spotl,spotli,spotlig,spotligh,spotlight,spotlight-,spotlight-c,spotlight-cl,spotlight-cla,spotlight-clau,spotlight-claud,spotlight-claude?*"
+      # SYNC BOUNDARY = BOT MEMBERSHIP (2026-07-13, Tommy's call: sync all the
+      # *-internal brand channels + spotlight-claude). Bots can only read
+      # history of channels they are members of, so membership is the
+      # allowlist: /invite @claude = start syncing, remove the bot = stop.
+      # Private-channel rows stay RLS-guarded (visible only to sessions in
+      # that channel). The earlier default-deny glob wall is retired; if a
+      # public channel the bot idles in must NOT be synced, name it here.
+      excludedChannelPatterns: ""
       attachments:
         # Skip downloading attachment bytes into Postgres (bytea): the mini's
         # disk is chronically tight and document projection only indexes
