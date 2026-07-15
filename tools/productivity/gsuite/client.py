@@ -2454,8 +2454,255 @@ def analytics_get_daily_users(
     )
 
 
+# Google Forms functions
+
+
+def get_forms_service():
+    """Get authenticated Forms service."""
+    return build("forms", "v1", http=_build_http())
+
+
+_FORMS_CHOICE_TYPES = {
+    "multiple_choice": "RADIO",
+    "radio": "RADIO",
+    "checkbox": "CHECKBOX",
+    "dropdown": "DROP_DOWN",
+}
+
+
+def _forms_question_item(q: dict) -> dict:
+    """Translate a simple question spec into a Forms API item.
+
+    Spec keys: type, title, description, required, options (choice types),
+    allow_other (radio/checkbox), low/high/low_label/high_label (scale),
+    include_time (date).
+    """
+    qtype = str(q.get("type") or "short_text").lower()
+    item: dict = {"title": q.get("title") or q.get("question") or ""}
+    if q.get("description"):
+        item["description"] = q["description"]
+    if qtype in ("section", "page_break"):
+        item["pageBreakItem"] = {}
+        return item
+    if qtype in ("text", "info"):
+        item["textItem"] = {}
+        return item
+
+    question: dict = {"required": bool(q.get("required", False))}
+    if qtype in ("short_text", "short_answer"):
+        question["textQuestion"] = {"paragraph": False}
+    elif qtype in ("paragraph", "long_text"):
+        question["textQuestion"] = {"paragraph": True}
+    elif qtype in _FORMS_CHOICE_TYPES:
+        options = [{"value": str(o)} for o in q.get("options") or []]
+        if not options:
+            raise ValueError(
+                f"question {item['title']!r}: type {qtype!r} needs non-empty 'options'"
+            )
+        if q.get("allow_other") and qtype != "dropdown":
+            options.append({"isOther": True})
+        question["choiceQuestion"] = {
+            "type": _FORMS_CHOICE_TYPES[qtype],
+            "options": options,
+        }
+    elif qtype in ("linear_scale", "scale"):
+        scale = {"low": int(q.get("low", 1)), "high": int(q.get("high", 5))}
+        if q.get("low_label"):
+            scale["lowLabel"] = q["low_label"]
+        if q.get("high_label"):
+            scale["highLabel"] = q["high_label"]
+        question["scaleQuestion"] = scale
+    elif qtype == "date":
+        question["dateQuestion"] = {
+            "includeTime": bool(q.get("include_time", False)),
+            "includeYear": True,
+        }
+    elif qtype == "time":
+        question["timeQuestion"] = {"duration": False}
+    else:
+        raise ValueError(
+            f"unsupported question type {qtype!r}; use short_text, paragraph, "
+            "multiple_choice, checkbox, dropdown, linear_scale, date, time, "
+            "section, or text"
+        )
+    item["questionItem"] = {"question": question}
+    return item
+
+
+def forms_publish(
+    form_id: str, published: bool = True, accepting_responses: bool = True
+) -> dict:
+    """Set a form's publish state (new API forms start unpublished)."""
+    import json as _json
+
+    http = _build_http()
+    body = _json.dumps(
+        {
+            "publishSettings": {
+                "publishState": {
+                    "isPublished": published,
+                    "isAcceptingResponses": accepting_responses,
+                }
+            }
+        }
+    )
+    resp, content = http.request(
+        f"https://forms.googleapis.com/v1/forms/{form_id}:setPublishSettings",
+        method="POST",
+        body=body,
+        headers={"Content-Type": "application/json"},
+    )
+    if int(resp.status) >= 400:
+        raise RuntimeError(
+            f"setPublishSettings failed ({resp.status}): {content.decode(errors='replace')[:500]}"
+        )
+    return _json.loads(content or b"{}")
+
+
+def forms_create(
+    title: str,
+    description: str | None = None,
+    questions: list[dict] | None = None,
+    publish: bool = True,
+) -> dict:
+    """Create a Google Form with optional questions, publish it, return URLs."""
+    service = get_forms_service()
+    form = (
+        service.forms().create(body={"info": {"title": title}}).execute()
+    )
+    form_id = form["formId"]
+
+    requests = []
+    if description:
+        requests.append(
+            {
+                "updateFormInfo": {
+                    "info": {"description": description},
+                    "updateMask": "description",
+                }
+            }
+        )
+    for i, q in enumerate(questions or []):
+        requests.append(
+            {"createItem": {"item": _forms_question_item(q), "location": {"index": i}}}
+        )
+    if requests:
+        service.forms().batchUpdate(
+            formId=form_id, body={"requests": requests}
+        ).execute()
+
+    result = {
+        "form_id": form_id,
+        "edit_url": f"https://docs.google.com/forms/d/{form_id}/edit",
+        "responder_url": form.get("responderUri"),
+        "question_count": len(questions or []),
+        "published": False,
+    }
+    if publish:
+        try:
+            forms_publish(form_id)
+            result["published"] = True
+        except Exception as e:  # legacy forms have no publish state; already live
+            result["publish_note"] = str(e)
+    return result
+
+
+def forms_get(form_id: str) -> dict:
+    """Get a form's title, description, URLs, and item list."""
+    form = get_forms_service().forms().get(formId=form_id).execute()
+    items = []
+    for it in form.get("items", []):
+        question = (it.get("questionItem") or {}).get("question") or {}
+        items.append(
+            {
+                "item_id": it.get("itemId"),
+                "title": it.get("title"),
+                "question_id": question.get("questionId"),
+                "required": question.get("required", False),
+                "kind": next(
+                    (k for k in it if k.endswith("Item")), "questionItem"
+                ),
+            }
+        )
+    return {
+        "form_id": form["formId"],
+        "title": form.get("info", {}).get("title"),
+        "description": form.get("info", {}).get("description"),
+        "edit_url": f"https://docs.google.com/forms/d/{form['formId']}/edit",
+        "responder_url": form.get("responderUri"),
+        "items": items,
+    }
+
+
+def forms_add_questions(form_id: str, questions: list[dict]) -> dict:
+    """Append questions to an existing form (same spec as forms_create)."""
+    service = get_forms_service()
+    existing = service.forms().get(formId=form_id).execute()
+    base = len(existing.get("items", []))
+    requests = [
+        {
+            "createItem": {
+                "item": _forms_question_item(q),
+                "location": {"index": base + i},
+            }
+        }
+        for i, q in enumerate(questions)
+    ]
+    service.forms().batchUpdate(formId=form_id, body={"requests": requests}).execute()
+    return {"form_id": form_id, "added": len(questions), "total_items": base + len(questions)}
+
+
+def forms_responses(form_id: str, limit: int = 100) -> dict:
+    """List form responses with answers keyed by question title."""
+    service = get_forms_service()
+    form = service.forms().get(formId=form_id).execute()
+    titles = {}
+    for it in form.get("items", []):
+        question = (it.get("questionItem") or {}).get("question") or {}
+        if question.get("questionId"):
+            titles[question["questionId"]] = it.get("title") or question["questionId"]
+
+    responses: list[dict] = []
+    page_token = None
+    while len(responses) < limit:
+        resp = (
+            service.forms()
+            .responses()
+            .list(formId=form_id, pageSize=min(limit - len(responses), 100),
+                  pageToken=page_token)
+            .execute()
+        )
+        for r in resp.get("responses", []):
+            answers = {}
+            for qid, ans in (r.get("answers") or {}).items():
+                if "textAnswers" in ans:
+                    vals = [a.get("value") for a in ans["textAnswers"].get("answers", [])]
+                elif "fileUploadAnswers" in ans:
+                    vals = [a.get("fileId") for a in ans["fileUploadAnswers"].get("answers", [])]
+                else:
+                    vals = [str(ans)]
+                answers[titles.get(qid, qid)] = vals[0] if len(vals) == 1 else vals
+            responses.append(
+                {
+                    "response_id": r.get("responseId"),
+                    "submitted_at": r.get("lastSubmittedTime"),
+                    "respondent_email": r.get("respondentEmail"),
+                    "answers": answers,
+                }
+            )
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    return {
+        "form_id": form_id,
+        "title": form.get("info", {}).get("title"),
+        "response_count": len(responses),
+        "responses": responses[:limit],
+    }
+
+
 class GSuiteClient:
-    """GSuite API client wrapping Gmail, Calendar, Drive, Docs, Sheets, Slides, and Analytics."""
+    """GSuite API client wrapping Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, and Analytics."""
 
     # --- Gmail ---
 
@@ -3362,6 +3609,86 @@ class GSuiteClient:
     ) -> dict:
         """Get daily active users over time."""
         return analytics_get_daily_users(start_date=start_date, end_date=end_date)
+
+    # --- Forms ---
+
+    def forms_create(
+        self,
+        title: str,
+        description: str | None = None,
+        questions: list[dict] | None = None,
+        publish: bool = True,
+    ) -> dict:
+        """Create a Google Form and publish it.
+
+        Args:
+            title: Form title shown to respondents
+            description: Optional form description
+            questions: List of question specs, each a dict with keys:
+                type (short_text | paragraph | multiple_choice | checkbox |
+                dropdown | linear_scale | date | time | section | text),
+                title, required, options (choice types), allow_other,
+                low/high/low_label/high_label (scale), include_time (date)
+            publish: Publish and accept responses immediately (default True)
+
+        Returns:
+            Dict with form_id, edit_url, responder_url, question_count, published
+        """
+        return forms_create(
+            title, description=description, questions=questions, publish=publish
+        )
+
+    def forms_get(self, form_id: str) -> dict:
+        """Get a form's title, URLs, and items.
+
+        Args:
+            form_id: The form ID (from forms_create or the form URL)
+
+        Returns:
+            Dict with form_id, title, description, edit_url, responder_url, items
+        """
+        return forms_get(form_id)
+
+    def forms_add_questions(self, form_id: str, questions: list[dict]) -> dict:
+        """Append questions to an existing form.
+
+        Args:
+            form_id: The form ID
+            questions: Question specs (same schema as forms_create)
+
+        Returns:
+            Dict with form_id, added, total_items
+        """
+        return forms_add_questions(form_id, questions)
+
+    def forms_responses(self, form_id: str, limit: int = 100) -> dict:
+        """List a form's responses with answers keyed by question title.
+
+        Args:
+            form_id: The form ID
+            limit: Maximum responses to return
+
+        Returns:
+            Dict with form_id, title, response_count, responses
+        """
+        return forms_responses(form_id, limit=limit)
+
+    def forms_publish(
+        self, form_id: str, published: bool = True, accepting_responses: bool = True
+    ) -> dict:
+        """Set a form's publish state (unpublish or stop accepting responses).
+
+        Args:
+            form_id: The form ID
+            published: Whether the form is live for respondents
+            accepting_responses: Whether new responses are accepted
+
+        Returns:
+            The publish settings as confirmed by the API
+        """
+        return forms_publish(
+            form_id, published=published, accepting_responses=accepting_responses
+        )
 
 
 def _client() -> GSuiteClient:

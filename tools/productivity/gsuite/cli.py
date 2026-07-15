@@ -40,6 +40,7 @@ docs_app = typer.Typer(help="Google Docs operations")
 sheets_app = typer.Typer(help="Google Sheets operations")
 slides_app = typer.Typer(help="Google Slides operations")
 analytics_app = typer.Typer(help="Google Analytics operations")
+forms_app = typer.Typer(help="Google Forms operations")
 
 app.add_typer(gmail_app, name="gmail")
 app.add_typer(calendar_app, name="calendar")
@@ -48,6 +49,7 @@ app.add_typer(docs_app, name="docs")
 app.add_typer(sheets_app, name="sheets")
 app.add_typer(slides_app, name="slides")
 app.add_typer(analytics_app, name="analytics")
+app.add_typer(forms_app, name="forms")
 
 
 @app.callback()
@@ -1938,6 +1940,130 @@ def analytics_query(
 
         console.print(table)
         console.print(f"[dim]Total rows: {result['row_count']}[/]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1)
+
+
+def _load_questions(questions: str) -> list:
+    """Parse a questions arg: inline JSON array or @path to a JSON file."""
+    import json
+
+    raw = questions.strip()
+    if raw.startswith("@"):
+        raw = Path(raw[1:]).read_text()
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise typer.BadParameter("questions must be a JSON array of question specs")
+    return parsed
+
+
+@forms_app.command("create")
+def forms_create_cmd(
+    title: str = typer.Argument(..., help="Form title shown to respondents"),
+    description: str = typer.Option(None, "--description", "-d", help="Form description"),
+    questions: str = typer.Option(
+        None,
+        "--questions",
+        "-q",
+        help=(
+            "JSON array of question specs (or @file.json). Each: {type, title, "
+            "required, options, low/high/low_label/high_label, include_time}. "
+            "Types: short_text, paragraph, multiple_choice, checkbox, dropdown, "
+            "linear_scale, date, time, section, text"
+        ),
+    ),
+    no_publish: bool = typer.Option(False, "--no-publish", help="Leave the form unpublished"),
+):
+    """Create a Google Form and print its edit + responder URLs."""
+    import json
+
+    from .client import forms_create
+
+    try:
+        specs = _load_questions(questions) if questions else None
+        result = forms_create(
+            title, description=description, questions=specs, publish=not no_publish
+        )
+        console.print(json.dumps(result, indent=2))
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1)
+
+
+@forms_app.command("get")
+def forms_get_cmd(
+    form_id: str = typer.Argument(..., help="Form ID (from create output or the form URL)"),
+):
+    """Show a form's title, URLs, and items."""
+    import json
+
+    from .client import forms_get
+
+    try:
+        console.print(json.dumps(forms_get(form_id), indent=2))
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1)
+
+
+@forms_app.command("add-questions")
+def forms_add_questions_cmd(
+    form_id: str = typer.Argument(..., help="Form ID"),
+    questions: str = typer.Argument(
+        ..., help="JSON array of question specs (or @file.json); same schema as create"
+    ),
+):
+    """Append questions to an existing form."""
+    import json
+
+    from .client import forms_add_questions
+
+    try:
+        result = forms_add_questions(form_id, _load_questions(questions))
+        console.print(json.dumps(result, indent=2))
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1)
+
+
+@forms_app.command("responses")
+def forms_responses_cmd(
+    form_id: str = typer.Argument(..., help="Form ID"),
+    limit: int = typer.Option(100, "--limit", "-n", help="Max responses to return"),
+):
+    """List a form's responses with answers keyed by question title."""
+    import json
+
+    from .client import forms_responses
+
+    try:
+        console.print(json.dumps(forms_responses(form_id, limit=limit), indent=2))
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1)
+
+
+@forms_app.command("publish")
+def forms_publish_cmd(
+    form_id: str = typer.Argument(..., help="Form ID"),
+    unpublish: bool = typer.Option(False, "--unpublish", help="Take the form offline"),
+    stop_responses: bool = typer.Option(
+        False, "--stop-responses", help="Keep published but stop accepting responses"
+    ),
+):
+    """Set a form's publish state."""
+    import json
+
+    from .client import forms_publish
+
+    try:
+        result = forms_publish(
+            form_id,
+            published=not unpublish,
+            accepting_responses=not (unpublish or stop_responses),
+        )
+        console.print(json.dumps(result, indent=2))
     except Exception as e:
         console.print(f"[red]Error: {e}[/]")
         raise typer.Exit(1)

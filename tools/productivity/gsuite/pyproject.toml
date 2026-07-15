@@ -1,6 +1,6 @@
 [project]
 name = "gsuite"
-description = "Gmail, Calendar, Drive, Docs, Sheets, Slides, Analytics"
+description = "Gmail, Calendar, Drive, Docs, Sheets, Slides, Forms, Analytics"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
@@ -41,6 +41,7 @@ hosts = [
     "docs.googleapis.com",
     "sheets.googleapis.com",
     "slides.googleapis.com",
+    "forms.googleapis.com",
     "analyticsdata.googleapis.com",
 ]
 # Authentication is minted by iron-proxy's oauth_token transform. The
@@ -58,6 +59,7 @@ secrets = [
         "docs.googleapis.com",
         "sheets.googleapis.com",
         "slides.googleapis.com",
+        "forms.googleapis.com",
         "analyticsdata.googleapis.com",
     ], fields = { refresh_token = { secret_ref = "GOOGLE_TOKEN_JSON", json_key = "refresh_token" }, client_id = { secret_ref = "GOOGLE_TOKEN_JSON", json_key = "client_id" }, client_secret = { secret_ref = "GOOGLE_TOKEN_JSON", json_key = "client_secret" } } },
 ]
