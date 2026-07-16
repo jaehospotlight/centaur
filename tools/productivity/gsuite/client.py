@@ -2454,6 +2454,45 @@ def analytics_get_daily_users(
     )
 
 
+def gmail_thread(thread_id: str) -> dict:
+    """Fetch a Gmail thread's messages (sender, date, snippet per message).
+
+    Built for reply-detection: compare each message's From/date against the
+    original send to see whether anyone answered.
+    """
+    service = get_gmail_service()
+    thread = (
+        service.users()
+        .threads()
+        .get(userId="me", id=thread_id, format="metadata",
+             metadataHeaders=["From", "To", "Subject", "Date"])
+        .execute()
+    )
+    messages = []
+    for m in thread.get("messages", []):
+        headers = {
+            h["name"].lower(): h["value"]
+            for h in m.get("payload", {}).get("headers", [])
+        }
+        messages.append(
+            {
+                "id": m.get("id"),
+                "from": headers.get("from", ""),
+                "to": headers.get("to", ""),
+                "subject": headers.get("subject", ""),
+                "date": headers.get("date", ""),
+                "internal_date_ms": int(m.get("internalDate", 0)),
+                "snippet": m.get("snippet", ""),
+                "label_ids": m.get("labelIds", []),
+            }
+        )
+    return {
+        "thread_id": thread.get("id"),
+        "message_count": len(messages),
+        "messages": messages,
+    }
+
+
 # Google Forms functions
 
 
@@ -3609,6 +3648,17 @@ class GSuiteClient:
     ) -> dict:
         """Get daily active users over time."""
         return analytics_get_daily_users(start_date=start_date, end_date=end_date)
+
+    def gmail_thread(self, thread_id: str) -> dict:
+        """Fetch a Gmail thread's messages (sender, date, snippet each).
+
+        Args:
+            thread_id: The Gmail thread ID (returned by gmail_send)
+
+        Returns:
+            Dict with thread_id, message_count, messages (from/to/date/snippet)
+        """
+        return gmail_thread(thread_id)
 
     # --- Forms ---
 
